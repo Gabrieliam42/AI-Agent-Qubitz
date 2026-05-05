@@ -1,0 +1,20 @@
+AI_Agent_Qubitz.py.001.bak | AI_Agent_Qubitz.py | Replace the broken stub with a Tk-based local Ollama agent that uses the repository harness, a self-hosted MCP tool loop, repository retrieval, and persistent memory.
+AI_Agent_Qubitz.py.002.bak | AI_Agent_Qubitz.py | Add GPU FAISS/cuVS-backed retrieval so repository search prefers accelerated vector indexing and keeps the existing fallback path.
+AI_Agent_Qubitz.py.003.bak | AI_Agent_Qubitz.py | Make the embedder prefer CUDA automatically with a safe CPU fallback and optional FlashAttention2 detection for compatible local installs.
+AI_Agent_Qubitz.py.004.bak | AI_Agent_Qubitz.py | Make Ollama transport resilient by preferring the Windows bridge but automatically retrying direct local HTTP when the bridge fails on chat payloads.
+AI_Agent_Qubitz.py.005.bak | AI_Agent_Qubitz.py | Apply a dark anthracite Tk theme with white text across the GUI while keeping the recent Ollama transport fallback fix.
+AI_Agent_Qubitz.py.006.bak | AI_Agent_Qubitz.py | Remove unsupported Tk Text disabled color options so the anthracite GUI builds correctly on this Tcl/Tk runtime.
+AI_Agent_Qubitz.py.007.bak | AI_Agent_Qubitz.py | Add verbose progress reporting for retrieval, GPU usage, and tool activity so the GUI shows concrete actions and runtime device information.
+AI_Agent_Qubitz.py.008.bak | AI_Agent_Qubitz.py | Speed up context preparation by running retrieval before loading the Ollama model, increasing CUDA embedder batching when VRAM is available, and enabling xFormers attention when supported.
+AI_Agent_Qubitz.py.009.bak | AI_Agent_Qubitz.py | Exclude .ruff_cache from repository retrieval so cached lint artifacts do not pollute context selection.
+AI_Agent_Qubitz.py.010.bak | AI_Agent_Qubitz.py | Force explicit file-read requests to resolve and read named workspace files directly before the model loop, skipping semantic retrieval for those requests.
+AI_Agent_Qubitz.py.011.bak | AI_Agent_Qubitz.py | Add configurable num_ctx and num_predict, rolling history summarization, and active-context size estimates for each model step in both GUI and runtime flow.
+AI_Agent_Qubitz.py.012.bak | AI_Agent_Qubitz.py | Auto-configure DISPLAY for WSL GUI launches and tighten the GUI/CLI fallback so the Tk window starts when the launcher omits a display variable.
+AI_Agent_Qubitz.py.013.bak | AI_Agent_Qubitz.py | Restore native window decorations under WSL for reliable GUI launch and focus, while keeping the application interior in the dark anthracite theme.
+AI_Agent_Qubitz.py.014.bak | AI_Agent_Qubitz.py | Add Ollama startup diagnostics for Windows-side GPU env settings and introduce a retrieval VRAM policy that releases GPU resources before generation with CPU-safe fallbacks when retrieval GPU memory is tight.
+AI_Agent_Qubitz.py.015.bak | AI_Agent_Qubitz.py | Replace the unsupported Tk zoomed-state startup call with a cross-platform maximize fallback that works on this WSL Tcl/Tk runtime.
+AI_Agent_Qubitz.py.016.bak | AI_Agent_Qubitz.py | Fix Ollama diagnostics to read Windows server state even when chat uses direct HTTP, correct ollama ps processor parsing, and make the embedder path offline-by-default unless explicitly opted into online model downloads.
+AI_Agent_Qubitz.py.017.bak | AI_Agent_Qubitz.py | Add Agent Skills-style .skills discovery, metadata parsing, activation, and MCP tools so local skills can be detected and used by the standalone agent.
+AI_Agent_Qubitz.py.018.bak | AI_Agent_Qubitz.py | Show the configured embedding model in the GUI startup transcript so runtime model context is explicit from the first screen.
+AI_Agent_Qubitz.py.019.bak | AI_Agent_Qubitz.py | Load RULES.md alongside HARNESS.txt and inject it into the system prompt immediately after the harness so renamed project rules are applied automatically.
+AI_Agent_Qubitz.py.020.bak | AI_Agent_Qubitz.py | Raise the default maximum agent loop steps from 12 to 16 so longer valid tool workflows have more room before forced stop.
