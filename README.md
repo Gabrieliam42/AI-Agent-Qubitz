@@ -6,7 +6,7 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 
 - Platform target: WSL2 on Windows 11
 - Python: 3.12.3
-- GPU target: RTX 3090 24 GB VRAM
+- GPU target: RTX 24 GB VRAM
 - Main model path: `glm-4.7-flash:latest` through Ollama
 - Embedding model: `BAAI/bge-code-v1`
 
