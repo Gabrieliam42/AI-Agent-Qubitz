@@ -42,14 +42,9 @@ Project and Environment Defaults
 - Do not depend on paid third-party services.
 - If external APIs are necessary, prefer publicly available free APIs.
 
-Target Hardware and Performance Defaults
-- Assume this target system unless the user says otherwise:
-  - RTX 3090, 24 GB VRAM, Ampere sm_86
-  - Intel i9-14900KF, 24 cores / 32 threads
-  - 128 GB RAM, DDR4 3600 CL18
 - Optimize for this system when it matters:
   - Maximize GPU utilization when the workload benefits from GPU acceleration.
-  - Prefer VRAM-efficient settings with safety headroom below 24 GB to avoid OOM, fragmentation, CUDA context overhead, and transient allocation spikes.
+  - Prefer VRAM-efficient settings with safety headroom to avoid OOM, fragmentation, CUDA context overhead, and transient allocation spikes.
   - Prefer keeping computation on the GPU.
   - Use CPU offload only when VRAM limits, model size, or stability require it.
   - Choose stable, high-performance settings rather than fragile peak settings.
