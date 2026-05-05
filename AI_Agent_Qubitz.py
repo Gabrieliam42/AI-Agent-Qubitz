@@ -27,6 +27,9 @@ from mcp.server.fastmcp import FastMCP
 
 DEFAULT_MODEL = "glm-4.7-flash:latest"
 DEFAULT_EMBED_MODEL = "BAAI/bge-code-v1"
+DEFAULT_HARNESS_NAME = "HARNESS.txt"
+DEFAULT_ENCRYPTED_HARNESS_NAME = "HARNESS.enc"
+HARNESS_KEY_ENV_NAME = "QUBITZ_HARNESS_KEY"
 CURRENT_MEMORY_NAME = "MEMORY.md"
 ARCHIVE_MEMORY_PREFIX = "MEMORY_"
 HISTORY_TURNS = 6
@@ -129,6 +132,72 @@ def env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _fernet_classes() -> tuple[type[Any], type[Exception]]:
+    try:
+        from cryptography.fernet import Fernet, InvalidToken
+    except ImportError as exc:
+        raise RuntimeError(
+            "Encrypted harness support requires the 'cryptography' package. "
+            "Install requirements.txt in the active environment."
+        ) from exc
+    return Fernet, InvalidToken
+
+
+def harness_key_bytes() -> bytes:
+    raw = os.environ.get(HARNESS_KEY_ENV_NAME, "").strip()
+    if not raw:
+        raise RuntimeError(
+            f"{HARNESS_KEY_ENV_NAME} is required when {DEFAULT_ENCRYPTED_HARNESS_NAME} is present. "
+            "Set it to a Fernet key before starting the agent."
+        )
+    return raw.encode("utf-8")
+
+
+def encrypt_harness_text(plaintext: str) -> bytes:
+    Fernet, _ = _fernet_classes()
+    return Fernet(harness_key_bytes()).encrypt(plaintext.encode("utf-8"))
+
+
+def generate_harness_key() -> str:
+    Fernet, _ = _fernet_classes()
+    return Fernet.generate_key().decode("utf-8")
+
+
+def decrypt_harness_bytes(ciphertext: bytes) -> str:
+    Fernet, InvalidToken = _fernet_classes()
+    try:
+        plaintext = Fernet(harness_key_bytes()).decrypt(ciphertext)
+    except InvalidToken as exc:
+        raise RuntimeError(
+            f"Failed to decrypt {DEFAULT_ENCRYPTED_HARNESS_NAME}. "
+            f"Verify that {HARNESS_KEY_ENV_NAME} matches the file."
+        ) from exc
+    return plaintext.decode("utf-8")
+
+
+def load_harness_text(workspace: Path) -> str:
+    encrypted_path = workspace / DEFAULT_ENCRYPTED_HARNESS_NAME
+    plaintext_path = workspace / DEFAULT_HARNESS_NAME
+    if encrypted_path.exists():
+        return decrypt_harness_bytes(encrypted_path.read_bytes())
+    if plaintext_path.exists():
+        return plaintext_path.read_text(encoding="utf-8", errors="ignore")
+    raise FileNotFoundError(
+        f"Missing harness file. Expected {DEFAULT_ENCRYPTED_HARNESS_NAME} or {DEFAULT_HARNESS_NAME} in {workspace}."
+    )
+
+
+def write_encrypted_harness(workspace: Path) -> Path:
+    plaintext_path = workspace / DEFAULT_HARNESS_NAME
+    if not plaintext_path.exists():
+        raise FileNotFoundError(
+            f"Cannot create {DEFAULT_ENCRYPTED_HARNESS_NAME} because {DEFAULT_HARNESS_NAME} is missing in {workspace}."
+        )
+    encrypted_path = workspace / DEFAULT_ENCRYPTED_HARNESS_NAME
+    encrypted_path.write_bytes(encrypt_harness_text(plaintext_path.read_text(encoding="utf-8", errors="ignore")))
+    return encrypted_path
 
 
 def token_set(text: str) -> set[str]:
@@ -1657,7 +1726,7 @@ class AgentRunner:
         self.retriever = RepoRetriever(config, progress_callback=self._report_retrieval)
         self.history: list[dict[str, str]] = []
         self.history_summary = ""
-        self.harness_text = (self.workspace / "HARNESS.txt").read_text(encoding="utf-8", errors="ignore")
+        self.harness_text = load_harness_text(self.workspace)
         rules_path = self.workspace / "RULES.md"
         self.rules_text = rules_path.read_text(encoding="utf-8", errors="ignore") if rules_path.exists() else ""
         self._active_callback: Callable[[str, str], None] | None = None
@@ -2564,6 +2633,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--cli", action="store_true", help="Run the terminal interface instead of the Tk GUI.")
     parser.add_argument("--prompt", help="Run a single CLI prompt and exit.")
+    parser.add_argument(
+        "--generate-harness-key",
+        action="store_true",
+        help=f"Generate a Fernet key suitable for {HARNESS_KEY_ENV_NAME}, then exit.",
+    )
+    parser.add_argument(
+        "--encrypt-harness",
+        action="store_true",
+        help=(
+            f"Encrypt {DEFAULT_HARNESS_NAME} into {DEFAULT_ENCRYPTED_HARNESS_NAME} "
+            f"using the {HARNESS_KEY_ENV_NAME} environment variable, then exit."
+        ),
+    )
     parser.add_argument("--serve-mcp", action="store_true", help="Run the local MCP server over stdio.")
     return parser.parse_args(argv)
 
@@ -2580,6 +2662,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         ollama_num_ctx=args.num_ctx,
         ollama_num_predict=args.num_predict,
     )
+    if args.generate_harness_key:
+        print(generate_harness_key())
+        return
+    if args.encrypt_harness:
+        encrypted_path = write_encrypted_harness(workspace)
+        print(f"Wrote encrypted harness to {encrypted_path}")
+        return
     if args.serve_mcp:
         serve_mcp(workspace)
         return

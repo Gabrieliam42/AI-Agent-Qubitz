@@ -24,11 +24,12 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 
 - `.gitignore`: git exclusions for local-only artifacts and runtime data
 - `AI_Agent_Qubitz.py`: main standalone agent runtime
-- `HARNESS.txt`: base harness and behavioral rules
+- `HARNESS.enc`: encrypted harness tracked in the repository
 - `requirements.txt`: runtime dependencies
 
 ## Optional Local Runtime Files And Paths
 
+- `HARNESS.txt`: optional local plaintext harness source for maintainers who need to re-encrypt the harness
 - `.cache/`: Hugging Face and retrieval cache data
 - `.memory/`: current and archived session memory
 - `.skills/`: local skill directories
@@ -51,3 +52,4 @@ The active runtime is built around:
 - Retrieval runs before Ollama generation to preserve GPU headroom for embeddings.
 - GPU retrieval resources are released before generation to leave more VRAM for the main model.
 - The local MCP server exposes skill-aware resources and tools, including `skills://index`, `list_skills`, `read_skill`, and `read_skill_resource`.
+- The runtime can generate a `QUBITZ_HARNESS_KEY` with `--generate-harness-key`, encrypt `HARNESS.txt` into `HARNESS.enc` with `--encrypt-harness`, and requires that key to start when `HARNESS.enc` is present.

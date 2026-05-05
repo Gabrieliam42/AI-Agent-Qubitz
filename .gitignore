@@ -23,6 +23,8 @@ build/
 Thumbs.db
 
 # Project specific
+HARNESS.txt
+QUBITZ_HARNESS_KEY.local.txt
 .memory/
 MEMORY.md
 files_list.txt
