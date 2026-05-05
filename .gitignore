@@ -25,29 +25,11 @@ Thumbs.db
 # Project specific
 .memory/
 MEMORY.md
+files_list.txt
 *.bak
 *.bat
 *.log
 .env
 
-# Local helper executables not meant for source control
-~REMOVE_Python_Virtual_Env.exe
-Create_cwd_WSL_Python3.12_VirtualEnv_.venv.exe
-Create_cwd_WSL_Python3.13_VirtualEnv_.venv.exe
-Create_Python3.12_VirtualEnv_.venv312.exe
-Find_cwd_WSL_Python_Virtual_Env_and_Activate.exe
-Find_Python_Virtual_Env_and_Activate.exe
-Find_Python_Virtual_Env_and_Activate_PS1.exe
-Generate_requirements.txt_file.exe
-List_Selected_Files.exe
-pip_cache_purger_CWD.exe
-pip_install_Requirements.exe
-pip_update_Requirements.exe
-pip_venv_cache_purger.exe
-Register_Python312.exe
-RUN_Python_Script.exe
-RUN_Python_Script_in_VEnv.exe
-Run_tk_WSL_Python_Script_in_VEnv.exe
-Torch_CUDA_Empty_Cache.exe
-Update_CWD_Files_from_Source_Dir.exe
-Update_Selected_Dir_Files_from_Source_Dir.exe
+# Root-level helper executables are local utilities, not project source
+/*.exe
