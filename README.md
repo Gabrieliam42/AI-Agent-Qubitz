@@ -32,8 +32,6 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 The active runtime is built around:
 
 - `torch==2.9.1+cu129`
-- `torchvision==0.24.1+cu129`
-- `torchaudio==2.9.1+cu129`
 - `transformers==4.57.6`
 - `flash-attn==2.8.3`
 - `faiss-gpu-cuvs==1.14.1.post1`
