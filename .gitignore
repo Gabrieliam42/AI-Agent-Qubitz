@@ -26,6 +26,10 @@ Thumbs.db
 .memory/
 MEMORY.md
 files_list.txt
+AI_Agent.txt
+PROJECT.md
+changelog.txt
+requirements-ci.txt
 *.bak
 *.bat
 *.log

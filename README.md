@@ -25,10 +25,7 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 - `AI_Agent_Qubitz.py`: main standalone agent runtime
 - `HARNESS.txt`: base harness and behavioral rules
 - `RULES.md`: project-specific operating rules
-- `PROJECT.md`: current environment, dependency, and status tracking
-- `AI_Agent.txt`: architecture notes and source references
 - `requirements.txt`: runtime dependencies
-- `requirements-ci.txt`: CI and lint dependencies
 
 ## Dependency Notes
 
