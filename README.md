@@ -29,7 +29,6 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 
 ## Optional Local Runtime Files And Paths
 
-- `RULES.md`: optional local-only project rules file loaded when present
 - `.cache/`: Hugging Face and retrieval cache data
 - `.memory/`: current and archived session memory
 - `.skills/`: local skill directories
