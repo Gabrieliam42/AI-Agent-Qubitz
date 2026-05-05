@@ -17,15 +17,23 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 - Windows-Ollama bridge with local HTTP fallback
 - CUDA-first code embeddings and FAISS GPU retrieval
 - Offline-first embedding workflow with local cache support
-- Local skill discovery from `.skills/*/SKILL.md`
+- Local skill discovery from `.skills/*/SKILL.md` when present
 - Persistent session memory under `.memory/`
 
-## Core Files
+## Repository Files
 
+- `.gitignore`: git exclusions for local-only artifacts and runtime data
 - `AI_Agent_Qubitz.py`: main standalone agent runtime
 - `HARNESS.txt`: base harness and behavioral rules
-- `RULES.md`: project-specific operating rules
 - `requirements.txt`: runtime dependencies
+
+## Optional Local Runtime Files And Paths
+
+- `RULES.md`: optional local-only project rules file loaded when present
+- `.cache/`: Hugging Face and retrieval cache data
+- `.memory/`: current and archived session memory
+- `.skills/`: local skill directories
+- `.venv/`: WSL Python virtual environment
 
 ## Dependency Notes
 
@@ -38,13 +46,6 @@ The active runtime is built around:
 - `mcp==1.27.0`
 
 `xformers==0.0.31.post1` is installed in the environment, but its compiled CUDA extensions do not currently load against the active Torch/CUDA stack.
-
-## Project Layout
-
-- `.cache/`: Hugging Face and retrieval cache data
-- `.memory/`: current and archived session memory
-- `.skills/`: local skill directories
-- `.venv/`: WSL Python virtual environment
 
 ## Status
 
