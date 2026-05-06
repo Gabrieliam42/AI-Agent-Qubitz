@@ -29,7 +29,7 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 
 ## Optional Local Runtime Files And Paths
 
-- `HARNESS.txt`: optional local plaintext harness source for maintainers who need to re-encrypt the harness
+- `RULES.md`: optional local plaintext harness source for maintainers who need to re-encrypt the harness
 - `.cache/`: Hugging Face and retrieval cache data
 - `.memory/`: current and archived session memory
 - `.skills/`: local skill directories
