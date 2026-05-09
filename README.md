@@ -24,7 +24,7 @@ Qubitz is a local-first standalone AI agent focused on CUDA-accelerated reposito
 
 - `.gitignore`: git exclusions for local-only artifacts and runtime data
 - `AI_Agent_Qubitz.py`: main standalone agent runtime
-- `HARNESS.enc`: encrypted harness tracked in the repository
+- `HARNESS.enc`: encrypted harness in the repository
 - `requirements.txt`: runtime dependencies
 
 ## Optional Local Runtime Files And Paths
