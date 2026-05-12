@@ -30,6 +30,7 @@ DEFAULT_EMBED_MODEL = "BAAI/bge-code-v1"
 DEFAULT_HARNESS_NAME = "HARNESS.txt"
 DEFAULT_ENCRYPTED_HARNESS_NAME = "HARNESS.enc"
 HARNESS_KEY_ENV_NAME = "QUBITZ_HARNESS_KEY"
+LOCAL_HARNESS_KEY_NAME = "QUBITZ_HARNESS_KEY.local.txt"
 CURRENT_MEMORY_NAME = "MEMORY.md"
 ARCHIVE_MEMORY_PREFIX = "MEMORY_"
 HISTORY_TURNS = 6
@@ -39,6 +40,11 @@ MAX_DIRECT_READ_FILES = 4
 MAX_DIRECT_READ_CHARS = 12000
 DEFAULT_NUM_PREDICT = 4096
 MAX_HISTORY_SUMMARY_CHARS = 6000
+MAX_RULES_SUMMARY_CHARS = 2400
+MAX_RULES_SECTION_ITEMS = 5
+MAX_MEMORY_CONTEXT_CHARS = 1200
+MAX_MEMORY_RESULT_SNIPPET_CHARS = 320
+MAX_MEMORY_CONTEXT_RESULTS = 2
 OLLAMA_GPU_ENV_KEYS = (
     "OLLAMA_FLASH_ATTENTION",
     "OLLAMA_KV_CACHE_TYPE",
@@ -52,7 +58,10 @@ READ_INTENT_PATTERN = re.compile(
     r"\b(read|open|show|view|inspect|examine|review|check|display|print|cat|look\s+at)\b",
     re.IGNORECASE,
 )
-FILE_TOKEN_PATTERN = re.compile(r"`([^`]+)`|\"([^\"]+)\"|'([^']+)'|(?<!\w)([A-Za-z0-9_.\-\\/]+(?:\.[A-Za-z0-9_]+))(?!\w)")
+FILE_TOKEN_PATTERN = re.compile(
+    r"`([^`]+)`|\"([^\"]+)\"|'([^']+)'|(?<!\w)([A-Za-z]:[A-Za-z0-9_ .\-\\/]+(?:\.[A-Za-z0-9_]+)|[A-Za-z0-9_.\-\\/]+(?:\.[A-Za-z0-9_]+))(?!\w)"
+)
+WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 TEXT_SUFFIXES = {
     ".bat",
     ".c",
@@ -145,19 +154,52 @@ def _fernet_classes() -> tuple[type[Any], type[Exception]]:
     return Fernet, InvalidToken
 
 
-def harness_key_bytes() -> bytes:
-    raw = os.environ.get(HARNESS_KEY_ENV_NAME, "").strip()
-    if not raw:
-        raise RuntimeError(
-            f"{HARNESS_KEY_ENV_NAME} is required when {DEFAULT_ENCRYPTED_HARNESS_NAME} is present. "
-            "Set it to a Fernet key before starting the agent."
-        )
-    return raw.encode("utf-8")
+def _harness_key_candidates(workspace: Path | None = None) -> list[tuple[str, bytes]]:
+    candidates: list[tuple[str, bytes]] = []
+    env_raw = os.environ.get(HARNESS_KEY_ENV_NAME, "").strip()
+    if env_raw:
+        candidates.append((HARNESS_KEY_ENV_NAME, env_raw.encode("utf-8")))
+    if workspace is not None:
+        helper_path = workspace / LOCAL_HARNESS_KEY_NAME
+        if helper_path.exists():
+            helper_raw = helper_path.read_text(encoding="utf-8", errors="ignore").strip()
+            if helper_raw:
+                candidates.append((LOCAL_HARNESS_KEY_NAME, helper_raw.encode("utf-8")))
+    return candidates
 
 
-def encrypt_harness_text(plaintext: str) -> bytes:
+def _validated_harness_keys(workspace: Path | None = None) -> list[tuple[str, bytes]]:
     Fernet, _ = _fernet_classes()
-    return Fernet(harness_key_bytes()).encrypt(plaintext.encode("utf-8"))
+    valid: list[tuple[str, bytes]] = []
+    invalid: list[str] = []
+    seen: set[bytes] = set()
+    for source, key in _harness_key_candidates(workspace):
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            Fernet(key)
+        except Exception as exc:
+            invalid.append(f"{source}: {type(exc).__name__}: {exc}")
+            continue
+        valid.append((source, key))
+    if valid:
+        return valid
+    if invalid:
+        raise RuntimeError(f"No valid Fernet harness key was found. Tried: {'; '.join(invalid)}")
+    raise RuntimeError(
+        f"{HARNESS_KEY_ENV_NAME} is required when {DEFAULT_ENCRYPTED_HARNESS_NAME} is present. "
+        f"Set it in the environment or provide {LOCAL_HARNESS_KEY_NAME} in the workspace root."
+    )
+
+
+def harness_key_bytes(workspace: Path | None = None) -> bytes:
+    return _validated_harness_keys(workspace)[0][1]
+
+
+def encrypt_harness_text(plaintext: str, workspace: Path | None = None) -> bytes:
+    Fernet, _ = _fernet_classes()
+    return Fernet(harness_key_bytes(workspace)).encrypt(plaintext.encode("utf-8"))
 
 
 def generate_harness_key() -> str:
@@ -165,23 +207,27 @@ def generate_harness_key() -> str:
     return Fernet.generate_key().decode("utf-8")
 
 
-def decrypt_harness_bytes(ciphertext: bytes) -> str:
+def decrypt_harness_bytes(ciphertext: bytes, workspace: Path | None = None) -> str:
     Fernet, InvalidToken = _fernet_classes()
-    try:
-        plaintext = Fernet(harness_key_bytes()).decrypt(ciphertext)
-    except InvalidToken as exc:
-        raise RuntimeError(
-            f"Failed to decrypt {DEFAULT_ENCRYPTED_HARNESS_NAME}. "
-            f"Verify that {HARNESS_KEY_ENV_NAME} matches the file."
-        ) from exc
-    return plaintext.decode("utf-8")
+    failed_sources: list[str] = []
+    for source, key in _validated_harness_keys(workspace):
+        try:
+            plaintext = Fernet(key).decrypt(ciphertext)
+            return plaintext.decode("utf-8")
+        except InvalidToken:
+            failed_sources.append(source)
+            continue
+    raise RuntimeError(
+        f"Failed to decrypt {DEFAULT_ENCRYPTED_HARNESS_NAME}. "
+        f"Tried valid key source(s): {', '.join(failed_sources) or HARNESS_KEY_ENV_NAME}."
+    )
 
 
 def load_harness_text(workspace: Path) -> str:
     encrypted_path = workspace / DEFAULT_ENCRYPTED_HARNESS_NAME
     plaintext_path = workspace / DEFAULT_HARNESS_NAME
     if encrypted_path.exists():
-        return decrypt_harness_bytes(encrypted_path.read_bytes())
+        return decrypt_harness_bytes(encrypted_path.read_bytes(), workspace)
     if plaintext_path.exists():
         return plaintext_path.read_text(encoding="utf-8", errors="ignore")
     raise FileNotFoundError(
@@ -196,7 +242,9 @@ def write_encrypted_harness(workspace: Path) -> Path:
             f"Cannot create {DEFAULT_ENCRYPTED_HARNESS_NAME} because {DEFAULT_HARNESS_NAME} is missing in {workspace}."
         )
     encrypted_path = workspace / DEFAULT_ENCRYPTED_HARNESS_NAME
-    encrypted_path.write_bytes(encrypt_harness_text(plaintext_path.read_text(encoding="utf-8", errors="ignore")))
+    encrypted_path.write_bytes(
+        encrypt_harness_text(plaintext_path.read_text(encoding="utf-8", errors="ignore"), workspace)
+    )
     return encrypted_path
 
 
@@ -208,6 +256,76 @@ def shorten(text: str, limit: int = 1200) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3].rstrip() + "..."
+
+
+def summarize_instruction_markdown(
+    text: str,
+    max_chars: int = MAX_RULES_SUMMARY_CHARS,
+    max_items_per_section: int = MAX_RULES_SECTION_ITEMS,
+) -> str:
+    if not text.strip():
+        return ""
+    sections: list[tuple[str, list[str]]] = []
+    heading = ""
+    items: list[str] = []
+
+    def flush_section() -> None:
+        nonlocal heading, items
+        if heading or items:
+            sections.append((heading, items))
+        heading = ""
+        items = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            flush_section()
+            heading = line.lstrip("#").strip()
+            continue
+        items.append(shorten(line, 220))
+    flush_section()
+
+    output: list[str] = []
+    current_chars = 0
+    for section_heading, section_items in sections:
+        block: list[str] = []
+        if section_heading:
+            block.append(f"{section_heading}:")
+        for item in section_items[:max_items_per_section]:
+            normalized = item
+            if not (normalized.startswith(("-", "*")) or re.match(r"^\d+\.", normalized)):
+                normalized = f"- {normalized}"
+            block.append(normalized)
+        for entry in block:
+            projected = current_chars + len(entry) + 1
+            if projected > max_chars:
+                return "\n".join(output).strip() or shorten(text, max_chars)
+            output.append(entry)
+            current_chars = projected
+    return "\n".join(output).strip() or shorten(text, max_chars)
+
+
+def summarize_memory_markdown(text: str, limit: int = MAX_MEMORY_CONTEXT_CHARS) -> str:
+    if not text.strip():
+        return ""
+    reduced_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line in {"# Qubitz Memory", "## Notes", "## Recent Turns"}:
+            continue
+        if line.startswith(("Updated:", "Workspace:")):
+            continue
+        if line.startswith("### "):
+            reduced_lines.append(line)
+        elif line.startswith("- "):
+            reduced_lines.append(shorten(line, 180))
+        else:
+            reduced_lines.append(shorten(line, 240))
+    if not reduced_lines:
+        return ""
+    return shorten("\n".join(reduced_lines[-12:]), limit)
 
 
 def format_bytes(value: int | float | None) -> str:
@@ -248,6 +366,15 @@ def extract_file_tokens(text: str) -> list[str]:
             continue
         tokens.append(candidate)
     return tokens
+
+
+def is_explicit_absolute_path_text(candidate: str) -> bool:
+    normalized = candidate.strip()
+    if not normalized:
+        return False
+    if WINDOWS_DRIVE_PATH_PATTERN.match(normalized):
+        return True
+    return Path(normalized).expanduser().is_absolute()
 
 
 def describe_tool_action(name: str, arguments: dict[str, Any]) -> str:
@@ -377,10 +504,19 @@ def resolve_workspace_path(
     candidate: str,
     *,
     allow_missing: bool = True,
+    allow_external: bool = False,
 ) -> Path:
-    raw = Path(candidate)
-    resolved = (workspace / raw).resolve() if not raw.is_absolute() else raw.resolve()
-    if not resolved.is_relative_to(workspace.resolve()):
+    normalized = candidate.strip()
+    translated_windows_path: Path | None = None
+    if in_wsl() and WINDOWS_DRIVE_PATH_PATTERN.match(normalized):
+        drive = normalized[0].lower()
+        remainder = normalized[2:].replace("\\", "/").lstrip("/")
+        translated_windows_path = Path("/mnt") / drive / remainder if remainder else Path("/mnt") / drive
+    raw = translated_windows_path or Path(normalized).expanduser()
+    explicit_absolute = translated_windows_path is not None or raw.is_absolute()
+    resolved = raw.resolve() if explicit_absolute else (workspace / raw).resolve()
+    workspace_root = workspace.resolve()
+    if not allow_external and not resolved.is_relative_to(workspace_root):
         raise ValueError(f"Path escapes workspace: {candidate}")
     if not allow_missing and not resolved.exists():
         raise FileNotFoundError(candidate)
@@ -767,7 +903,7 @@ class MemoryStore:
         self.current_path.write_text(rendered, encoding="utf-8")
         self.archive_path.write_text(rendered, encoding="utf-8")
 
-    def search(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+    def search(self, query: str, limit: int = 5, include_current: bool = True) -> list[dict[str, str]]:
         query_tokens = token_set(query)
         results: list[dict[str, str]] = []
         memory_files = sorted(
@@ -775,7 +911,7 @@ class MemoryStore:
             key=lambda item: item.stat().st_mtime,
             reverse=True,
         )
-        if self.current_path.exists():
+        if include_current and self.current_path.exists():
             memory_files.insert(0, self.current_path)
         seen: set[Path] = set()
         for path in memory_files:
@@ -794,15 +930,16 @@ class MemoryStore:
                 {
                     "path": relative_path(path, self.workspace),
                     "score": str(score),
-                    "snippet": shorten(text, 1200),
+                    "snippet": summarize_memory_markdown(text, MAX_MEMORY_RESULT_SNIPPET_CHARS),
                 }
             )
         return results[:limit]
 
     def build_context(self, query: str) -> str:
         current = self.current_path.read_text(encoding="utf-8", errors="ignore") if self.current_path.exists() else ""
-        archived = self.search(query, limit=3)
-        sections = ["Current session memory:", shorten(current, 5000)]
+        archived = self.search(query, limit=MAX_MEMORY_CONTEXT_RESULTS, include_current=False)
+        current_summary = summarize_memory_markdown(current, MAX_MEMORY_CONTEXT_CHARS)
+        sections = ["Current session memory:", current_summary or "None"]
         if archived:
             sections.append("Relevant archived memory:")
             for item in archived:
@@ -1527,13 +1664,6 @@ class OllamaClient:
     @classmethod
     def detect(cls) -> "OllamaClient":
         transports: list[DirectOllamaTransport | WindowsBridgeOllamaTransport] = []
-        if in_wsl() and shutil.which("powershell.exe"):
-            bridge = WindowsBridgeOllamaTransport()
-            try:
-                bridge.get_json("/api/tags")
-                transports.append(bridge)
-            except Exception:
-                pass
         candidates: list[tuple[str, str]] = []
         env_url = os.environ.get("QUBITZ_OLLAMA_URL") or os.environ.get("OLLAMA_HOST")
         if env_url:
@@ -1553,6 +1683,13 @@ class OllamaClient:
                 transports.append(transport)
             except Exception:
                 continue
+        if in_wsl() and shutil.which("powershell.exe"):
+            bridge = WindowsBridgeOllamaTransport()
+            try:
+                bridge.get_json("/api/tags")
+                transports.append(bridge)
+            except Exception:
+                pass
         if not transports:
             raise RuntimeError("No reachable Ollama server was found.")
         return cls(transports)
@@ -1727,20 +1864,38 @@ class AgentRunner:
         self.history: list[dict[str, str]] = []
         self.history_summary = ""
         self.harness_text = load_harness_text(self.workspace)
-        rules_path = self.workspace / "RULES.md"
-        self.rules_text = rules_path.read_text(encoding="utf-8", errors="ignore") if rules_path.exists() else ""
+        self.rules_path = self.workspace / "RULES.md"
+        self.rules_text = self.rules_path.read_text(encoding="utf-8", errors="ignore") if self.rules_path.exists() else ""
+        self.rules_summary = summarize_instruction_markdown(self.rules_text)
         self._active_callback: Callable[[str, str], None] | None = None
+        self._ollama: OllamaClient | None = None
+        self._validated_model_keys: set[tuple[str, str]] = set()
+        self._startup_diagnostics_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._tool_definitions_cache: list[dict[str, Any]] | None = None
+        self._tool_count_cache = 0
 
     def _emit(self, callback: Callable[[str, str], None] | None, kind: str, message: str) -> None:
         if callback is not None:
             callback(kind, message)
 
+    def _get_ollama(self) -> OllamaClient:
+        if self._ollama is None:
+            self._ollama = OllamaClient.detect()
+        return self._ollama
+
     def _report_retrieval(self, message: str) -> None:
         self._emit(self._active_callback, "status", message)
 
-    def _system_prompt(self, memory_context: str, active_skill_context: str = "", history_summary: str = "") -> str:
+    def _system_prompt(
+        self,
+        memory_context: str,
+        active_skill_context: str = "",
+        history_summary: str = "",
+        project_rules_context: str | None = None,
+    ) -> str:
         history_section = history_summary or "None"
         skill_section = active_skill_context or "None"
+        rules_section = project_rules_context if project_rules_context is not None else (self.rules_summary or "None")
         return textwrap.dedent(
             f"""
             You are AI Agent Qubitz, a local standalone coding agent running inside the repository workspace.
@@ -1749,7 +1904,7 @@ class AgentRunner:
             {self.harness_text}
 
             Project rules:
-            {self.rules_text or "None"}
+            {rules_section}
 
             Operating rules for this runtime:
             - Use tools directly whenever file inspection, file edits, file deletion, package installation, or command execution is needed.
@@ -1836,6 +1991,22 @@ class AgentRunner:
             normalized = token.replace("\\", "/").lstrip("./").strip()
             if not normalized:
                 continue
+            if is_explicit_absolute_path_text(token):
+                try:
+                    path = resolve_workspace_path(
+                        self.workspace,
+                        token,
+                        allow_missing=False,
+                        allow_external=True,
+                    )
+                except (FileNotFoundError, ValueError):
+                    path = None
+                if path is not None and path not in seen and not is_sensitive_path_name(path):
+                    seen.add(path)
+                    resolved.append(path)
+                    if len(resolved) >= MAX_DIRECT_READ_FILES:
+                        break
+                continue
             path = exact_map.get(normalized.lower())
             if path is None:
                 basename_matches = basename_map.get(Path(normalized).name.lower(), [])
@@ -1853,12 +2024,13 @@ class AgentRunner:
         self,
         prompt: str,
         callback: Callable[[str, str], None] | None = None,
-    ) -> str:
+    ) -> tuple[str, set[str]]:
         paths = self._resolve_direct_read_paths(prompt)
         if not paths:
-            return ""
+            return "", set()
         self._emit(callback, "status", f"Direct file read requested for {len(paths)} file(s).")
         sections: list[str] = []
+        included_paths: set[str] = set()
         for path in paths:
             rel = relative_path(path, self.workspace)
             self._emit(callback, "tool", f"Reading {rel} directly.")
@@ -1868,7 +2040,8 @@ class AgentRunner:
                 text = text[:MAX_DIRECT_READ_CHARS]
                 truncated = "\n[truncated by harness]"
             sections.append(f"File: {rel}\n{text}{truncated}")
-        return "\n\n".join(sections)
+            included_paths.add(rel.lower())
+        return "\n\n".join(sections), included_paths
 
     async def _run_async(
         self,
@@ -1896,7 +2069,7 @@ class AgentRunner:
                     f"{self.config.retrieval_gpu_reserve_gib:.1f} GiB of headroom before generation."
                 ),
             )
-            direct_file_context = self._prepare_direct_file_context(prompt, callback)
+            direct_file_context, direct_file_paths = self._prepare_direct_file_context(prompt, callback)
             if direct_file_context:
                 self._emit(
                     callback,
@@ -1913,13 +2086,24 @@ class AgentRunner:
                 repo_context = self.retriever.format_context(prompt)
             self.retriever.release_gpu_resources()
             memory_context = self.memory.build_context(prompt)
+            project_rules_context = self.rules_summary or "None"
+            if self.rules_path.exists():
+                rules_rel_path = relative_path(self.rules_path, self.workspace).lower()
+                if rules_rel_path in direct_file_paths:
+                    project_rules_context = "Provided in direct file context for this request."
             self._emit(callback, "status", "Repository and memory context prepared.")
 
             self._emit(callback, "status", "Detecting Ollama and validating the target model.")
-            ollama = OllamaClient.detect()
-            ollama.ensure_model(self.config.model_name)
+            ollama = self._get_ollama()
+            model_key = (ollama.label, self.config.model_name)
+            if model_key not in self._validated_model_keys:
+                ollama.ensure_model(self.config.model_name)
+                self._validated_model_keys.add(model_key)
             self._emit(callback, "status", f"Ollama transport: {ollama.label}")
-            diagnostics = ollama.startup_diagnostics(self.config.model_name)
+            diagnostics = self._startup_diagnostics_cache.get(model_key)
+            if diagnostics is None:
+                diagnostics = ollama.startup_diagnostics(self.config.model_name)
+                self._startup_diagnostics_cache[model_key] = diagnostics
             configured_env = diagnostics.get("configured_env") or {}
             if configured_env:
                 env_summary = ", ".join(
@@ -1955,12 +2139,25 @@ class AgentRunner:
                 )
             self._emit(callback, "status", "Starting model loop.")
 
-            async with MCPHost(self.workspace) as mcp_host:
-                tools = await mcp_host.list_tools()
-                self._emit(callback, "status", f"Loaded {len(tools)} MCP tool(s) for the model.")
-                tool_definitions = build_ollama_tools(tools)
+            async with AsyncExitStack() as exit_stack:
+                mcp_host: MCPHost | None = None
+                if self._tool_definitions_cache is None:
+                    mcp_host = await exit_stack.enter_async_context(MCPHost(self.workspace))
+                    tools = await mcp_host.list_tools()
+                    self._tool_definitions_cache = build_ollama_tools(tools)
+                    self._tool_count_cache = len(tools)
+                self._emit(callback, "status", f"Loaded {self._tool_count_cache} MCP tool(s) for the model.")
+                tool_definitions = list(self._tool_definitions_cache or [])
                 messages: list[dict[str, Any]] = [
-                    {"role": "system", "content": self._system_prompt(memory_context, active_skill_context, self.history_summary)}
+                    {
+                        "role": "system",
+                        "content": self._system_prompt(
+                            memory_context,
+                            active_skill_context,
+                            self.history_summary,
+                            project_rules_context,
+                        ),
+                    }
                 ]
                 messages.extend(self.history[-(HISTORY_TURNS * 2) :])
                 messages.append(
@@ -2013,6 +2210,8 @@ class AgentRunner:
                                     "content_text": f"Refusing repeated tool call for {name} after 2 repeats.",
                                 }
                             else:
+                                if mcp_host is None:
+                                    mcp_host = await exit_stack.enter_async_context(MCPHost(self.workspace))
                                 self._emit(callback, "tool", describe_tool_action(name, arguments))
                                 tool_result = await mcp_host.call_tool(name, arguments)
                                 tool_payload = serialize_mcp_result(tool_result)
@@ -2063,8 +2262,13 @@ def build_mcp_server(workspace: Path) -> FastMCP:
     skills = SkillRegistry(workspace)
     server = FastMCP("Qubitz Local Tools", json_response=True, instructions="Local offline filesystem and workspace tools.")
 
-    def _resolve(candidate: str, *, allow_missing: bool = True) -> Path:
-        return resolve_workspace_path(workspace, candidate, allow_missing=allow_missing)
+    def _resolve(candidate: str, *, allow_missing: bool = True, allow_external: bool = False) -> Path:
+        return resolve_workspace_path(
+            workspace,
+            candidate,
+            allow_missing=allow_missing,
+            allow_external=allow_external,
+        )
 
     def _read_text(candidate: Path) -> str:
         return candidate.read_text(encoding="utf-8", errors="ignore")
@@ -2103,9 +2307,9 @@ def build_mcp_server(workspace: Path) -> FastMCP:
             indent=2,
         )
 
-    @server.tool(description="List files or directories inside the workspace.")
+    @server.tool(description="List files or directories inside the workspace or at an explicit absolute path.")
     def list_files(path: str = ".", recursive: bool = False, max_entries: int = 200) -> dict[str, Any]:
-        root = _resolve(path, allow_missing=False)
+        root = _resolve(path, allow_missing=False, allow_external=True)
         iterator = root.rglob("*") if recursive else root.iterdir()
         entries: list[dict[str, Any]] = []
         for candidate in sorted(iterator):
@@ -2142,9 +2346,9 @@ def build_mcp_server(workspace: Path) -> FastMCP:
     def read_skill_resource(skill_name: str, resource_path: str) -> dict[str, Any]:
         return skills.read_skill_resource(skill_name, resource_path)
 
-    @server.tool(description="Read a text file from the workspace.")
+    @server.tool(description="Read a text file from the workspace or an explicit absolute path.")
     def read_file(path: str, start_line: int = 1, end_line: int = 200) -> dict[str, Any]:
-        target = _resolve(path, allow_missing=False)
+        target = _resolve(path, allow_missing=False, allow_external=True)
         if not target.is_file():
             raise ValueError(f"Not a file: {path}")
         text = _read_text(target)
@@ -2159,17 +2363,17 @@ def build_mcp_server(workspace: Path) -> FastMCP:
             "content": excerpt,
         }
 
-    @server.tool(description="Write or overwrite a file inside the workspace.")
+    @server.tool(description="Write or overwrite a file inside the workspace or at an explicit absolute path.")
     def write_file(path: str, content: str, make_parents: bool = True) -> dict[str, Any]:
-        target = _resolve(path)
+        target = _resolve(path, allow_external=True)
         if make_parents:
             target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return {"path": relative_path(target, workspace), "bytes_written": target.stat().st_size}
 
-    @server.tool(description="Replace exact text inside a file.")
+    @server.tool(description="Replace exact text inside a file in the workspace or at an explicit absolute path.")
     def replace_text(path: str, old_text: str, new_text: str, count: int = 0) -> dict[str, Any]:
-        target = _resolve(path, allow_missing=False)
+        target = _resolve(path, allow_missing=False, allow_external=True)
         original = _read_text(target)
         replacements = original.count(old_text) if count == 0 else min(original.count(old_text), count)
         updated = original.replace(old_text, new_text, count) if count > 0 else original.replace(old_text, new_text)
@@ -2178,9 +2382,9 @@ def build_mcp_server(workspace: Path) -> FastMCP:
         target.write_text(updated, encoding="utf-8")
         return {"path": relative_path(target, workspace), "replacements": replacements}
 
-    @server.tool(description="Delete a file or directory inside the workspace.")
+    @server.tool(description="Delete a file or directory inside the workspace or at an explicit absolute path.")
     def delete_path(path: str, recursive: bool = False) -> dict[str, Any]:
-        target = _resolve(path, allow_missing=False)
+        target = _resolve(path, allow_missing=False, allow_external=True)
         if target.is_dir():
             if recursive:
                 shutil.rmtree(target)
@@ -2190,16 +2394,16 @@ def build_mcp_server(workspace: Path) -> FastMCP:
             target.unlink()
         return {"deleted": relative_path(target, workspace), "recursive": recursive}
 
-    @server.tool(description="Create a directory inside the workspace.")
+    @server.tool(description="Create a directory inside the workspace or at an explicit absolute path.")
     def make_directory(path: str) -> dict[str, Any]:
-        target = _resolve(path)
+        target = _resolve(path, allow_external=True)
         target.mkdir(parents=True, exist_ok=True)
         return {"path": relative_path(target, workspace), "created": True}
 
-    @server.tool(description="Move or rename a path inside the workspace.")
+    @server.tool(description="Move or rename a path inside the workspace or at an explicit absolute path.")
     def move_path(source: str, destination: str, overwrite: bool = False) -> dict[str, Any]:
-        source_path = _resolve(source, allow_missing=False)
-        destination_path = _resolve(destination)
+        source_path = _resolve(source, allow_missing=False, allow_external=True)
+        destination_path = _resolve(destination, allow_external=True)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         if destination_path.exists():
             if not overwrite:
@@ -2214,7 +2418,7 @@ def build_mcp_server(workspace: Path) -> FastMCP:
             "destination": relative_path(destination_path, workspace),
         }
 
-    @server.tool(description="Search text content inside workspace files.")
+    @server.tool(description="Search text content inside workspace files or under an explicit absolute path.")
     def search_text(
         query: str,
         path: str = ".",
@@ -2222,7 +2426,7 @@ def build_mcp_server(workspace: Path) -> FastMCP:
         max_results: int = 50,
         case_sensitive: bool = False,
     ) -> dict[str, Any]:
-        root = _resolve(path, allow_missing=False)
+        root = _resolve(path, allow_missing=False, allow_external=True)
         hits: list[dict[str, Any]] = []
         needle = query if case_sensitive else query.lower()
         for candidate in sorted(root.rglob("*")):
@@ -2360,7 +2564,7 @@ class QubitzGUI:
         self.event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.busy = False
         self._build_layout()
-        self.root.after_idle(self._maximize_window)
+        self.root.after_idle(self._present_window)
         self._append_transcript("system", f"Workspace: {config.workspace.as_posix()}")
         self._append_transcript("system", f"Model: {config.model_name}")
         self._append_transcript("system", f"Embedding Model: {config.embed_model_name}")
@@ -2420,6 +2624,9 @@ class QubitzGUI:
         )
 
     def _maximize_window(self) -> None:
+        if in_wsl():
+            self._fit_window_to_screen()
+            return
         try:
             self.root.state("zoomed")
             return
@@ -2434,6 +2641,70 @@ class QubitzGUI:
         width = max(800, self.root.winfo_screenwidth())
         height = max(800, self.root.winfo_screenheight())
         self.root.geometry(f"{width}x{height}+0+0")
+
+    def _fit_window_to_screen(self) -> None:
+        self.root.update_idletasks()
+        screen_width = max(800, self.root.winfo_screenwidth())
+        screen_height = max(800, self.root.winfo_screenheight())
+        width = min(max(1100, screen_width - 120), screen_width)
+        height = min(max(800, screen_height - 120), screen_height)
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        try:
+            self.root.state("normal")
+        except self.tk.TclError:
+            pass
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _present_window(self) -> None:
+        try:
+            self.root.deiconify()
+        except self.tk.TclError:
+            pass
+        self._maximize_window()
+        self.root.update_idletasks()
+        try:
+            self.root.lift()
+        except self.tk.TclError:
+            pass
+        try:
+            self.root.attributes("-topmost", True)
+            self.root.after(250, lambda: self.root.attributes("-topmost", False))
+        except self.tk.TclError:
+            pass
+        try:
+            self.root.focus_force()
+        except self.tk.TclError:
+            pass
+        self.root.after(500, self._ensure_window_visible)
+        self.root.after(1500, self._ensure_window_visible)
+
+    def _ensure_window_visible(self) -> None:
+        self.root.update_idletasks()
+        try:
+            x = self.root.winfo_x()
+            y = self.root.winfo_y()
+            width = max(1, self.root.winfo_width())
+            height = max(1, self.root.winfo_height())
+            screen_width = max(800, self.root.winfo_screenwidth())
+            screen_height = max(800, self.root.winfo_screenheight())
+        except self.tk.TclError:
+            return
+        if (
+            x < 0
+            or y < 0
+            or width <= 1
+            or height <= 1
+            or x >= screen_width
+            or y >= screen_height
+            or x + min(width, 120) > screen_width
+            or y + min(height, 120) > screen_height
+        ):
+            try:
+                self._fit_window_to_screen()
+                self.root.lift()
+            except self.tk.TclError:
+                pass
 
     def _build_layout(self) -> None:
         frame = self.ttk.Frame(self.root, padding=10)
