@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import gc
 import json
 import os
 import queue
@@ -15,10 +14,10 @@ import textwrap
 import threading
 import traceback
 from contextlib import AsyncExitStack
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Sequence
 
 from mcp import ClientSession, StdioServerParameters, types as mcp_types
 from mcp.client.stdio import stdio_client
@@ -26,7 +25,6 @@ from mcp.server.fastmcp import FastMCP
 
 
 DEFAULT_MODEL = "glm-4.7-flash:latest"
-DEFAULT_EMBED_MODEL = "BAAI/bge-code-v1"
 DEFAULT_HARNESS_NAME = "HARNESS.txt"
 DEFAULT_ENCRYPTED_HARNESS_NAME = "HARNESS.enc"
 HARNESS_KEY_ENV_NAME = "QUBITZ_HARNESS_KEY"
@@ -50,9 +48,6 @@ OLLAMA_GPU_ENV_KEYS = (
     "OLLAMA_KV_CACHE_TYPE",
     "OLLAMA_NUM_PARALLEL",
     "OLLAMA_MAX_LOADED_MODELS",
-)
-QUERY_INSTRUCTION = (
-    "Given a repository task or question, retrieve code and project files that help solve it."
 )
 READ_INTENT_PATTERN = re.compile(
     r"\b(read|open|show|view|inspect|examine|review|check|display|print|cat|look\s+at)\b",
@@ -131,16 +126,6 @@ UI_SELECT = "#3c4048"
 
 def now_stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
 
 
 def _fernet_classes() -> tuple[type[Any], type[Exception]]:
@@ -338,10 +323,6 @@ def format_bytes(value: int | float | None) -> str:
             return f"{size:.2f} {unit}"
         size /= 1024.0
     return f"{size:.2f} TiB"
-
-
-def gib_to_bytes(value: float) -> int:
-    return int(max(0.0, value) * 1024**3)
 
 
 def estimate_tokens(text: str) -> int:
@@ -582,29 +563,15 @@ def clean_arguments(arguments: Any) -> dict[str, Any]:
     return {"value": arguments}
 
 
-def default_embed_device() -> str:
-    return os.environ.get("QUBITZ_EMBED_DEVICE", "auto").lower()
-
-
-def default_local_files_only() -> bool:
-    return os.environ.get("QUBITZ_ALLOW_EMBED_ONLINE", "").strip() != "1"
-
-
 @dataclass
 class AgentConfig:
     workspace: Path
     model_name: str = DEFAULT_MODEL
-    embed_model_name: str = DEFAULT_EMBED_MODEL
     max_steps: int = MAX_TOOL_STEPS
     ollama_keep_alive: str = "30m"
     ollama_num_ctx: int = 16384
     ollama_num_predict: int = DEFAULT_NUM_PREDICT
     ollama_temperature: float = 0.0
-    local_files_only: bool = field(default_factory=default_local_files_only)
-    embed_device: str = field(default_factory=default_embed_device)
-    max_repo_chunks: int = 4
-    embed_min_free_vram_gib: float = field(default_factory=lambda: env_float("QUBITZ_EMBED_MIN_FREE_VRAM_GIB", 4.0))
-    retrieval_gpu_reserve_gib: float = field(default_factory=lambda: env_float("QUBITZ_RETRIEVAL_GPU_RESERVE_GIB", 1.0))
 
 
 def strip_yaml_scalar(value: str) -> str:
@@ -865,14 +832,6 @@ class MemoryStore:
         self.turns = self.turns[-20:]
         self.flush()
 
-    def add_note(self, note: str, category: str = "note") -> None:
-        cleaned = note.strip()
-        if not cleaned:
-            return
-        self.notes.append({"timestamp": now_stamp(), "category": category, "text": shorten(cleaned, 1000)})
-        self.notes = self.notes[-40:]
-        self.flush()
-
     def render(self) -> str:
         lines = [
             "# Qubitz Memory",
@@ -945,604 +904,6 @@ class MemoryStore:
             for item in archived:
                 sections.append(f"- {item['path']} (score {item['score']}): {item['snippet']}")
         return "\n\n".join(section for section in sections if section.strip())
-
-
-@dataclass
-class RepoChunk:
-    chunk_id: str
-    path: str
-    start_line: int
-    end_line: int
-    text: str
-
-
-class BGECodeEmbedder:
-    def __init__(
-        self,
-        workspace: Path,
-        model_name: str,
-        *,
-        device: str = "auto",
-        local_files_only: bool = False,
-        min_free_vram_gib: float = 4.0,
-        reserve_vram_gib: float = 1.0,
-        progress_callback: Callable[[str], None] | None = None,
-    ) -> None:
-        self.workspace = workspace
-        self.model_name = model_name
-        self.requested_device = device.lower()
-        self.min_free_vram_bytes = gib_to_bytes(min_free_vram_gib)
-        self.reserve_vram_bytes = gib_to_bytes(reserve_vram_gib)
-        self.device = "cpu"
-        self.local_files_only = local_files_only
-        self.progress_callback = progress_callback
-        self._loaded = False
-        self._released_from_gpu = False
-        self._torch: Any = None
-        self._torch_f: Any = None
-        self._tokenizer: Any = None
-        self._model: Any = None
-        self.uses_flash_attention = False
-        self.uses_xformers = False
-        self.load_warning: str | None = None
-
-    def _report(self, message: str) -> None:
-        if self.progress_callback is not None:
-            self.progress_callback(message)
-
-    @staticmethod
-    def _cuda_memory_snapshot(torch: Any) -> tuple[int | None, int | None]:
-        if not torch.cuda.is_available():
-            return None, None
-        try:
-            return torch.cuda.mem_get_info()
-        except Exception:
-            return None, None
-
-    def _resolve_device(self, torch: Any) -> str:
-        if self.requested_device == "auto":
-            if not torch.cuda.is_available():
-                return "cpu"
-            free_bytes, _ = self._cuda_memory_snapshot(torch)
-            if free_bytes is not None and free_bytes < self.min_free_vram_bytes:
-                self.load_warning = (
-                    f"Free CUDA VRAM {format_bytes(free_bytes)} is below the embedder threshold "
-                    f"{format_bytes(self.min_free_vram_bytes)}; using CPU fallback."
-                )
-                self._report(self.load_warning)
-                return "cpu"
-            return "cuda"
-        return self.requested_device
-
-    @staticmethod
-    def _has_flash_attention() -> bool:
-        try:
-            import flash_attn  # noqa: F401
-        except Exception:
-            return False
-        return True
-
-    @staticmethod
-    def _has_xformers() -> bool:
-        try:
-            import xformers  # noqa: F401
-        except Exception:
-            return False
-        return True
-
-    def _load_model(self, auto_model_cls: Any, load_kwargs: dict[str, Any]) -> Any:
-        return auto_model_cls.from_pretrained(self.model_name, **load_kwargs)
-
-    def _enable_optional_attention_kernels(self) -> None:
-        if self.device != "cuda":
-            return
-        if self.uses_flash_attention:
-            return
-        if self._has_xformers() and hasattr(self._model, "enable_xformers_memory_efficient_attention"):
-            try:
-                self._model.enable_xformers_memory_efficient_attention()
-                self.uses_xformers = True
-                self._report("xFormers memory-efficient attention enabled for the embedder.")
-            except Exception as exc:
-                self._report(f"xFormers was detected but not enabled: {type(exc).__name__}: {exc}")
-
-    def _cuda_batch_size(self, text_count: int) -> int:
-        if self.device != "cuda":
-            return 2
-        torch = self._torch
-        free_bytes, _ = self._cuda_memory_snapshot(torch)
-        if free_bytes is None:
-            return 1
-        free_bytes = max(0, free_bytes - self.reserve_vram_bytes)
-        if text_count <= 1:
-            return 1
-        if free_bytes >= 12 * 1024**3:
-            return 4
-        if free_bytes >= 7 * 1024**3:
-            return 2
-        return 1
-
-    def _report_cuda_device(self) -> None:
-        try:
-            props = self._torch.cuda.get_device_properties(0)
-            self._report(
-                f"Embedder active on CUDA device 0: {props.name} with {format_bytes(props.total_memory)} total VRAM."
-            )
-        except Exception:
-            self._report("Embedder active on CUDA device 0.")
-
-    def _activate_cuda_model(self) -> None:
-        assert self._torch is not None
-        assert self._model is not None
-        self._model.to("cuda")
-        self.device = "cuda"
-        self._released_from_gpu = False
-        self.load_warning = None
-        self._torch.backends.cuda.matmul.allow_tf32 = True
-        self._torch.backends.cudnn.allow_tf32 = True
-        self._enable_optional_attention_kernels()
-        self._report_cuda_device()
-
-    def load(self) -> None:
-        if self._loaded and not self._released_from_gpu:
-            return
-        if self._loaded and self._released_from_gpu:
-            assert self._torch is not None
-            target_device = self._resolve_device(self._torch)
-            if target_device != "cuda":
-                self._report("Keeping the embedder on CPU for this retrieval to preserve GPU headroom.")
-                self.device = "cpu"
-                return
-            try:
-                self._report("Restoring the embedder to CUDA for retrieval.")
-                self._activate_cuda_model()
-                return
-            except Exception as exc:
-                self.load_warning = f"CUDA embedder restore failed, keeping CPU copy: {type(exc).__name__}: {exc}"
-                self._report(self.load_warning)
-                self.device = "cpu"
-                return
-        configure_project_environment(self.workspace)
-        import torch
-        import torch.nn.functional as torch_f
-        from transformers import AutoModel, AutoTokenizer
-
-        self._torch = torch
-        self._torch_f = torch_f
-        try:
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                local_files_only=self.local_files_only,
-            )
-        except Exception as exc:
-            if not self.local_files_only:
-                raise
-            raise RuntimeError(
-                "Offline embedder load failed because required local Hugging Face files are missing. "
-                "Prefetch the embedder into .cache/huggingface or set QUBITZ_ALLOW_EMBED_ONLINE=1."
-            ) from exc
-        base_load_kwargs: dict[str, Any] = {
-            "trust_remote_code": True,
-            "local_files_only": self.local_files_only,
-            "low_cpu_mem_usage": True,
-        }
-        target_device = self._resolve_device(torch)
-        cache_mode = "local cache only" if self.local_files_only else "network allowed"
-        self._report(f"Loading embedder {self.model_name} on {target_device} ({cache_mode}).")
-        load_kwargs = dict(base_load_kwargs)
-        if target_device == "cuda":
-            load_kwargs["dtype"] = torch.float16
-            if self._has_flash_attention():
-                load_kwargs["attn_implementation"] = "flash_attention_2"
-                self._report("FlashAttention2 is available for the embedder.")
-        try:
-            self._model = self._load_model(AutoModel, load_kwargs)
-            self.device = target_device
-        except Exception as exc:
-            if target_device != "cuda":
-                raise
-            self.load_warning = f"CUDA embedder load failed, falling back to CPU: {type(exc).__name__}: {exc}"
-            self._report(self.load_warning)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            self._model = self._load_model(AutoModel, base_load_kwargs)
-            self.device = "cpu"
-            load_kwargs = dict(base_load_kwargs)
-        self._model.eval()
-        if self.device == "cuda":
-            self._activate_cuda_model()
-        else:
-            self._report("Embedder active on CPU.")
-        self.uses_flash_attention = load_kwargs.get("attn_implementation") == "flash_attention_2"
-        self._loaded = True
-
-    def release_gpu(self) -> bool:
-        if not self._loaded or self._model is None or self.device != "cuda":
-            return False
-        self._report(
-            f"Releasing embedder GPU memory before generation and preserving {format_bytes(self.reserve_vram_bytes)} of headroom."
-        )
-        try:
-            self._model.to("cpu")
-        except Exception:
-            self._model = None
-            self._loaded = False
-        self.device = "cpu"
-        self._released_from_gpu = True
-        torch = self._torch
-        if torch is not None and torch.cuda.is_available():
-            gc.collect()
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
-            try:
-                torch.cuda.ipc_collect()
-            except Exception:
-                pass
-            free_bytes, total_bytes = self._cuda_memory_snapshot(torch)
-            if free_bytes is not None and total_bytes is not None:
-                self._report(
-                    f"Embedder GPU memory released. CUDA free VRAM now {format_bytes(free_bytes)} of {format_bytes(total_bytes)}."
-                )
-            else:
-                self._report("Embedder GPU memory released.")
-        return True
-
-    def _last_token_pool(self, last_hidden_states: Any, attention_mask: Any) -> Any:
-        torch = self._torch
-        left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
-        if bool(left_padding):
-            return last_hidden_states[:, -1]
-        sequence_lengths = attention_mask.sum(dim=1) - 1
-        batch_size = last_hidden_states.shape[0]
-        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
-
-    def _encode(self, texts: Sequence[str], *, prompt: str | None = None) -> Any:
-        self.load()
-        import numpy as np
-
-        torch = self._torch
-        encoded_batches: list[Any] = []
-        batch_size = self._cuda_batch_size(len(texts))
-        kind = "query" if prompt else "document"
-        self._report(f"Encoding {len(texts)} {kind} chunk(s) on {self.device} with batch size {batch_size}.")
-        for start in range(0, len(texts), batch_size):
-            batch = list(texts[start : start + batch_size])
-            if prompt:
-                batch = [f"{prompt}{text}" for text in batch]
-            tokenize_kwargs: dict[str, Any] = {
-                "max_length": 2048,
-                "padding": True,
-                "return_tensors": "pt",
-                "truncation": True,
-            }
-            if self.device == "cuda":
-                tokenize_kwargs["pad_to_multiple_of"] = 8
-            batch_dict = self._tokenizer(batch, **tokenize_kwargs)
-            batch_dict = {
-                key: value.to(self.device) if hasattr(value, "to") else value
-                for key, value in batch_dict.items()
-            }
-            with torch.inference_mode():
-                outputs = self._model(**batch_dict)
-                embeddings = self._last_token_pool(outputs.last_hidden_state, batch_dict["attention_mask"])
-                embeddings = self._torch_f.normalize(embeddings, p=2, dim=1)
-            encoded_batches.append(embeddings.detach().cpu().float().numpy())
-        return np.vstack(encoded_batches) if encoded_batches else np.empty((0, 0), dtype="float32")
-
-    def encode_queries(self, texts: Sequence[str]) -> Any:
-        prompt = f"<instruct>{QUERY_INSTRUCTION}\n<query>"
-        return self._encode(texts, prompt=prompt)
-
-    def encode_documents(self, texts: Sequence[str]) -> Any:
-        return self._encode(texts)
-
-
-class RepoRetriever:
-    def __init__(self, config: AgentConfig, progress_callback: Callable[[str], None] | None = None) -> None:
-        self.config = config
-        self.workspace = config.workspace
-        self.progress_callback = progress_callback
-        self.cache_dir = self.workspace / ".cache" / "retrieval"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_path = self.cache_dir / "manifest.json"
-        self.vectors_path = self.cache_dir / "vectors.npy"
-        self.embedder = BGECodeEmbedder(
-            self.workspace,
-            config.embed_model_name,
-            device=config.embed_device,
-            local_files_only=config.local_files_only,
-            min_free_vram_gib=config.embed_min_free_vram_gib,
-            reserve_vram_gib=config.retrieval_gpu_reserve_gib,
-            progress_callback=self._report,
-        )
-        self._chunks: list[RepoChunk] = []
-        self._vectors: Any = None
-        self._backend = "lexical"
-        self._last_error: str | None = None
-        self._faiss: Any = None
-        self._faiss_gpu_resources: Any = None
-        self._faiss_index: Any = None
-
-    def _report(self, message: str) -> None:
-        if self.progress_callback is not None:
-            self.progress_callback(message)
-
-    def _iter_files(self) -> Iterable[Path]:
-        for path in self.workspace.rglob("*"):
-            if not path.is_file():
-                continue
-            if any(part in EXCLUDED_DIRS for part in path.parts):
-                continue
-            if path.name.endswith(".bak"):
-                continue
-            if not is_probably_text_file(path):
-                continue
-            yield path
-
-    def _chunk_file(self, path: Path) -> list[RepoChunk]:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        lines = text.splitlines()
-        if not lines:
-            return []
-        chunks: list[RepoChunk] = []
-        chunk_size = 80
-        overlap = 20
-        start = 0
-        rel = relative_path(path, self.workspace)
-        while start < len(lines):
-            end = min(len(lines), start + chunk_size)
-            chunk_lines = lines[start:end]
-            chunk_text = "\n".join(chunk_lines).strip()
-            if chunk_text:
-                chunk_id = f"{rel}:{start + 1}-{end}"
-                chunks.append(
-                    RepoChunk(
-                        chunk_id=chunk_id,
-                        path=rel,
-                        start_line=start + 1,
-                        end_line=end,
-                        text=chunk_text,
-                    )
-                )
-            if end >= len(lines):
-                break
-            start = max(end - overlap, start + 1)
-        return chunks
-
-    def _file_state(self) -> dict[str, dict[str, int]]:
-        state: dict[str, dict[str, int]] = {}
-        for path in self._iter_files():
-            stat = path.stat()
-            state[relative_path(path, self.workspace)] = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
-        return state
-
-    def _build_chunks(self) -> list[RepoChunk]:
-        chunks: list[RepoChunk] = []
-        files = sorted(self._iter_files())
-        self._report(f"Scanning {len(files)} workspace file(s) for retrieval chunks.")
-        for path in files:
-            chunks.extend(self._chunk_file(path))
-        self._report(f"Built {len(chunks)} retrieval chunk(s).")
-        return chunks
-
-    def _load_cached(self, state: dict[str, dict[str, int]]) -> bool:
-        if not self.manifest_path.exists():
-            return False
-        try:
-            manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return False
-        if manifest.get("file_state") != state:
-            return False
-        chunk_dicts = manifest.get("chunks") or []
-        self._chunks = [RepoChunk(**chunk_dict) for chunk_dict in chunk_dicts]
-        if self.vectors_path.exists():
-            import numpy as np
-
-            self._vectors = np.load(self.vectors_path, allow_pickle=False)
-            self._backend = manifest.get("backend", "embedding")
-            self._report(
-                f"Loaded cached retrieval vectors for {len(self._chunks)} chunk(s) from {relative_path(self.vectors_path, self.workspace)}."
-            )
-        else:
-            self._vectors = None
-            self._backend = "lexical"
-        return True
-
-    def _save_cached(self, state: dict[str, dict[str, int]]) -> None:
-        manifest = {
-            "file_state": state,
-            "chunks": [asdict(chunk) for chunk in self._chunks],
-            "backend": self._backend,
-        }
-        self.manifest_path.write_text(json.dumps(manifest, ensure_ascii=True, indent=2), encoding="utf-8")
-        if self._vectors is not None:
-            import numpy as np
-
-            np.save(self.vectors_path, self._vectors, allow_pickle=False)
-        elif self.vectors_path.exists():
-            self.vectors_path.unlink()
-
-    def _reset_faiss_index(self) -> None:
-        self._faiss_index = None
-        self._faiss_gpu_resources = None
-
-    def _ensure_faiss_index(self) -> bool:
-        if self._vectors is None:
-            return False
-        if self._faiss_index is not None:
-            return True
-        try:
-            import faiss
-        except Exception as exc:  # pragma: no cover - optional dependency path
-            self._last_error = f"{type(exc).__name__}: {exc}"
-            return False
-        try:
-            cpu_index = faiss.IndexFlatIP(int(self._vectors.shape[1]))
-            cpu_index.add(self._vectors)
-            backend = "faiss-cpu"
-            gpu_count = faiss.get_num_gpus()
-            if gpu_count > 0 and hasattr(faiss, "StandardGpuResources") and hasattr(faiss, "index_cpu_to_gpu"):
-                try:
-                    self._faiss_gpu_resources = faiss.StandardGpuResources()
-                    self._faiss_index = faiss.index_cpu_to_gpu(self._faiss_gpu_resources, 0, cpu_index)
-                    backend = "faiss-gpu"
-                except Exception as exc:
-                    self._last_error = f"{type(exc).__name__}: {exc}"
-                    self._faiss_gpu_resources = None
-                    self._faiss_index = cpu_index
-                    backend = "faiss-cpu"
-                    self._report(f"FAISS GPU index allocation failed, falling back to CPU FAISS: {self._last_error}")
-            else:
-                self._faiss_index = cpu_index
-            self._faiss = faiss
-            self._backend = backend
-            self._report(f"Retrieval index ready with backend {backend} over {len(self._chunks)} chunk(s).")
-            return True
-        except Exception as exc:  # pragma: no cover - runtime fallback path
-            self._last_error = f"{type(exc).__name__}: {exc}"
-            self._reset_faiss_index()
-            return False
-
-    def ensure_index(self) -> None:
-        state = self._file_state()
-        if self._load_cached(state):
-            self._reset_faiss_index()
-            self._ensure_faiss_index()
-            return
-        self._report("Retrieval cache is stale or missing. Rebuilding repository index.")
-        self._chunks = self._build_chunks()
-        self._vectors = None
-        self._backend = "lexical"
-        self._last_error = None
-        self._reset_faiss_index()
-        if self._chunks:
-            try:
-                self._report("Generating repository embeddings.")
-                self._vectors = self.embedder.encode_documents([chunk.text for chunk in self._chunks])
-                self._backend = "embedding-numpy"
-                if self.embedder.load_warning:
-                    self._last_error = self.embedder.load_warning
-                self._ensure_faiss_index()
-            except Exception as exc:  # pragma: no cover - runtime fallback path
-                self._last_error = f"{type(exc).__name__}: {exc}"
-                self._vectors = None
-                self._backend = "lexical"
-        self._save_cached(state)
-
-    def _lexical_scores(self, query: str) -> list[tuple[float, RepoChunk]]:
-        query_tokens = token_set(query)
-        scored: list[tuple[float, RepoChunk]] = []
-        for chunk in self._chunks:
-            lowered = chunk.text.lower()
-            score = float(sum(lowered.count(token) for token in query_tokens))
-            if any(token in chunk.path.lower() for token in query_tokens):
-                score += 2.0
-            if score > 0:
-                scored.append((score, chunk))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return scored
-
-    def query(self, query: str, limit: int | None = None) -> dict[str, Any]:
-        import numpy as np
-
-        self.ensure_index()
-        top_k = limit or self.config.max_repo_chunks
-        results: list[dict[str, Any]] = []
-        if not self._chunks:
-            return {"backend": "empty", "results": [], "error": self._last_error}
-        if self._vectors is not None:
-            try:
-                self._report(f"Retrieving repository context for query: {shorten(query, 100)}")
-                query_vector = self.embedder.encode_queries([query])[0]
-                if self._ensure_faiss_index():
-                    scores_array, indices_array = self._faiss_index.search(
-                        np.ascontiguousarray(query_vector.reshape(1, -1), dtype="float32"),
-                        top_k,
-                    )
-                    top_indices = [int(index) for index in indices_array[0] if int(index) >= 0]
-                    score_map = {
-                        int(index): float(score)
-                        for index, score in zip(indices_array[0], scores_array[0], strict=False)
-                        if int(index) >= 0
-                    }
-                else:
-                    scores = self._vectors @ query_vector
-                    top_indices = [int(index) for index in np.argsort(scores)[::-1][:top_k]]
-                    score_map = {int(index): float(scores[int(index)]) for index in top_indices}
-                for index in top_indices:
-                    chunk = self._chunks[int(index)]
-                    results.append(
-                        {
-                            "path": chunk.path,
-                            "start_line": chunk.start_line,
-                            "end_line": chunk.end_line,
-                            "score": score_map[int(index)],
-                            "text": shorten(chunk.text, 1400),
-                        }
-                    )
-            except Exception as exc:  # pragma: no cover - runtime fallback path
-                self._last_error = f"{type(exc).__name__}: {exc}"
-                self._reset_faiss_index()
-                if self._vectors is not None:
-                    scores = self._vectors @ query_vector
-                    top_indices = [int(index) for index in np.argsort(scores)[::-1][:top_k]]
-                    self._backend = "embedding-numpy"
-                    for index in top_indices:
-                        chunk = self._chunks[index]
-                        results.append(
-                            {
-                                "path": chunk.path,
-                                "start_line": chunk.start_line,
-                                "end_line": chunk.end_line,
-                                "score": float(scores[index]),
-                                "text": shorten(chunk.text, 1400),
-                            }
-                        )
-        if not results:
-            for score, chunk in self._lexical_scores(query)[:top_k]:
-                results.append(
-                    {
-                        "path": chunk.path,
-                        "start_line": chunk.start_line,
-                        "end_line": chunk.end_line,
-                        "score": score,
-                        "text": shorten(chunk.text, 1400),
-                    }
-                )
-        if results:
-            preview = ", ".join(f"{item['path']}:{item['start_line']}-{item['end_line']}" for item in results[:3])
-            self._report(f"Repository context ready from {self._backend}: {preview}")
-        return {"backend": self._backend, "results": results, "error": self._last_error}
-
-    def format_context(self, query: str) -> str:
-        query_result = self.query(query)
-        lines = [f"Repository retrieval backend: {query_result['backend']}"]
-        if query_result.get("error"):
-            lines.append(f"Retrieval warning: {query_result['error']}")
-        if not query_result["results"]:
-            lines.append("No repository context was retrieved.")
-            return "\n".join(lines)
-        for item in query_result["results"]:
-            lines.append(
-                f"- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']:.3f}\n"
-                f"  {item['text']}"
-            )
-        return "\n".join(lines)
-
-    def release_gpu_resources(self) -> None:
-        released: list[str] = []
-        if self._faiss_index is not None and self._backend == "faiss-gpu":
-            released.append("FAISS GPU index")
-            self._backend = "embedding-numpy" if self._vectors is not None else self._backend
-        self._reset_faiss_index()
-        if self.embedder.release_gpu():
-            released.append("embedder")
-        if released:
-            self._report(f"Released retrieval GPU resources before generation: {', '.join(released)}.")
 
 
 class DirectOllamaTransport:
@@ -1860,7 +1221,6 @@ class AgentRunner:
         self.workspace = config.workspace
         self.memory = MemoryStore(self.workspace)
         self.skills = SkillRegistry(self.workspace)
-        self.retriever = RepoRetriever(config, progress_callback=self._report_retrieval)
         self.history: list[dict[str, str]] = []
         self.history_summary = ""
         self.harness_text = load_harness_text(self.workspace)
@@ -1882,9 +1242,6 @@ class AgentRunner:
         if self._ollama is None:
             self._ollama = OllamaClient.detect()
         return self._ollama
-
-    def _report_retrieval(self, message: str) -> None:
-        self._emit(self._active_callback, "status", message)
 
     def _system_prompt(
         self,
@@ -1949,7 +1306,6 @@ class AgentRunner:
     def _user_message(
         self,
         prompt: str,
-        repo_context: str,
         direct_file_context: str = "",
         active_skills: Sequence[SkillDefinition] | None = None,
     ) -> str:
@@ -1961,9 +1317,6 @@ class AgentRunner:
 
             Direct file reads already completed for this request:
             {direct_file_context or "None"}
-
-            Retrieved repository context:
-            {repo_context}
 
             Activated skills:
             {skill_list}
@@ -2060,38 +1413,20 @@ class AgentRunner:
             if active_skills:
                 names = ", ".join(skill.name for skill in active_skills)
                 self._emit(callback, "status", f"Activated local skill(s): {names}")
-            self._emit(
-                callback,
-                "status",
-                (
-                    "Retrieval GPU policy: use CUDA when free VRAM stays above "
-                    f"{self.config.embed_min_free_vram_gib:.1f} GiB and preserve "
-                    f"{self.config.retrieval_gpu_reserve_gib:.1f} GiB of headroom before generation."
-                ),
-            )
             direct_file_context, direct_file_paths = self._prepare_direct_file_context(prompt, callback)
             if direct_file_context:
                 self._emit(
                     callback,
                     "status",
-                    "Direct file contents were loaded. Semantic retrieval is skipped for this request.",
+                    "Direct file contents were loaded before the model loop.",
                 )
-                repo_context = "Direct file read path used."
-            else:
-                self._emit(
-                    callback,
-                    "status",
-                    "Preparing repository context before loading the generation model to keep more VRAM free for embeddings.",
-                )
-                repo_context = self.retriever.format_context(prompt)
-            self.retriever.release_gpu_resources()
             memory_context = self.memory.build_context(prompt)
             project_rules_context = self.rules_summary or "None"
             if self.rules_path.exists():
                 rules_rel_path = relative_path(self.rules_path, self.workspace).lower()
                 if rules_rel_path in direct_file_paths:
                     project_rules_context = "Provided in direct file context for this request."
-            self._emit(callback, "status", "Repository and memory context prepared.")
+            self._emit(callback, "status", "Request context prepared.")
 
             self._emit(callback, "status", "Detecting Ollama and validating the target model.")
             ollama = self._get_ollama()
@@ -2163,7 +1498,7 @@ class AgentRunner:
                 messages.append(
                     {
                         "role": "user",
-                        "content": self._user_message(prompt, repo_context, direct_file_context, active_skills),
+                        "content": self._user_message(prompt, direct_file_context, active_skills),
                     }
                 )
 
@@ -2567,7 +1902,6 @@ class QubitzGUI:
         self.root.after_idle(self._present_window)
         self._append_transcript("system", f"Workspace: {config.workspace.as_posix()}")
         self._append_transcript("system", f"Model: {config.model_name}")
-        self._append_transcript("system", f"Embedding Model: {config.embed_model_name}")
         self._append_transcript(
             "system",
             f"Runtime defaults: num_ctx={config.ollama_num_ctx}, num_predict={config.ollama_num_predict}.",
@@ -2894,7 +2228,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AI Agent Qubitz")
     parser.add_argument("--workspace", default=".", help="Workspace root. Defaults to the current working directory.")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Ollama chat model name.")
-    parser.add_argument("--embed-model", default=DEFAULT_EMBED_MODEL, help="Embedding model name.")
     parser.add_argument("--num-ctx", type=int, default=16384, help="Ollama context window to request for each chat call.")
     parser.add_argument(
         "--num-predict",
@@ -2929,7 +2262,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     config = AgentConfig(
         workspace=workspace,
         model_name=args.model,
-        embed_model_name=args.embed_model,
         ollama_num_ctx=args.num_ctx,
         ollama_num_predict=args.num_predict,
     )
