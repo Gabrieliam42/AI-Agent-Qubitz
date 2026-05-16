@@ -36,7 +36,7 @@ MAX_TOOL_STEPS = 16
 MAX_TOOL_RESULT_CHARS = 6000
 MAX_DIRECT_READ_FILES = 4
 MAX_DIRECT_READ_CHARS = 12000
-DEFAULT_NUM_PREDICT = 4096
+DEFAULT_NUM_PREDICT = 16384
 MAX_HISTORY_SUMMARY_CHARS = 6000
 MAX_RULES_SUMMARY_CHARS = 2400
 MAX_RULES_SECTION_ITEMS = 5
@@ -569,7 +569,7 @@ class AgentConfig:
     model_name: str = DEFAULT_MODEL
     max_steps: int = MAX_TOOL_STEPS
     ollama_keep_alive: str = "30m"
-    ollama_num_ctx: int = 16384
+    ollama_num_ctx: int = 202752
     ollama_num_predict: int = DEFAULT_NUM_PREDICT
     ollama_temperature: float = 0.0
 
@@ -2228,7 +2228,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AI Agent Qubitz")
     parser.add_argument("--workspace", default=".", help="Workspace root. Defaults to the current working directory.")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Ollama chat model name.")
-    parser.add_argument("--num-ctx", type=int, default=16384, help="Ollama context window to request for each chat call.")
+    parser.add_argument("--num-ctx", type=int, default=202752, help="Ollama context window to request for each chat call.")
     parser.add_argument(
         "--num-predict",
         type=int,
