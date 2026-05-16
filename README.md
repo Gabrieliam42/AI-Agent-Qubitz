@@ -4,7 +4,7 @@ Qubitz is a local-first standalone AI agent for repository work, tool use, and c
 
 ## Current Runtime
 
-- Platform target: WSL2 on Windows 11
+- Platform target: WSL2 on Windows 11 or Linux Ubuntu
 - Python target: 3.12
 - GPU target: RTX 3090 24 GB VRAM
 - Main model path: `glm-4.7-flash:q4_K_M` through Ollama
@@ -54,8 +54,6 @@ The active runtime is built around:
 Additional environment notes:
 
 - `requirements.txt` includes `cryptography` because encrypted harness support is part of the tracked runtime.
-- `torchvision` and `torchaudio` may be present in a local environment, but they are not required by the current tracked runtime path.
-- `xformers==0.0.31.post1` may exist in a local environment, but its compiled CUDA extensions are not compatible with the current `torch 2.9.1+cu129` / Python 3.12 stack.
 
 ## Status
 
