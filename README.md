@@ -8,7 +8,7 @@ Qubitz is a local-first standalone AI agent for repository work, tool use, and c
 - Python target: 3.12
 - GPU target: RTX 3090 24 GB VRAM
 - Main model path: `glm-4.7-flash:q4_K_M` through Ollama
-- Runtime defaults: `num_ctx=16384`, `num_predict=4096`, `max_steps=16`
+- Runtime defaults: `num_ctx=202752`, `num_predict=16384`, `max_steps=16`
 
 ## Main Capabilities
 
