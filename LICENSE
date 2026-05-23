@@ -1,0 +1,42 @@
+PROPRIETARY EVALUATION-ONLY LICENSE
+
+Copyright (c) 2026 Gabriel Sandu. All rights reserved.
+
+Definitions
+- "Software" means this repository and all scripts, source files, text, prompts, configurations, assets, documentation, examples, data files, generated files, and other contents made available in or through it, except third-party components that are governed by their own licenses.
+
+Limited Permission
+- Permission is granted only to access, execute, run, and test the Software for personal, internal, non-commercial evaluation purposes.
+- This limited permission allows you to observe behavior, verify functionality, and perform compatibility or quality testing.
+
+Restrictions
+Except for the limited testing permission above, you may not, without prior written permission from the copyright owner:
+- copy, reproduce, mirror, scrape, export, republish, or redistribute the Software or any substantial portion of its contents;
+- modify, adapt, translate, transform, personalize, or create derivative works based on the Software;
+- fork the repository for development, customization, republication, redistribution, or derivative work purposes;
+- use modified forks, derivative copies, or repackaged versions of the Software;
+- sell, resell, sublicense, rent, lease, assign, transfer, commercially exploit, or otherwise monetize the Software;
+- remove, alter, or obscure copyright, attribution, license, or proprietary notices;
+- claim the Software or any substantial portion of it as your own work.
+
+No Additional Rights
+- No ownership rights are transferred.
+- No patent, trademark, trade secret, or other intellectual property rights are granted except for the limited evaluation permission stated above.
+- Public visibility of a repository does not grant permission to copy, modify, fork for development, redistribute, or commercialize the Software beyond this license.
+
+Third-Party Tools, Libraries, Modules, and AI Models
+Third-Party Tools, Libraries, Modules, and AI Models: Any tools, libraries, 
+modules, or AI models that are used in the development of this script are 
+protected by their own licenses and by their own developers and owners. This 
+license does not grant any rights to use, modify, distribute, or sell any 
+third-party components that may be included or referenced in the Software.
+
+Termination
+- Any use outside the limited evaluation permission automatically terminates the rights granted by this license.
+
+Disclaimer
+- The Software is provided "AS IS", without warranties or conditions of any kind, express or implied, to the maximum extent permitted by applicable law.
+- The copyright owner is not liable for any claim, damage, loss, or other liability arising from or related to the Software or its use.
+
+Contact
+- For permissions beyond testing and evaluation, contact the copyright owner.
