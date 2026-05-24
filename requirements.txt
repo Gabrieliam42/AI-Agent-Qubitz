@@ -12,4 +12,3 @@ numpy>=1.26
 sentencepiece>=0.2.0
 torch==2.9.1+cu129
 transformers>=4.46,<5.0
-# xformers intentionally omitted on the active cu129 stack; use flash-attn as the supported attention acceleration path.
