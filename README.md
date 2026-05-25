@@ -1,6 +1,6 @@
 # Qubitz
 
-Qubitz is a local-first standalone AI agent for repository work, tool use, and controlled file operations. The current implementation is centered in `AI_Agent_Qubitz.py` and combines a Tk desktop UI, a CLI mode, a local MCP server/client loop, Ollama-based reasoning, encrypted harness loading, local skill discovery, and persistent memory.
+Qubitz is a local-first standalone AI agent for repository work, tool use, and controlled file operations. The current implementation is centered in `AI_Agent_Qubitz.py` and combines a Tk desktop UI, a CLI mode, a local MCP server/client loop, glm-4.7-flash reasoning through Ollama, encrypted harness loading, local skill discovery, and persistent memory.
 
 ## Current Runtime
 
