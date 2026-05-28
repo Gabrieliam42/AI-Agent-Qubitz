@@ -1,0 +1,44 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+.venv*/
+venv/
+env/
+
+# Local runtime data
+.cache/
+.memory/
+.skills/
+.qubitz/
+models/
+data/
+node_modules/
+
+# Local plaintext harness and helper keys
+HARNESS.txt
+QUBITZ_HARNESS_KEY*
+!QUBITZ_HARNESS_KEY.local.txt
+
+# Logs and temp artifacts
+*.log
+launcher_out.txt
+launcher_err.txt
+files_list.txt
+changelog.txt
+tmp*/
+.tmp/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
