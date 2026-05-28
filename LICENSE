@@ -4,6 +4,7 @@ Copyright (c) 2026 Gabriel Sandu. All rights reserved.
 
 Definitions
 - "Software" means this repository and all scripts, source files, text, prompts, configurations, assets, documentation, examples, data files, generated files, and other contents made available in or through it, except third-party components that are governed by their own licenses.
+- "Harness Materials" means `HARNESS.enc`, any decrypted harness text, any extracted prompt or instruction content contained in or derived from that harness, and any substantially similar adapted or reformatted version of that harness content.
 
 Limited Permission
 - Permission is granted only to access, execute, run, and test the Software for personal, internal, non-commercial evaluation purposes.
@@ -17,7 +18,9 @@ Except for the limited testing permission above, you may not, without prior writ
 - use modified forks, derivative copies, or repackaged versions of the Software;
 - sell, resell, sublicense, rent, lease, assign, transfer, commercially exploit, or otherwise monetize the Software;
 - remove, alter, or obscure copyright, attribution, license, or proprietary notices;
-- claim the Software or any substantial portion of it as your own work.
+- claim the Software or any substantial portion of it as your own work;
+- copy, extract, disclose, publish, redistribute, reuse, adapt, or use any Harness Materials in another project, repository, product, service, dataset, prompt set, model configuration, or workflow; or
+- use `HARNESS.enc` except as part of this Software for the limited evaluation permission granted by this license.
 
 No Additional Rights
 - No ownership rights are transferred.
