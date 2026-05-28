@@ -1,63 +1,55 @@
 # Qubitz
 
-Qubitz is a local-first standalone AI agent for repository work, tool use, and controlled file operations. The current implementation is centered in `AI_Agent_Qubitz.py` and combines a Tk desktop UI, a CLI mode, a local MCP server/client loop, glm-4.7-flash reasoning through Ollama, encrypted harness loading, local skill discovery, and persistent memory.
+Qubitz is a standalone local-only AI agent published here as a single main script: `AI_Agent_Qubitz_Embedding.py`.
 
-## Current Runtime
+It combines:
+- local `llama.cpp` GGUF generation
+- workspace retrieval with `BAAI/bge-code-v1`
+- encrypted harness loading from `HARNESS.enc`
+- Tk GUI, CLI, and stdio MCP server modes
+- local tools for file work, text search, Python commands, and PowerShell
 
-- Platform target: WSL2 on Windows 11 or Linux Ubuntu
-- Python target: 3.12
-- GPU target: RTX 3090 24 GB VRAM
-- Main model path: `glm-4.7-flash:q4_K_M` through Ollama
-- Runtime defaults: `num_ctx=202752`, `num_predict=16384`, `max_steps=16`
+## Files
+- `AI_Agent_Qubitz_Embedding.py` - main standalone script
+- `HARNESS.enc` - encrypted harness
+- `QUBITZ_HARNESS_KEY.local.txt` - local Fernet key file used to decrypt the harness
+- `requirements.txt` - runtime dependencies
+- `requirements-ci.txt` - CI, lint, and test dependencies
 
-## Main Capabilities
+## How it works
+1. On startup, the script loads `HARNESS.enc` and decrypts it with `QUBITZ_HARNESS_KEY.local.txt` or `QUBITZ_HARNESS_KEY`.
+2. It runs a local `llama.cpp` OpenAI-compatible backend for generation.
+3. It uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
+4. It bypasses retrieval for simple general-knowledge questions so they answer faster.
+5. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
+6. For project-side Python work, it prefers the active workspace venv/interpreter when one exists.
 
-- Tk-based local desktop interface
-- CLI mode for one-shot prompts or interactive terminal use
-- Local MCP server/client loop for bounded tool execution
-- Workspace-aware file read, write, replace, move, delete, and search tools
-- Encrypted harness support via `HARNESS.enc` and `QUBITZ_HARNESS_KEY`
-- Optional project rules loading from `RULES.md`
-- Local skill discovery from `.skills/*/SKILL.md` when present
-- Persistent session memory under `.memory/`
-- WSL-first Ollama access with direct localhost preference and Windows bridge fallback
+## Local-only extras
+- `.qubitz/local_only.toml` can add local-only config overrides.
+- `.qubitz/plugins/*.toml` can add local plugin guidance.
+- `/bg`, `/jobs`, and `/job <id>` support local background jobs.
+- Sandbox and wrapper-local MCP orchestration are built into the script.
 
-## Repository Files
+## Interfaces
+- GUI: default mode
+- CLI: `python AI_Agent_Qubitz_Embedding.py --cli`
+- One-shot CLI: `python AI_Agent_Qubitz_Embedding.py --cli --prompt "What does this project do?"`
+- MCP server: `python AI_Agent_Qubitz_Embedding.py --serve-mcp`
 
-- `.gitignore`: git exclusions for local-only artifacts, plaintext secrets, and runtime data
-- `AI_Agent_Qubitz.py`: main standalone agent runtime
-- `HARNESS.enc`: encrypted harness tracked in the repository
-- `requirements.txt`: runtime dependencies
-- `README.md`: public repository overview and runtime notes
+## Setup
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python AI_Agent_Qubitz_Embedding.py
+```
 
-## Optional Local Runtime Files And Paths
+If you already have a compatible `llama.cpp` server or GGUF path, you can point the script at them with `--server-url`, `--llama-server`, and `--model-path`.
 
-- `HARNESS.txt`: optional plaintext harness source for maintainers who need to re-encrypt the tracked harness
-- `RULES.md`: optional local project rules file loaded after the harness when present
-- `QUBITZ_HARNESS_KEY.local.txt`: optional ignored helper file for local key storage
-- `.cache/`: local cache directory used for project-scoped runtime data
-- `.memory/`: current and archived session memory
-- `.skills/`: local skill directories
-- `.venv/`: WSL Python virtual environment
+## Important options
+- `--num-ctx`
+- `--num-predict`
+- `--max-steps`
+- `--thinking-effort` with `default`, `low`, `medium`, `high`, or `xhigh`
 
-## Dependency Notes
-
-The active runtime is built around:
-
-- `mcp==1.27.0`
-- `httpx==0.28.1`
-- `cryptography==47.0.0`
-- `torch==2.9.1+cu129`
-- `transformers==4.57.6`
-- `flash-attn==2.8.3`
-
-Additional environment notes:
-
-- `requirements.txt` includes `cryptography` because encrypted harness support is part of the tracked runtime.
-
-## Status
-
-- The current runtime is concentrated in a single main file instead of a multi-module package layout.
-- Explicit file-read requests are handled deterministically before the model loop when possible.
-- The local MCP server exposes skill-aware resources and tools, including `skills://index`, `memory://current`, `list_skills`, `read_skill`, `read_skill_resource`, `read_memory`, and `search_memory`.
-- The repository tracks `HARNESS.enc` instead of plaintext harness content, so startup requires `QUBITZ_HARNESS_KEY` to be available in the runtime environment.
+In the GUI, the lower-right `Effort` selector maps to the same preset.
