@@ -11,13 +11,13 @@ It combines:
 
 ## Files
 - `AI_Agent_Qubitz_Embedding.py` - main standalone script
-- `HARNESS.enc` - encrypted harness
-- `QUBITZ_HARNESS_KEY.local.txt` - local Fernet key file used to decrypt the harness
+- `HARNESS.enc` - harness
+- `QUBITZ_HARNESS_KEY.local.txt` - local indicator for the harness
 - `requirements.txt` - runtime dependencies
 - `requirements-ci.txt` - CI, lint, and test dependencies
 
 ## How it works
-1. On startup, the script loads `HARNESS.enc` and decrypts it with `QUBITZ_HARNESS_KEY.local.txt` or `QUBITZ_HARNESS_KEY`.
+1. On startup, the script loads `HARNESS.enc` as the AI Agent Harness.
 2. It runs a local `llama.cpp` OpenAI-compatible backend for generation.
 3. It uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
 4. It bypasses retrieval for simple general-knowledge questions so they answer faster.
