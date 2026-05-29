@@ -37,8 +37,9 @@ It combines:
 - MCP server: `python AI_Agent_Qubitz_Embedding.py --serve-mcp`
 
 ## Runtime requirement
-- The published setup assumes **WSL2** and a WSL/Linux `.venv`.
-- The project is intended to operate on Windows-hosted workspaces through a WSL-to-Windows bridge, not only inside Linux-native paths.
+- Runtime: **WSL2/Linux**
+- Workspace/tool operation: **WSL2/Linux plus Windows via the WSL-to-Windows bridge when needed**
+- The published setup assumes a WSL/Linux `.venv` created and run under WSL2, not a native Windows venv.
 - The PowerShell CLI examples in this repository are written for launching that WSL2 environment from the Windows project directory.
 
 ## Setup
