@@ -32,8 +32,8 @@ It combines:
 
 ## Interfaces
 - GUI: default mode
-- CLI: `python AI_Agent_Qubitz_Embedding.py --cli`
-- One-shot CLI: `python AI_Agent_Qubitz_Embedding.py --cli --prompt "What does this project do?"`
+- CLI from the project directory in PowerShell when using the WSL `.venv`: `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli`
+- One-shot CLI from the project directory in PowerShell when using the WSL `.venv`: `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli --prompt "What does this project do?"`
 - MCP server: `python AI_Agent_Qubitz_Embedding.py --serve-mcp`
 
 ## Setup
@@ -42,6 +42,12 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python AI_Agent_Qubitz_Embedding.py
+```
+
+If your project venv is a WSL/Linux `.venv`, run the CLI from the project directory with:
+
+```powershell
+wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli
 ```
 
 If you already have a compatible `llama.cpp` server or GGUF path, you can point the script at them with `--server-url`, `--llama-server`, and `--model-path`.
