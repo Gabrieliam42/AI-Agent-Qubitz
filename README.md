@@ -32,8 +32,8 @@ It combines:
 
 ## Interfaces
 - GUI: default mode
-- CLI from the project directory in PowerShell when using the WSL `.venv`: `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli`
-- One-shot CLI from the project directory in PowerShell when using the WSL `.venv`: `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli --prompt "What does this project do?"`
+- CLI from the project directory in PowerShell when using the WSL `.venv` environment: `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli`
+- One-shot CLI from the project directory in PowerShell when using the WSL `.venv` env: `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli --prompt "What does this project do?"`
 - MCP server: `python AI_Agent_Qubitz_Embedding.py --serve-mcp`
 
 ## Setup
