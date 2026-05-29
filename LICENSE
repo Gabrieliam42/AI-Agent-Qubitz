@@ -7,8 +7,8 @@ Definitions
 - "Harness Materials" means `HARNESS.enc`, any decrypted harness text, any extracted prompt or instruction content contained in or derived from that harness, and any substantially similar adapted or reformatted version of that harness content.
 
 Limited Permission
-- Permission is granted only to access, execute, run, and test the Software for personal, internal, non-commercial evaluation purposes.
-- This limited permission allows you to observe behavior, verify functionality, and perform compatibility or quality testing.
+- Permission is granted only to access, execute, run, only in order to test the Software for personal, internal, non-commercial evaluation purposes.
+- This limited permission allows you only to observe behavior, verify functionality, and perform compatibility or quality testing.
 
 Restrictions
 Except for the limited testing permission above, you may not, without prior written permission from the copyright owner:
