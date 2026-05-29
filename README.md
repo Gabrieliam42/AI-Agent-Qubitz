@@ -1,6 +1,6 @@
 # Qubitz
 
-Qubitz is a standalone local-only AI agent published here as a single main script: `AI_Agent_Qubitz_Embedding.py`.
+Qubitz is a standalone local-only AI agent published here as a single main script: `AI_Agent_Qubitz_Embedding.py`. It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
 
 It combines:
 - local `llama.cpp` GGUF generation
@@ -38,17 +38,19 @@ It combines:
 
 ## Runtime requirement
 - The published setup assumes **WSL2** and a WSL/Linux `.venv`.
-- The PowerShell CLI examples in this repository are written for launching that WSL2 environment from the project directory.
+- The project is intended to operate on Windows-hosted workspaces through a WSL-to-Windows bridge, not only inside Linux-native paths.
+- The PowerShell CLI examples in this repository are written for launching that WSL2 environment from the Windows project directory.
 
 ## Setup
+From the Windows project directory, create and use the WSL2/Linux `.venv` with:
+
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python AI_Agent_Qubitz_Embedding.py
+wsl python3 -m venv .venv
+wsl .venv/bin/pip install -r requirements.txt
+wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py
 ```
 
-If your project venv is a WSL/Linux `.venv`, run the CLI from the project directory with:
+For interactive CLI use from the Windows project directory:
 
 ```powershell
 wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli
