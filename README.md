@@ -36,6 +36,10 @@ It combines:
 - One-shot CLI from the project directory in PowerShell when using the WSL `.venv` env: `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli --prompt "What does this project do?"`
 - MCP server: `python AI_Agent_Qubitz_Embedding.py --serve-mcp`
 
+## Runtime requirement
+- The published setup assumes **WSL2** and a WSL/Linux `.venv`.
+- The PowerShell CLI examples in this repository are written for launching that WSL2 environment from the project directory.
+
 ## Setup
 ```powershell
 python -m venv .venv
