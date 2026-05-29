@@ -1,6 +1,7 @@
 # Runtime requirement: this project is intended to run under WSL2 with a WSL/Linux Python virtual environment.
 # The project venv should be a Linux venv created inside WSL2 and run under WSL2, not a native Windows venv.
-# The PowerShell CLI examples in the repository launch that WSL2 venv from the project directory.
+# The runtime is intended to operate on Windows-hosted workspaces through a WSL-to-Windows bridge rather than only inside Linux paths.
+# The PowerShell CLI examples in the repository launch that WSL2 venv from the Windows project directory.
 --extra-index-url https://download.pytorch.org/whl/cu129
 --extra-index-url https://pypi.nvidia.com
 accelerate>=1.0
