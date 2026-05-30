@@ -4,7 +4,7 @@ Qubitz is a standalone local-only AI agent published here as two main script var
 
 The variants are:
 - `AI_Agent_Qubitz_Embedding.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_All_Local_12G.py` - all-local 12GB+ VRAM GPU variant that works the same way but without embeddings or retrieval
+- `AI_Agent_Qubitz_All_Local_12G.py` - all-local 12GB+ VRAM GPU variant that works the same way but without embeddings
 
 It combines:
 - local `llama.cpp` GGUF generation
