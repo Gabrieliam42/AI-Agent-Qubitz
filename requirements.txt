@@ -9,11 +9,13 @@ cryptography>=42
 einops>=0.8.0
 faiss-gpu-cuvs==1.14.1.post1; platform_system == "Linux"
 flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; platform_system == "Linux"
-huggingface-hub>=0.26
+huggingface-hub>=0.34,<1.0
 httpx>=0.28.1
 mcp[cli]>=1.27.0
 numpy>=1.26
 rmm-cu12==25.10.0; platform_system == "Linux"
+# Required by rmm-cu12==25.10.0; keep direct so uv can resolve cuda-python>=12.9.2,<13.0a0 without global --prerelease=allow.
+cuda-python>=12.9.2,<13.0a0; platform_system == "Linux"
 sentencepiece>=0.2.0
 torch==2.9.1+cu129
 transformers>=4.46,<5.0
@@ -21,4 +23,4 @@ transformers>=4.46,<5.0
 # Official sources:
 # - https://github.com/facebookresearch/xformers/releases
 # - https://download.pytorch.org/whl/cu129/xformers/
-xformers==0.0.33.post2
+xformers @ https://files.pythonhosted.org/packages/7d/c8/2957d8a8bf089a4e57f046867d4c9b31fc2e1d16013bc57cd7ae651a65b5/xformers-0.0.33.post2-cp39-abi3-manylinux_2_28_x86_64.whl#sha256=9ea6032defa60395559b6a446c2ae945236707e98daabd88fea57cd08671c174; platform_system == "Linux"
