@@ -1,9 +1,9 @@
 # Qubitz
 
-Qubitz is a standalone local-only AI agent published here as two main script variants: `AI_Agent_Qubitz_Embedding.py` and `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py`. It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
+Qubitz is a standalone local-only AI agent published here as two main script variants: `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` and `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py`. It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
 
 The variants are:
-- `AI_Agent_Qubitz_Embedding.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - all-local 12GB+ VRAM GPU variant that works the same way but without embeddings
 
 It combines:
@@ -14,7 +14,7 @@ It combines:
 - local tools for file work, text search, Python commands, and PowerShell
 
 ## Files
-- `AI_Agent_Qubitz_Embedding.py` - main standalone script with embeddings and workspace retrieval, intended for 24GB+ VRAM GPUs
+- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - main standalone script with embeddings and workspace retrieval, intended for 24GB+ VRAM GPUs
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - main standalone script variant without embeddings, intended for 12GB+ VRAM GPUs
 - `HARNESS.enc` - harness
 - `QUBITZ_HARNESS_KEY.local.txt` - local indicator for the harness
@@ -24,7 +24,7 @@ It combines:
 ## How it works
 1. On startup, the selected script loads `HARNESS.enc` as the AI Agent Harness.
 2. It runs a local `llama.cpp` OpenAI-compatible backend for generation.
-3. `AI_Agent_Qubitz_Embedding.py` uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
+3. `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
 4. `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` runs without embeddings or retrieval while keeping the same local agent workflow.
 5. The embedding-enabled variant bypasses retrieval for simple general-knowledge questions so they answer faster.
 6. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
@@ -39,13 +39,13 @@ It combines:
 ## Interfaces
 - GUI: default mode
 - CLI from the project directory in PowerShell when using the WSL `.venv` environment:
-  - `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli`
+  - `wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --cli`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli`
 - One-shot CLI from the project directory in PowerShell when using the WSL `.venv` env:
-  - `wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli --prompt "What does this project do?"`
+  - `wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --cli --prompt "What does this project do?"`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli --prompt "What does this project do?"`
 - MCP server:
-  - `python AI_Agent_Qubitz_Embedding.py --serve-mcp`
+  - `python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --serve-mcp`
   - `python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --serve-mcp`
 
 ## Runtime requirement
@@ -54,7 +54,7 @@ It combines:
 - The published setup assumes a WSL/Linux `.venv` created and run under WSL2, not a native Windows venv.
 - The PowerShell CLI examples in this repository are written for launching that WSL2 environment from the Windows project directory.
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` is intended for 12GB+ VRAM GPUs and runs without embeddings or retrieval.
-- `AI_Agent_Qubitz_Embedding.py` is intended for 24GB+ VRAM GPUs and runs without embeddings or retrieval.
+- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` is intended for 24GB+ VRAM GPUs and runs without embeddings or retrieval.
 
 ## Setup
 From the Windows project directory, create and use the WSL2/Linux `.venv` with:
@@ -62,7 +62,7 @@ From the Windows project directory, create and use the WSL2/Linux `.venv` with:
 ```powershell
 wsl python3 -m venv .venv
 wsl .venv/bin/pip install -r requirements.txt
-wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py
+wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py
 
 or
 
@@ -72,7 +72,7 @@ wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py
 For interactive CLI use from the Windows project directory:
 
 ```powershell
-wsl .venv/bin/python AI_Agent_Qubitz_Embedding.py --cli
+wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --cli
 
 or
 
