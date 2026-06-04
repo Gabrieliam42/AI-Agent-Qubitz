@@ -35,6 +35,7 @@ It combines:
 7. For use-only tasks that explicitly name an existing script, the wrappers can resolve and run that script directly relative to the active workspace instead of always falling back to a slower model/tool loop.
 8. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
 9. For project-side Python work, it prefers the active workspace Python venv/interpreter when one exists.
+10. When you change the workspace project directory it prefers the venv from that chosen directory.
 
 ## Local-only extras
 - `.qubitz/local_only.toml` can add local-only config overrides.
