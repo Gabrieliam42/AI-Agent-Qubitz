@@ -1,16 +1,13 @@
 # Qubitz
 
 Qubitz is a standalone local-only AI agent published here as three main script variants:
-- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py`
-- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py`
-- `AI_Agent_Qubitz_Devstral-Small-2_Embd.py`
-
-It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
 
 The variants are:
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - embedding-enabled 12GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `codesage/codesage-large-v2`
+- `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `codesage/codesage-large-v2` (Non-Chinese Models)
+
+It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
 
 It combines:
 - local `llama.cpp` GGUF generation
