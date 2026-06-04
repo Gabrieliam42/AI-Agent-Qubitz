@@ -45,7 +45,7 @@ It combines:
 - `.qubitz/plugins/*.toml` can add local plugin guidance.
 - `/bg`, `/jobs`, and `/job <id>` support local background jobs where enabled.
 - Sandbox and wrapper-local MCP orchestration are built into the scripts.
-- Project `.skills` support is only surfaced when a usable `.skills` directory is present.
+- Project `.skills` directories are supported for local skill discovery and runtime skill access.
 
 ## Interfaces
 - GUI: default mode
@@ -57,10 +57,10 @@ It combines:
   - `wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --cli --prompt "What does this project do?"`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli --prompt "What does this project do?"`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Devstral-Small-2_Embd.py --cli --prompt "What does this project do?"`
-- MCP server:
-  - `python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --serve-mcp`
-  - `python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --serve-mcp`
-  - `python AI_Agent_Qubitz_Devstral-Small-2_Embd.py --serve-mcp`
+- MCP server from the project directory in PowerShell when using the WSL `.venv` environment:
+  - `wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --serve-mcp`
+  - `wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --serve-mcp`
+  - `wsl .venv/bin/python AI_Agent_Qubitz_Devstral-Small-2_Embd.py --serve-mcp`
 
 ## Runtime requirement
 - Runtime: **WSL2/Linux**
