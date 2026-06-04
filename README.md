@@ -5,7 +5,6 @@ Qubitz is a standalone local-only AI agent published here as three main script v
 The variants are:
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - embedding-enabled 12GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
-
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `codesage/codesage-large-v2`
 
 It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
@@ -20,7 +19,6 @@ It combines:
 ## Files
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - main standalone GLM embedding-enabled variant
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - main standalone Qwen embedding-enabled 12G variant
-
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - main standalone Devstral embedding-enabled variant
 - `HARNESS.txt` - plaintext harness, preferred when both harness files exist
 - `HARNESS.enc` - encrypted harness fallback when `HARNESS.txt` is absent
