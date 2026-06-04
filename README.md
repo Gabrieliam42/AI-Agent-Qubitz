@@ -8,13 +8,13 @@ Qubitz is a standalone local-only AI agent published here as three main script v
 It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
 
 The variants are:
-- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval
+- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - all-local 12GB+ VRAM GPU variant that works the same way but without embeddings
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `codesage/codesage-large-v2`
 
 It combines:
 - local `llama.cpp` GGUF generation
-- optional workspace retrieval in the embedding-enabled variants
+- optional workspace retrieval with `BAAI/bge-code-v1` in the GLM variant and `codesage/codesage-large-v2` in the Devstral variant
 - harness loading from `HARNESS.txt` or `HARNESS.enc`
 - Tk GUI, CLI, and stdio MCP server modes
 - local tools for file work, text search, Python commands, and PowerShell
@@ -32,11 +32,13 @@ It combines:
 ## How it works
 1. On startup, the selected script loads `HARNESS.txt` if it exists; otherwise it falls back to `HARNESS.enc`.
 2. It runs a local `llama.cpp` OpenAI-compatible backend for generation.
-3. The GLM and Devstral variants support workspace retrieval; the Qwen 12G variant runs without embeddings.
-4. All variants bypass retrieval, embeddings, and MCP tool loading for short simple general-knowledge questions so they answer faster.
-5. For use-only tasks that explicitly name an existing script, the wrappers can resolve and run that script directly relative to the active workspace instead of always falling back to a slower model/tool loop.
-6. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
-7. For project-side Python work, it prefers the active workspace venv/interpreter when one exists.
+3. `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
+4. `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` uses `codesage/codesage-large-v2` retrieval for the same retrieval-enabled workflow.
+5. `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` runs without embeddings or retrieval while keeping the same local agent workflow.
+6. All variants bypass retrieval, embeddings, and MCP tool loading for short simple general-knowledge questions so they answer faster.
+7. For use-only tasks that explicitly name an existing script, the wrappers can resolve and run that script directly relative to the active workspace instead of always falling back to a slower model/tool loop.
+8. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
+9. For project-side Python work, it prefers the active workspace venv/interpreter when one exists.
 
 ## Local-only extras
 - `.qubitz/local_only.toml` can add local-only config overrides.
