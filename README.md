@@ -9,19 +9,19 @@ It is intended to run under WSL2 while operating on Windows-hosted workspaces th
 
 The variants are:
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - all-local 12GB+ VRAM GPU variant that works the same way but without embeddings
+- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - embedding-enabled 12GB+ VRAM GPU variant with workspace retrieval using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - embedding-enabled 24GB+ VRAM GPU variant with workspace retrieval using `codesage/codesage-large-v2`
 
 It combines:
 - local `llama.cpp` GGUF generation
-- optional workspace retrieval with `BAAI/bge-code-v1` in the GLM variant and `codesage/codesage-large-v2` in the Devstral variant
+- optional workspace retrieval with `BAAI/bge-code-v1` in the GLM and Qwen variants and `codesage/codesage-large-v2` in the Devstral variant
 - harness loading from `HARNESS.txt` or `HARNESS.enc`
 - Tk GUI, CLI, and stdio MCP server modes
 - local tools for file work, text search, Python commands, and PowerShell
 
 ## Files
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - main standalone GLM embedding-enabled variant
-- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - main standalone Qwen no-embedding 12G variant
+- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - main standalone Qwen embedding-enabled 12G variant
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - main standalone Devstral embedding-enabled variant
 - `HARNESS.txt` - plaintext harness, preferred when both harness files exist
 - `HARNESS.enc` - encrypted harness fallback when `HARNESS.txt` is absent
@@ -34,7 +34,7 @@ It combines:
 2. It runs a local `llama.cpp` OpenAI-compatible backend for generation.
 3. `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
 4. `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` uses `codesage/codesage-large-v2` retrieval for the same retrieval-enabled workflow.
-5. `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` runs without embeddings or retrieval while keeping the same local agent workflow.
+5. `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` uses `BAAI/bge-code-v1` retrieval for the same retrieval-enabled workflow in the lower-VRAM 12G variant.
 6. All variants bypass retrieval, embeddings, and MCP tool loading for short simple general-knowledge questions so they answer faster.
 7. For use-only tasks that explicitly name an existing script, the wrappers can resolve and run that script directly relative to the active workspace instead of always falling back to a slower model/tool loop.
 8. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
@@ -67,8 +67,8 @@ It combines:
 - Workspace/tool operation: **WSL2/Linux plus Windows via the WSL-to-Windows bridge when needed**
 - The published setup assumes a WSL/Linux `.venv` created and run under WSL2, not a native Windows venv.
 - The PowerShell CLI examples in this repository are written for launching that WSL2 environment from the Windows project directory.
-- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` is intended for a lower-VRAM local workflow and runs without embeddings.
-- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` and `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` are the embedding-enabled variants.
+- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` is intended for a lower-VRAM local workflow while still using embeddings and retrieval.
+- `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py`, `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py`, and `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` are embedding-enabled variants.
 
 ## Setup
 From the Windows project directory, create and use the WSL2/Linux `.venv` with:
