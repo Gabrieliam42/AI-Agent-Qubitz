@@ -1,7 +1,7 @@
 # Qubitz
 
 Qubitz is a standalone Local-Only AI Agent for local LLM workflows with llama.cpp, context and code retrieval, specialized harness, GUI/CLI, with MCP tools.
-***
+*
 (No APIs, No cloud, No subscriptions, No paid services). Currently as three separate main script variants:
 
 The variants are:
