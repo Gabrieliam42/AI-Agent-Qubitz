@@ -14,11 +14,11 @@ The variants are:
 It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
 
 It combines:
-- local `llama.cpp` GGUF generation
-- workspace retrieval with `codesage/codesage-large-v2` in the Devstral variant and `BAAI/bge-code-v1` in the GLM and Qwen variants
-- harness loading from `HARNESS.enc`
+- Local `llama.cpp` GGUF generation
+- Workspace context and code retrieval
+- Harness specialized injection from `HARNESS.enc`
 - Tk GUI, CLI, and stdio MCP server modes
-- local tools for file work, text search, Python commands, and PowerShell
+- Local Tools for file work, text search, Python commands, and PowerShell
 
 ## Files
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - main standalone GLM embedding-enabled variant
