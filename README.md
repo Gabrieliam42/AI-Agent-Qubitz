@@ -11,7 +11,7 @@ The variants are:
 ---
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - 24GB+ VRAM GPU variant with workspace retrieval, embedding-enabled using `codesage/codesage-large-v2`
 ---
-- `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` - embedding-enabled 24GB+ VRAM GPU Gemma variant using `unsloth/gemma-4-31B-it-qat-GGUF` with workspace retrieval via `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` - 24GB+ VRAM GPU variant with workspace retrieval, embedding-enabled using `BAAI/bge-code-v1`
 ---
 It is intended to run under WSL2 while operating on Windows-hosted workspaces through a WSL-to-Windows bridge.
 
