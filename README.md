@@ -2,10 +2,12 @@
 
 Qubitz is a standalone Local-Only AI Agent for local LLM workflows with llama.cpp, context and code retrieval, specialized harness, GUI/CLI, with MCP tools.
 *
-(No APIs, No cloud, No subscriptions, No paid services). Currently as four separate main script variants:
+(No APIs, No cloud, No subscriptions, No paid services). Currently as five separate main script variants:
 
 The variants are:
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - 12GB+ VRAM GPU variant with workspace retrieval, embedding-enabled using `BAAI/bge-code-v1`
+---
+- `AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py` - 12GB+ VRAM GPU variant with workspace retrieval, embedding-enabled using `BAAI/bge-code-v1`
 ---
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - 24GB+ VRAM GPU variant with workspace retrieval, embedding-enabled using `BAAI/bge-code-v1`
 ---
@@ -25,6 +27,7 @@ It combines:
 ## Files
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - main standalone GLM embedding-enabled variant
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - main standalone Qwen embedding-enabled 12G variant
+- `AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py` - main standalone Qwen embedding-enabled 12G variant
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - main standalone Devstral embedding-enabled variant
 - `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` - main standalone Gemma QAT embedding-enabled variant
 - `HARNESS.enc` - specialized harness
@@ -38,12 +41,13 @@ It combines:
 3. `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
 4. `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` uses `codesage/codesage-large-v2` retrieval for the same retrieval-enabled workflow.
 5. `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` uses `BAAI/bge-code-v1` retrieval for the same retrieval-enabled workflow in the lower-VRAM 12G variant.
-6. `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` uses `BAAI/bge-code-v1` retrieval for the same retrieval-enabled workflow on the Gemma QAT variant.
-7. All variants bypass retrieval, embeddings, and MCP tool loading for short simple general-knowledge questions so they answer faster.
-8. For use-only tasks that explicitly name an existing script, the wrappers can resolve and run that script directly relative to the active workspace instead of always falling back to a slower model/tool loop.
-9. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
-10. For project-side Python work, it prefers the active workspace Python venv/interpreter when one exists.
-11. When you change the workspace project directory it prefers the venv from that chosen directory.
+6. `AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py` uses `BAAI/bge-code-v1` retrieval for the same retrieval-enabled workflow in the lower-VRAM 12G variant.
+7. `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` uses `BAAI/bge-code-v1` retrieval for the same retrieval-enabled workflow on the Gemma QAT variant.
+8. All variants bypass retrieval, embeddings, and MCP tool loading for short simple general-knowledge questions so they answer faster.
+9. For use-only tasks that explicitly name an existing script, the wrappers can resolve and run that script directly relative to the active workspace instead of always falling back to a slower model/tool loop.
+10. It keeps runtime caches, memory, and downloads rooted in the launch/runtime directory even if the active workspace is changed.
+11. For project-side Python work, it prefers the active workspace Python venv/interpreter when one exists.
+12. When you change the workspace project directory it prefers the venv from that chosen directory.
 
 ## Local-only extras
 - `.qubitz/local_only.toml` can add local-only config overrides.
@@ -57,16 +61,19 @@ It combines:
 - CLI from the project directory in PowerShell when using the WSL `.venv` environment:
   - `wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --cli`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli`
+  - `wsl .venv/bin/python AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py --cli`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Devstral-Small-2_Embd.py --cli`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py --cli`
 - One-shot CLI from the project directory in PowerShell when using the WSL `.venv` env:
   - `wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --cli --prompt "What does this project do?"`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli --prompt "What does this project do?"`
+  - `wsl .venv/bin/python AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py --cli --prompt "What does this project do?"`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Devstral-Small-2_Embd.py --cli --prompt "What does this project do?"`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py --cli --prompt "What does this project do?"`
 - MCP server from the project directory in PowerShell when using the WSL `.venv` environment:
   - `wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --serve-mcp`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --serve-mcp`
+  - `wsl .venv/bin/python AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py --serve-mcp`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Devstral-Small-2_Embd.py --serve-mcp`
   - `wsl .venv/bin/python AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py --serve-mcp`
 
@@ -76,6 +83,7 @@ It combines:
 - The published setup assumes a WSL/Linux `.venv` created and run under WSL2, not a native Windows venv.
 - The PowerShell CLI examples in this repository are written for launching that WSL2 environment from the Windows project directory.
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` is intended for a lower-VRAM local workflow while still using embeddings and retrieval.
+- `AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py` is intended for a lower-VRAM local workflow while still using embeddings and retrieval.
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py`, `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py`, `AI_Agent_Qubitz_Devstral-Small-2_Embd.py`, and `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` are all embedding-enabled variants.
 
 ## Setup
@@ -89,6 +97,10 @@ wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py
 or
 
 wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py
+
+or
+
+wsl .venv/bin/python AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py
 
 or
 
@@ -107,6 +119,10 @@ wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py --cli
 or
 
 wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli
+
+or
+
+wsl .venv/bin/python AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py --cli
 
 or
 
