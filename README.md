@@ -33,7 +33,7 @@ It combines:
 - `requirements-ci.txt` - CI, lint, and test dependencies
 
 ## How it works
-1. On startup, the selected script loads `HARNESS.txt` if it exists; otherwise it falls back to `HARNESS.enc`.
+1. On startup, the selected script loads `HARNESS.enc`.
 2. It runs a local `llama.cpp` OpenAI-compatible backend for generation.
 3. `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` uses `BAAI/bge-code-v1` retrieval for project, workspace, repo, codebase, and multi-step task prompts.
 4. `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` uses `codesage/codesage-large-v2` retrieval for the same retrieval-enabled workflow.
