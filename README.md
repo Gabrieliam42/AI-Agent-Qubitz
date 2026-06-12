@@ -18,7 +18,7 @@ It is intended to run under WSL2 while operating on Windows-hosted workspaces th
 It combines:
 - Local `llama.cpp` GGUF generation
 - Workspace context and code retrieval
-- Harness specialized loading from `HARNESS.txt` or `HARNESS.enc`
+- Harness specialized loading from `HARNESS.enc`
 - Tk GUI, CLI, and stdio MCP server modes
 - Local Tools for file work, text search, Python commands, and PowerShell
 
@@ -27,8 +27,7 @@ It combines:
 - `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - main standalone Qwen embedding-enabled 12G variant
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - main standalone Devstral embedding-enabled variant
 - `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` - main standalone Gemma QAT embedding-enabled variant
-- `HARNESS.txt` - plaintext harness, preferred when both harness files exist
-- `HARNESS.enc` - encrypted harness fallback when `HARNESS.txt` is absent
+- `HARNESS.enc` - specialized harness
 - `QUBITZ_HARNESS_KEY.local.txt` - local key source for `HARNESS.enc`
 - `requirements.txt` - runtime dependencies
 - `requirements-ci.txt` - CI, lint, and test dependencies
