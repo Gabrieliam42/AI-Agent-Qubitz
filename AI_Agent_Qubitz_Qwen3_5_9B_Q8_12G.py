@@ -2258,6 +2258,13 @@ def _is_windows_backed_workspace(workspace: Path) -> bool:
     return resolved.startswith("/mnt/") and len(resolved) >= 7 and resolved[5].isalpha() and resolved[6] == "/"
 
 
+def _path_exists_safely(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _preferred_project_python(workspace: Path) -> Path | None:
     linux_candidate = _preferred_project_linux_python(workspace)
     windows_candidate = _preferred_project_windows_python(workspace)
@@ -2274,7 +2281,7 @@ def _preferred_project_python(workspace: Path) -> Path | None:
 
 def _preferred_project_linux_python(workspace: Path) -> Path | None:
     candidate = workspace / ".venv" / "bin" / "python"
-    if candidate.exists():
+    if _path_exists_safely(candidate):
         return candidate
     return None
 
@@ -2285,7 +2292,7 @@ def _preferred_project_windows_python(workspace: Path) -> Path | None:
         workspace / ".venv313" / "Scripts" / "python.exe",
         workspace / ".venv" / "Scripts" / "python.exe",
     ):
-        if candidate.exists():
+        if _path_exists_safely(candidate):
             return candidate
     return None
 
@@ -3296,6 +3303,7 @@ def _patch_local_only_dependencies(base: Any) -> None:
     def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
         self.last_model_resolution_note = ""
+        self._qubitz_model_load_retry_attempted = False
 
     def _wait_for_model_state(
         self: Any,
@@ -3376,7 +3384,55 @@ def _patch_local_only_dependencies(base: Any) -> None:
         )
 
     def _can_restart_mismatched_server(self: Any) -> bool:
-        return base.normalize_base_url(self.base_url) == base.DEFAULT_LLAMACPP_BASE_URL
+        base_url = base.normalize_base_url(self.base_url)
+        default_url = base.normalize_base_url(base.DEFAULT_LLAMACPP_BASE_URL)
+        if base_url == default_url:
+            return True
+        from urllib.parse import urlsplit
+
+        base_parts = urlsplit(base_url)
+        default_parts = urlsplit(default_url)
+        loopback_hosts = {"127.0.0.1", "localhost"}
+
+        def _port(parts: Any) -> int:
+            if parts.port is not None:
+                return int(parts.port)
+            return 443 if parts.scheme == "https" else 80
+
+        return (
+            (base_parts.hostname or "").lower() in loopback_hosts
+            and (default_parts.hostname or "").lower() in loopback_hosts
+            and _port(base_parts) == _port(default_parts)
+        )
+
+    def _is_transient_model_load_exit_error(self: Any, exc: Exception) -> bool:
+        return isinstance(exc, RuntimeError) and str(exc).startswith("llama-server exited while the model was loading.")
+
+    def _wait_for_model_state_with_retry(
+        self: Any,
+        timeout_seconds: float,
+        model_name: str,
+    ) -> tuple[list[dict[str, Any]], bool, bool, dict[str, Any], dict[str, Any]]:
+        try:
+            return self._wait_for_model_state(timeout_seconds)
+        except Exception as exc:
+            if not self._is_transient_model_load_exit_error(exc):
+                raise
+            if self._qubitz_model_load_retry_attempted:
+                raise
+            self._qubitz_model_load_retry_attempted = True
+            self.last_model_resolution_note = (
+                f"llama.cpp load failed once during startup; retrying once after clean restart for {model_name!r}."
+            )
+            managed_process = self.server_process.process if self.server_process is not None else None
+            _terminate_llamacpp_listener_processes(base, self.base_url, managed_process=managed_process)
+            if self.server_process is not None:
+                self.server_process.process = None
+            self.server_process = base.LlamaCppServerProcess(self.config)
+            self.server_process.ensure_started()
+            self.transports = []
+            self.transport = base.DirectHTTPTransport(self.base_url, "direct")
+            return self._wait_for_model_state(timeout_seconds)
 
     def _restart_with_requested_model(self: Any, timeout_seconds: float) -> None:
         managed_process = self.server_process.process if self.server_process is not None else None
@@ -3413,8 +3469,11 @@ def _patch_local_only_dependencies(base: Any) -> None:
         timeout_seconds: float = 300.0,
     ) -> str:
         self.last_model_resolution_note = ""
-        models, props_available, saw_loading, last_model_probe, last_props_probe = self._wait_for_model_state(
+        self._qubitz_model_load_retry_attempted = False
+        models, props_available, saw_loading, last_model_probe, last_props_probe = self._wait_for_model_state_with_retry(
             timeout_seconds
+            ,
+            model_name,
         )
         if props_available and not models:
             return model_name
@@ -3428,8 +3487,10 @@ def _patch_local_only_dependencies(base: Any) -> None:
                 f"with the requested GGUF for {model_name!r}."
             )
             self._restart_with_requested_model(timeout_seconds)
-            models, props_available, saw_loading, last_model_probe, last_props_probe = self._wait_for_model_state(
+            models, props_available, saw_loading, last_model_probe, last_props_probe = self._wait_for_model_state_with_retry(
                 timeout_seconds
+                ,
+                model_name,
             )
             if props_available and not models:
                 return model_name
@@ -3458,6 +3519,8 @@ def _patch_local_only_dependencies(base: Any) -> None:
 
     base.LlamaCppClient.__init__ = __init__
     base.LlamaCppClient._wait_for_model_state = _wait_for_model_state
+    base.LlamaCppClient._is_transient_model_load_exit_error = _is_transient_model_load_exit_error
+    base.LlamaCppClient._wait_for_model_state_with_retry = _wait_for_model_state_with_retry
     base.LlamaCppClient._raise_model_state_error = _raise_model_state_error
     base.LlamaCppClient._can_restart_mismatched_server = _can_restart_mismatched_server
     base.LlamaCppClient._restart_with_requested_model = _restart_with_requested_model
