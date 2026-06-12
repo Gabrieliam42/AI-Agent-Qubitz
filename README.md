@@ -124,6 +124,6 @@ If you already have a compatible `llama.cpp` server or GGUF path, you can point 
 - `--num-ctx`
 - `--num-predict`
 - `--max-steps`
-- `--thinking-effort` with `default`, `low`, `medium`, `high`, or `xhigh`
+- `--thinking-effort` with `default(xhigh)`, `low`, `medium`, `high`, or `xhigh`
 
 In the GUI, the lower-right `Effort` selector maps to the same preset.
