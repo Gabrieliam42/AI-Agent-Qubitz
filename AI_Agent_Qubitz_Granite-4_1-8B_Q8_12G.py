@@ -127,6 +127,9 @@ FOREGROUND_EXISTING_SCRIPT_HINTS = (
 THINKING_EFFORT_OPTIONS = ("default", "low", "medium", "high", "xhigh")
 THINKING_EFFORT_DISPLAY_OPTIONS = ("Default", "low", "medium", "high", "xhigh")
 SIMPLE_DIRECT_QUESTION_STEP_CAP = 2
+SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP = 8
+FOREGROUND_EXISTING_SCRIPT_STEP_CAP = 12
+FOREGROUND_EXISTING_SCRIPT_RETRY_STEP_CAP = 24
 THINKING_EFFORT_STEP_CAPS: dict[str, int | None] = {
     "default": None,
     "low": 8,
@@ -136,7 +139,7 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int | None] = {
 }
 GRANITE_12G_TARGET_VRAM_GIB = 12.0
 GRANITE_12G_OTHER_GPU_NUM_CTX = 101376
-GRANITE_12G_RTX3090_NUM_CTX = 262144
+GRANITE_12G_RTX3090_NUM_CTX = 131072
 GRANITE_12G_DEFAULT_NUM_CTX = GRANITE_12G_OTHER_GPU_NUM_CTX
 GRANITE_12G_MAX_NUM_CTX = GRANITE_12G_OTHER_GPU_NUM_CTX
 GRANITE_12G_DEFAULT_NUM_PREDICT = 8096
@@ -3690,12 +3693,22 @@ class LocalOnlyApp:
                 return min(configured, override)
 
             def _effective_prompt_max_steps(self, prompt: str) -> int:
-                if self._should_bypass_embedding_retrieval(prompt):
-                    configured = int(getattr(self.config, "max_steps", getattr(base, "MAX_TOOL_STEPS", 0)))
-                    if configured <= 0:
-                        return SIMPLE_DIRECT_QUESTION_STEP_CAP
-                    return min(configured, SIMPLE_DIRECT_QUESTION_STEP_CAP)
-                return self._effective_max_steps()
+                effective = self._effective_max_steps()
+                prompt_limit: int | None = None
+                retry_override = int(getattr(self, "_prompt_step_retry_override", 0) or 0)
+                if retry_override > 0:
+                    prompt_limit = retry_override
+                elif self._should_bypass_embedding_retrieval(prompt):
+                    prompt_limit = SIMPLE_DIRECT_QUESTION_STEP_CAP
+                elif self._is_foreground_existing_script_task(prompt):
+                    prompt_limit = FOREGROUND_EXISTING_SCRIPT_STEP_CAP
+                if prompt_limit is None:
+                    return effective
+                if prompt_limit <= 0:
+                    return 0
+                if effective <= 0:
+                    return prompt_limit
+                return min(effective, prompt_limit)
 
             def _adaptive_step_budget(self, prompt: str) -> tuple[int, list[str]]:
                 original = int(getattr(self.config, "max_steps", getattr(base, "MAX_TOOL_STEPS", 0)))
@@ -3704,6 +3717,44 @@ class LocalOnlyApp:
                     return super()._adaptive_step_budget(prompt)
                 finally:
                     setattr(self.config, "max_steps", original)
+
+            def _is_retryable_final_answer(self, prompt: str, answer: str) -> bool:
+                normalized = answer.strip()
+                if not normalized:
+                    return True
+                if normalized.startswith("Stopped after reaching the maximum tool steps"):
+                    return True
+                if normalized.startswith("Stopped without a final answer."):
+                    return True
+                lowered = normalized.lower()
+                if "you returned neither tool calls nor a final answer" in lowered:
+                    return True
+                if not (
+                    self._should_bypass_embedding_retrieval(prompt)
+                    or self._is_foreground_existing_script_task(prompt)
+                ):
+                    return False
+                obvious_non_answer_markers = (
+                    "i do not have enough context",
+                    "i don't have enough context",
+                    "i cannot answer that from the provided information",
+                    "i can't answer that from the provided information",
+                    "please provide more context",
+                    "please provide the missing information",
+                    "not enough information",
+                )
+                return any(marker in lowered for marker in obvious_non_answer_markers)
+
+            def _retry_step_cap_for_failed_answer(self, prompt: str, answer: str) -> tuple[int | None, str]:
+                if getattr(self, "_prompt_step_retry_override", None):
+                    return None, ""
+                if not self._is_retryable_final_answer(prompt, answer):
+                    return None, ""
+                if self._should_bypass_embedding_retrieval(prompt):
+                    return SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP, "simple direct question"
+                if self._is_foreground_existing_script_task(prompt):
+                    return FOREGROUND_EXISTING_SCRIPT_RETRY_STEP_CAP, "foreground existing-entrypoint task"
+                return None, ""
 
             def _should_bypass_embedding_retrieval(self, prompt: str) -> bool:
                 cleaned = prompt.strip()
@@ -4347,7 +4398,17 @@ class LocalOnlyApp:
                 if bypass_retrieval or foreground_existing_script_task:
                     base.MCPHost.list_tools = _prompt_aware_list_tools
                 try:
-                    return await super()._run_async(prompt, callback)
+                    answer = await super()._run_async(prompt, callback)
+                    retry_step_cap, retry_label = self._retry_step_cap_for_failed_answer(prompt, answer)
+                    if retry_step_cap is not None:
+                        self._emit(
+                            callback,
+                            "status",
+                            f"First {retry_label} attempt did not produce a usable final answer; retrying once with step cap {retry_step_cap}.",
+                        )
+                        self._prompt_step_retry_override = retry_step_cap
+                        answer = await super()._run_async(prompt, callback)
+                    return answer
                 finally:
                     base.MCPHost.list_tools = original_list_tools
                     self._tool_definitions_cache = original_cache
@@ -4363,6 +4424,7 @@ class LocalOnlyApp:
                     self._task_case_guidance = ""
                     self._ump_context = ""
                     self._runtime_fact_context = ""
+                    self._prompt_step_retry_override = None
 
             def _system_prompt(
                 self,
@@ -4491,7 +4553,7 @@ class LocalOnlyApp:
                 self._append_transcript(
                     "system",
                     (
-                        "12 GB Granite profile active. Context is capped at 101376, Max Output is capped at 8096, "
+                        "12 GB Granite profile active. Context is capped at 101376 on non-3090 GPUs and 131072 on RTX 3090, Max Output is capped at 8096, "
                         "retrieval embeddings stay on GPU, and llama.cpp uses q8_0 KV cache."
                     ),
                 )
