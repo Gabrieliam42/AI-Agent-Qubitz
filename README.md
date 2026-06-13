@@ -23,8 +23,6 @@ It is intended to run primarily under WSL2/Linux, including WSL-hosted workspace
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16_Embd.py` - 24 GB class embedding-enabled GPT-OSS 20B F16 variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_DeepSeek-R1-QwenD-32B_Q4_K_M_Embd.py` - 24 GB class embedding-enabled DeepSeek R1 Distill Qwen 32B variant using `BAAI/bge-code-v1`
 
-Each variant also has a matching `.md` summary file in the repo.
-
 ## Runtime behavior
 
 - Short simple questions use a fast path that skips broader retrieval, embedding generation, and local skill/MCP expansion.
@@ -43,7 +41,6 @@ Each variant also has a matching `.md` summary file in the repo.
 ## Main files
 
 - Variant scripts: the seven `AI_Agent_Qubitz_*.py` files above
-- Variant docs: matching `AI_Agent_Qubitz_*.md` files
 - `qubitz_ump_local.py` - optional local UMP helper used opportunistically by the variants
 - `HARNESS.enc` - encrypted harness copy
 - `QUBITZ_HARNESS_KEY.local.txt` - local harness-key helper file
