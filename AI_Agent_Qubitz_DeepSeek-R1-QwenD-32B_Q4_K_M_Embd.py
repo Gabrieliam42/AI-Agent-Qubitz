@@ -4,6 +4,7 @@ from __future__ import annotations
 # This file intentionally embeds both the wrapper implementation and its
 # corresponding base app so it can run independently.
 
+import asyncio
 import ast
 import difflib
 import hashlib
@@ -135,6 +136,7 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int | None] = {
 SIMPLE_DIRECT_QUESTION_STEP_CAP = 2
 SIMPLE_DIRECT_QUESTION_NUM_PREDICT_CAP = 128
 SIMPLE_DIRECT_QUESTION_FORCED_THINKING_EFFORT = "low"
+SIMPLE_DIRECT_QUESTION_FIRST_ATTEMPT_TIMEOUT_SECONDS = 75.0
 SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP = 8
 FOREGROUND_EXISTING_SCRIPT_STEP_CAP = 12
 FOREGROUND_EXISTING_SCRIPT_RETRY_STEP_CAP = 24
@@ -4305,7 +4307,23 @@ class LocalOnlyApp:
                 if bypass_retrieval or foreground_existing_script_task:
                     base.MCPHost.list_tools = _prompt_aware_list_tools
                 try:
-                    answer = await super()._run_async(prompt, callback)
+                    if bypass_retrieval and not getattr(self, "_prompt_step_retry_override", None):
+                        try:
+                            answer = await asyncio.wait_for(
+                                super()._run_async(prompt, callback),
+                                timeout=SIMPLE_DIRECT_QUESTION_FIRST_ATTEMPT_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.TimeoutError:
+                            self._emit(
+                                callback,
+                                "status",
+                                "First simple direct question attempt exceeded the "
+                                f"{SIMPLE_DIRECT_QUESTION_FIRST_ATTEMPT_TIMEOUT_SECONDS:g}s wall-clock limit; "
+                                "switching to the bounded retry path.",
+                            )
+                            answer = ""
+                    else:
+                        answer = await super()._run_async(prompt, callback)
                     retry_step_cap, retry_label = self._retry_step_cap_for_failed_answer(prompt, answer)
                     if retry_step_cap is not None:
                         self._emit(
