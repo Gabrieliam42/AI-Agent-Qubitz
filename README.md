@@ -1,8 +1,8 @@
 # Qubitz
 
-Qubitz is a standalone local-only AI agent for GGUF models on `llama.cpp`. It is oriented to local LLM workflows only: no API keys, no cloud inference, no subscriptions, and no paid hosted services are required.
+Qubitz is a standalone local-only AI agent for GGUF models on `llama.cpp`. It is oriented to local LLM workflows only: no cloud inference, no subscriptions, and no paid hosted services are required.
 
-It is intended to run primarily under WSL2/Linux, including WSL-hosted workspaces and Windows-hosted workspaces accessed through the WSL-to-Windows bridge.
+It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted workspaces and Windows-hosted workspaces accessed through the WSL-to-Windows bridge.
 
 ## What it includes
 
@@ -32,17 +32,15 @@ It is intended to run primarily under WSL2/Linux, including WSL-hosted workspace
 
 ## Harness behavior
 
-- If both `HARNESS.txt` and `HARNESS.enc` exist in the workspace root, the variants use `HARNESS.txt`.
-- If `HARNESS.txt` is absent and `HARNESS.enc` exists, they fall back to `HARNESS.enc`.
+- It uses `HARNESS.enc` that exists in the workspace root
 - `HARNESS.enc` is excluded from normal retrieval context paths so the encrypted duplicate is not injected.
-- `--encrypt-harness` writes or refreshes `HARNESS.enc` from `HARNESS.txt`.
-- `QUBITZ_HARNESS_KEY.local.txt` or `QUBITZ_HARNESS_KEY` is used only for encrypted-harness operations.
+- `QUBITZ_HARNESS_KEY.local.txt` is also used for the harness loading.
 
 ## Main files
 
 - Variant scripts: the seven `AI_Agent_Qubitz_*.py` files above
-- `qubitz_ump_local.py` - optional local UMP helper used opportunistically by the variants
-- `HARNESS.enc` - encrypted harness copy
+- `qubitz_ump_local.py` - optional local UMP (Universal Memory Protocol) helper used opportunistically by the variants
+- `HARNESS.enc` - harness
 - `QUBITZ_HARNESS_KEY.local.txt` - local harness-key helper file
 - `requirements.txt` - runtime dependencies
 - `requirements-ci.txt` - CI, lint, and test dependencies
@@ -82,6 +80,6 @@ If you already have a compatible `llama.cpp` server or GGUF path, point a varian
 - `--num-ctx`
 - `--num-predict`
 - `--max-steps`
-- `--thinking-effort` with `default`, `low`, `medium`, `high`, or `xhigh`
+- `--thinking-effort` with `default`(xhigh), `low`, `medium`, `high`, or `xhigh`
 
 In the GUI, the lower-right `Effort` selector maps to the same preset.
