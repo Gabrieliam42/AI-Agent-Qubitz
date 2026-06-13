@@ -15,8 +15,8 @@ It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted work
 
 ## Variant scripts
 
-- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - 12 GB class embedding-enabled Qwen 3.5 9B Q8 variant using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py` - 12 GB class embedding-enabled Granite 4.1 8B Q8 variant using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - 12GB VRAM GPU embedding-enabled Qwen 3.5 9B Q8 variant using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py` - 12GB VRAM GPU embedding-enabled Granite 4.1 8B Q8 variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_GLM_4_7_Flash_Embd.py` - 24 GB class embedding-enabled GLM 4.7 Flash variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - 24 GB class embedding-enabled Devstral Small 2 variant using `codesage/codesage-large-v2`
 - `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` - 24 GB class embedding-enabled Gemma 4 31B IT QAT variant using `codesage/codesage-large-v2`
