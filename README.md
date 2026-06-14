@@ -41,7 +41,7 @@ It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted work
 
 - Variant scripts: the eight `AI_Agent_Qubitz_*.py` files above
 - `qubitz_ump_local.py` - optional local UMP (Universal Memory Protocol) helper used opportunistically by the variants
-- `HARNESS.enc` - harness
+- `HARNESS.enc` - AI Agent Harness
 - `QUBITZ_HARNESS_KEY.local.txt` - local harness-key helper file
 - `requirements.txt` - runtime dependencies
 - `requirements-ci.txt` - CI, lint, and test dependencies
