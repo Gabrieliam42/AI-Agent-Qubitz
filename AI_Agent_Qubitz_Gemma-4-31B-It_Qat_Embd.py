@@ -8485,7 +8485,9 @@ class LocalOnlyApp:
                 effective = self._effective_max_steps()
                 prompt_limit: int | None = None
                 retry_override = int(getattr(self, "_prompt_step_retry_override", 0) or 0)
-                if retry_override > 0:
+                if retry_override < 0:
+                    prompt_limit = 0
+                elif retry_override > 0:
                     prompt_limit = retry_override
                 elif self._should_bypass_embedding_retrieval(prompt):
                     prompt_limit = SIMPLE_DIRECT_QUESTION_STEP_CAP
@@ -9253,6 +9255,14 @@ class LocalOnlyApp:
                         )
                         self._prompt_step_retry_override = retry_step_cap
                         answer = await super()._run_async(prompt, callback)
+                        if self._should_bypass_embedding_retrieval(prompt) and self._is_retryable_final_answer(prompt, answer):
+                            self._emit(
+                                callback,
+                                "status",
+                                "Fast simple direct question paths did not produce a usable final answer; continuing with an unlimited fallback path until a final answer is produced.",
+                            )
+                            self._prompt_step_retry_override = -1
+                            answer = await super()._run_async(prompt, callback)
                     return answer
                 finally:
                     base.MCPHost.list_tools = original_list_tools

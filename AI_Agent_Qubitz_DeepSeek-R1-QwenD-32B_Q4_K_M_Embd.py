@@ -136,7 +136,6 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int | None] = {
 SIMPLE_DIRECT_QUESTION_STEP_CAP = 2
 SIMPLE_DIRECT_QUESTION_NUM_PREDICT_CAP = 128
 SIMPLE_DIRECT_QUESTION_FORCED_THINKING_EFFORT = "low"
-SIMPLE_DIRECT_QUESTION_FIRST_ATTEMPT_TIMEOUT_SECONDS = 75.0
 SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP = 8
 FOREGROUND_EXISTING_SCRIPT_STEP_CAP = 12
 FOREGROUND_EXISTING_SCRIPT_RETRY_STEP_CAP = 24
@@ -3513,7 +3512,9 @@ class LocalOnlyApp:
                 effective = self._effective_max_steps()
                 prompt_limit: int | None = None
                 retry_override = int(getattr(self, "_prompt_step_retry_override", 0) or 0)
-                if retry_override > 0:
+                if retry_override < 0:
+                    prompt_limit = 0
+                elif retry_override > 0:
                     prompt_limit = retry_override
                 elif self._should_bypass_embedding_retrieval(prompt):
                     prompt_limit = SIMPLE_DIRECT_QUESTION_STEP_CAP
@@ -4307,23 +4308,7 @@ class LocalOnlyApp:
                 if bypass_retrieval or foreground_existing_script_task:
                     base.MCPHost.list_tools = _prompt_aware_list_tools
                 try:
-                    if bypass_retrieval and not getattr(self, "_prompt_step_retry_override", None):
-                        try:
-                            answer = await asyncio.wait_for(
-                                super()._run_async(prompt, callback),
-                                timeout=SIMPLE_DIRECT_QUESTION_FIRST_ATTEMPT_TIMEOUT_SECONDS,
-                            )
-                        except asyncio.TimeoutError:
-                            self._emit(
-                                callback,
-                                "status",
-                                "First simple direct question attempt exceeded the "
-                                f"{SIMPLE_DIRECT_QUESTION_FIRST_ATTEMPT_TIMEOUT_SECONDS:g}s wall-clock limit; "
-                                "switching to the bounded retry path.",
-                            )
-                            answer = ""
-                    else:
-                        answer = await super()._run_async(prompt, callback)
+                    answer = await super()._run_async(prompt, callback)
                     retry_step_cap, retry_label = self._retry_step_cap_for_failed_answer(prompt, answer)
                     if retry_step_cap is not None:
                         self._emit(
@@ -4333,6 +4318,14 @@ class LocalOnlyApp:
                         )
                         self._prompt_step_retry_override = retry_step_cap
                         answer = await super()._run_async(prompt, callback)
+                        if self._should_bypass_embedding_retrieval(prompt) and self._is_retryable_final_answer(prompt, answer):
+                            self._emit(
+                                callback,
+                                "status",
+                                "Fast simple direct question paths did not produce a usable final answer; continuing with an unlimited fallback path until a final answer is produced.",
+                            )
+                            self._prompt_step_retry_override = -1
+                            answer = await super()._run_async(prompt, callback)
                     if self._existing_script_browser_urls:
                         answer = _rewrite_answer_urls_from_helper(answer, self._existing_script_browser_urls)
                     return answer
