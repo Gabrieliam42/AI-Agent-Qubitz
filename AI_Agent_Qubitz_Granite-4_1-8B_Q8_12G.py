@@ -3300,6 +3300,60 @@ def _terminate_llamacpp_listener_processes(
     return sorted(terminated)
 
 
+def _terminate_llamacpp_processes_by_name(base: Any) -> list[int]:
+    terminated: set[int] = set()
+    process_names = ("llama-server", "llama-server.exe")
+    in_wsl_fn = getattr(base, "in_wsl", None)
+    powershell = shutil.which("powershell.exe") if callable(in_wsl_fn) and in_wsl_fn() else (shutil.which("powershell.exe") or shutil.which("powershell"))
+    if powershell:
+        names_literal = ", ".join(f"'{name}'" for name in process_names)
+        script = textwrap.dedent(
+            f"""
+            $ErrorActionPreference = 'SilentlyContinue'
+            $names = @({names_literal})
+            $pids = @()
+            foreach ($name in $names) {{
+                $pids += @(Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+            }}
+            $pids = @($pids | Where-Object {{ $_ -gt 0 }} | Select-Object -Unique)
+            foreach ($processId in $pids) {{
+                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+            }}
+            $pids | ConvertTo-Json -Compress
+            """
+        ).strip()
+        powershell_command = [powershell, "-NoProfile", "-Command", script]
+        if callable(in_wsl_fn) and in_wsl_fn() and str(powershell).lower().endswith(".exe"):
+            powershell_command = base.wrap_windows_command_for_wsl(powershell_command)
+        completed = subprocess.run(
+            powershell_command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode == 0:
+            terminated.update(_parse_listener_pid_output(completed.stdout or ""))
+    if os.name != "nt" and shutil.which("pgrep"):
+        completed = subprocess.run(
+            ["pgrep", "-f", "llama-server"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        for pid in _parse_listener_pid_output(completed.stdout or ""):
+            if pid in terminated:
+                continue
+            try:
+                os.kill(pid, 15)
+                terminated.add(pid)
+            except OSError:
+                continue
+    terminated.update(_terminate_repo_local_wsl_llamacpp_processes(terminated))
+    return sorted(terminated)
+
+
 def _patch_local_only_dependencies(base: Any) -> None:
     if getattr(base, "_QUBITZ_STRICT_MODEL_PATCHED", False):
         return
@@ -3473,6 +3527,14 @@ def _patch_local_only_dependencies(base: Any) -> None:
     def _is_transient_model_load_exit_error(self: Any, exc: Exception) -> bool:
         return isinstance(exc, RuntimeError) and str(exc).startswith("llama-server exited while the model was loading.")
 
+    def _wait_for_listener_shutdown(self: Any, timeout_seconds: float = 12.0) -> bool:
+        deadline = time.time() + max(1.0, timeout_seconds)
+        while time.time() < deadline:
+            if not self._reachable_transports(self.base_url):
+                return True
+            time.sleep(0.25)
+        return False
+
     def _wait_for_model_state_with_retry(
         self: Any,
         timeout_seconds: float,
@@ -3491,6 +3553,12 @@ def _patch_local_only_dependencies(base: Any) -> None:
             )
             managed_process = self.server_process.process if self.server_process is not None else None
             _terminate_llamacpp_listener_processes(base, self.base_url, managed_process=managed_process)
+            if not self._wait_for_listener_shutdown():
+                _terminate_llamacpp_processes_by_name(base)
+                if not self._wait_for_listener_shutdown():
+                    raise RuntimeError(
+                        f"Failed to stop the previous local llama-server listener at {self.base_url} before retrying model load."
+                    )
             if self.server_process is not None:
                 self.server_process.process = None
             self.server_process = base.LlamaCppServerProcess(self.config)
@@ -3502,6 +3570,12 @@ def _patch_local_only_dependencies(base: Any) -> None:
     def _restart_with_requested_model(self: Any, timeout_seconds: float) -> None:
         managed_process = self.server_process.process if self.server_process is not None else None
         _terminate_llamacpp_listener_processes(base, self.base_url, managed_process=managed_process)
+        if not self._wait_for_listener_shutdown():
+            _terminate_llamacpp_processes_by_name(base)
+            if not self._wait_for_listener_shutdown():
+                raise RuntimeError(
+                    f"Failed to stop the previous local llama-server listener at {self.base_url} before starting the requested model."
+                )
         if self.server_process is not None:
             self.server_process.process = None
         self.server_process = base.LlamaCppServerProcess(self.config)
@@ -3585,6 +3659,7 @@ def _patch_local_only_dependencies(base: Any) -> None:
     base.LlamaCppClient.__init__ = __init__
     base.LlamaCppClient._wait_for_model_state = _wait_for_model_state
     base.LlamaCppClient._is_transient_model_load_exit_error = _is_transient_model_load_exit_error
+    base.LlamaCppClient._wait_for_listener_shutdown = _wait_for_listener_shutdown
     base.LlamaCppClient._wait_for_model_state_with_retry = _wait_for_model_state_with_retry
     base.LlamaCppClient._raise_model_state_error = _raise_model_state_error
     base.LlamaCppClient._can_restart_mismatched_server = _can_restart_mismatched_server
@@ -4760,10 +4835,36 @@ class LocalOnlyApp:
         return config
 
     def run_cli(self, config: Any, initial_prompt: str | None = None) -> None:
+        for stream in (getattr(sys, "stdout", None), getattr(sys, "stderr", None)):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                try:
+                    reconfigure(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+
+        def _write_console(text: Any = "") -> None:
+            rendered = str(text)
+            try:
+                print(rendered)
+                return
+            except UnicodeEncodeError:
+                stream = getattr(sys, "stdout", None)
+                encoding = getattr(stream, "encoding", None) or "utf-8"
+                data = (rendered + os.linesep).encode(encoding, errors="replace")
+                buffer = getattr(stream, "buffer", None)
+                if buffer is not None:
+                    buffer.write(data)
+                    buffer.flush()
+                    return
+                if stream is not None:
+                    stream.write(data.decode(encoding, errors="replace"))
+                    stream.flush()
+
         runner = self.base.AgentRunner(config)
 
         def emit(kind: str, message: str) -> None:
-            print(f"[{kind}] {message}")
+            _write_console(f"[{kind}] {message}")
 
         if initial_prompt:
             if initial_prompt.lower().startswith("/bg "):
@@ -4778,19 +4879,19 @@ class LocalOnlyApp:
                     sandbox_id = sandbox["sandbox_id"]
                     workspace = Path(sandbox["root"])
                 meta = runner.background_jobs.start(prompt, config=config, workspace=workspace, sandbox_id=sandbox_id)
-                print(json.dumps(meta, ensure_ascii=False, indent=2))
+                _write_console(json.dumps(meta, ensure_ascii=False, indent=2))
                 return
             if initial_prompt.lower() in {"/jobs", "/bg-jobs"}:
-                print(json.dumps(runner.background_jobs.list_jobs(), ensure_ascii=False, indent=2))
+                _write_console(json.dumps(runner.background_jobs.list_jobs(), ensure_ascii=False, indent=2))
                 return
-            print(runner.run_sync(initial_prompt, emit))
+            _write_console(runner.run_sync(initial_prompt, emit))
             return
-        print(f"{self.display_name} CLI. Type 'exit' to stop.")
+        _write_console(f"{self.display_name} CLI. Type 'exit' to stop.")
         while True:
             try:
                 prompt = input("> ").strip()
             except EOFError:
-                print()
+                _write_console()
                 break
             if prompt.lower() in {"exit", "quit"}:
                 break
@@ -4802,13 +4903,13 @@ class LocalOnlyApp:
                     config=config,
                     workspace=runner.workspace,
                 )
-                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                _write_console(json.dumps(payload, ensure_ascii=False, indent=2))
                 continue
             if prompt.lower() in {"/jobs", "/bg-jobs"}:
-                print(json.dumps(runner.background_jobs.list_jobs(), ensure_ascii=False, indent=2))
+                _write_console(json.dumps(runner.background_jobs.list_jobs(), ensure_ascii=False, indent=2))
                 continue
             answer = runner.run_sync(prompt, emit)
-            print(answer)
+            _write_console(answer)
 
     def serve_mcp(self, workspace: Path) -> None:
         server = _build_local_mcp_server(self.base, workspace, self.runtime_workspace, self.wrapper_script)
