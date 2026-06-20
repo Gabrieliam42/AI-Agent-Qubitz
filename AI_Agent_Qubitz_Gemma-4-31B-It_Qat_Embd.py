@@ -123,12 +123,109 @@ FOREGROUND_EXISTING_SCRIPT_HINTS = (
     "use the existing",
     "preferred existing script",
 )
+IMPLICIT_EXISTING_ENTRYPOINT_HINTS = (
+    "use this project as it already exists",
+    "use the project as it already exists",
+    "use this workspace as it already exists",
+    "use the workspace as it already exists",
+    "existing project script",
+    "existing project helper",
+    "existing project entrypoint",
+    "existing project command",
+    "do not create a replacement script",
+    "do not reimplement it",
+    "do not fix the project",
+)
+IMPLICIT_ENTRYPOINT_DISCOVERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "be",
+    "browser",
+    "by",
+    "command",
+    "commands",
+    "create",
+    "current",
+    "do",
+    "existing",
+    "first",
+    "fix",
+    "for",
+    "from",
+    "helper",
+    "helpers",
+    "if",
+    "in",
+    "is",
+    "it",
+    "its",
+    "line",
+    "not",
+    "of",
+    "on",
+    "one",
+    "open",
+    "or",
+    "project",
+    "reimplement",
+    "replacement",
+    "return",
+    "script",
+    "setup",
+    "tabs",
+    "task",
+    "the",
+    "them",
+    "this",
+    "those",
+    "to",
+    "urls",
+    "use",
+    "workspace",
+}
+IMPLICIT_ENTRYPOINT_WEIGHT_BY_TOKEN = {
+    "article": 5,
+    "articles": 5,
+    "browser": 2,
+    "fetch": 6,
+    "get": 6,
+    "headline": 5,
+    "headlines": 5,
+    "link": 4,
+    "links": 4,
+    "list": 4,
+    "news": 5,
+    "open": 2,
+    "story": 6,
+    "stories": 6,
+    "tab": 2,
+    "tabs": 2,
+    "top": 6,
+    "url": 4,
+    "urls": 4,
+}
+IMPLICIT_ENTRYPOINT_MIN_SCORE = 12
 THINKING_EFFORT_OPTIONS = ("default", "low", "medium", "high", "xhigh")
 THINKING_EFFORT_DISPLAY_OPTIONS = ("Default", "low", "medium", "high", "xhigh")
 SIMPLE_DIRECT_QUESTION_STEP_CAP = 2
 SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP = 8
 FOREGROUND_EXISTING_SCRIPT_STEP_CAP = 12
 FOREGROUND_EXISTING_SCRIPT_RETRY_STEP_CAP = 24
+
+
+@dataclass
+class RouteDecision:
+    selected_route: str
+    reason: str
+    scores: dict[str, int]
+    features: dict[str, Any]
+    fallback_routes: list[str] = field(default_factory=list)
+    trace_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+
 THINKING_EFFORT_STEP_CAPS: dict[str, int | None] = {
     "default": None,
     "low": 8,
@@ -370,6 +467,10 @@ def _resolve_existing_entrypoint_spec(base: Any, workspace: Path, prompt: str) -
                 "command": f"make {shlex.quote(target)}",
             },
         )
+    if not specs:
+        implicit_spec = _discover_implicit_existing_entrypoint_spec(base, workspace, prompt)
+        if implicit_spec is not None:
+            add_spec(f"implicit:{implicit_spec['label']}", implicit_spec)
     return specs[0] if specs else None
 
 
@@ -379,6 +480,150 @@ def _prompt_has_explicit_entrypoint_command(prompt: str) -> bool:
         or PACKAGE_SCRIPT_COMMAND_PATTERN.search(prompt)
         or MAKE_TARGET_COMMAND_PATTERN.search(prompt)
     )
+
+
+def _prompt_prefers_implicit_existing_entrypoint(prompt: str) -> bool:
+    cleaned = prompt.strip()
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if not any(hint in lowered for hint in WORKSPACE_CONTEXT_HINTS):
+        return False
+    return any(hint in lowered for hint in IMPLICIT_EXISTING_ENTRYPOINT_HINTS)
+
+
+def _implicit_entrypoint_prompt_tokens(prompt: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw_token in re.findall(r"[a-z0-9_]+", prompt.lower()):
+        if len(raw_token) < 3:
+            continue
+        if raw_token.isdigit():
+            continue
+        if raw_token in IMPLICIT_ENTRYPOINT_DISCOVERY_STOPWORDS:
+            continue
+        tokens.add(raw_token)
+    if "url" in prompt.lower():
+        tokens.add("url")
+    if "urls" in prompt.lower():
+        tokens.add("urls")
+    return tokens
+
+
+def _score_implicit_existing_entrypoint_candidate(
+    prompt_tokens: set[str],
+    relative_path: Path,
+    candidate_path: Path,
+) -> int:
+    stem_tokens = set(re.findall(r"[a-z0-9]+", candidate_path.stem.lower()))
+    if not stem_tokens:
+        return -999
+    score = 0
+    for token in prompt_tokens.intersection(stem_tokens):
+        score += IMPLICIT_ENTRYPOINT_WEIGHT_BY_TOKEN.get(token, 3)
+    if candidate_path.suffix.lower() == ".py":
+        score += 4
+    elif candidate_path.suffix.lower() in {".ps1", ".bat", ".cmd", ".sh"}:
+        score += 1
+    depth = len(relative_path.parts)
+    if depth <= 2:
+        score += 3
+    elif depth <= 4:
+        score += 1
+    if stem_tokens.intersection({"test", "tests", "smoke", "benchmark", "bench", "eval"}):
+        score -= 12
+    if candidate_path.stem.lower().startswith("open") and prompt_tokens.intersection({"get", "fetch", "story", "stories", "news"}):
+        score -= 5
+    if prompt_tokens.intersection({"get", "fetch", "story", "stories", "news", "article", "articles", "headline", "headlines"}):
+        if candidate_path.suffix.lower() != ".py":
+            score -= 2
+        if stem_tokens.intersection({"get", "fetch", "story", "stories", "news", "article", "articles", "headline", "headlines", "top"}):
+            score += 6
+    if prompt_tokens.intersection({"url", "urls"}):
+        if stem_tokens.intersection({"url", "urls"}):
+            score += 6
+        if stem_tokens.intersection({"summary", "summaries"}):
+            score -= 4
+    return score
+
+
+PROJECT_GOAL_CLARIFICATION = (
+    "Please specify the concrete project result you want, such as the command to run, artifact to produce, "
+    "behavior to verify, or file or entrypoint to use."
+)
+
+
+def _project_use_prompt_lacks_concrete_goal(
+    base: Any,
+    prompt: str,
+    entrypoint: dict[str, Any] | None,
+    file_tokens: Sequence[str],
+) -> bool:
+    if entrypoint is not None or file_tokens:
+        return False
+    lowered = prompt.strip().lower()
+    if not any(hint in lowered for hint in WORKSPACE_CONTEXT_HINTS):
+        return False
+    if base.READ_INTENT_PATTERN.search(prompt) or base.EDIT_INTENT_PATTERN.search(prompt) or base.VERIFY_INTENT_PATTERN.search(prompt):
+        return False
+    if re.search(r"\b(build|compile|test|lint|run|start|serve|deploy|fetch|get|list|open|read|inspect|explain|summarize|find|search|convert|train|evaluate|benchmark|install|update|fix|create|delete|rename)\b", lowered):
+        return False
+    return any(marker in lowered for marker in ("produce one concrete verified project result", "produce a project result", "use the active workspace", "use this project", "use the project", "use this workspace", "use the workspace"))
+
+
+def _discover_implicit_existing_entrypoint_spec(base: Any, workspace: Path, prompt: str) -> dict[str, Any] | None:
+    if not _prompt_prefers_implicit_existing_entrypoint(prompt):
+        return None
+    lowered = prompt.lower()
+    negative_edit_only = any(
+        phrase in lowered
+        for phrase in (
+            "do not fix the project",
+            "do not reimplement it",
+            "do not create a replacement script",
+            "do not create a new script",
+        )
+    )
+    if base.VERIFY_INTENT_PATTERN.search(prompt):
+        return None
+    if base.EDIT_INTENT_PATTERN.search(prompt) and not negative_edit_only:
+        return None
+    prompt_tokens = _implicit_entrypoint_prompt_tokens(prompt)
+    if not prompt_tokens:
+        return None
+    excluded_dirs = {str(item).casefold() for item in getattr(base, "EXCLUDED_DIRS", set())}
+    best_path: Path | None = None
+    best_relative: Path | None = None
+    best_score = -999
+    for root, dirs, files in os.walk(workspace):
+        root_path = Path(root)
+        relative_root = Path(".") if root_path == workspace else root_path.relative_to(workspace)
+        if len(relative_root.parts) > 5:
+            dirs[:] = []
+            continue
+        dirs[:] = [
+            entry
+            for entry in dirs
+            if entry.casefold() not in excluded_dirs and not entry.startswith(".")
+        ]
+        for filename in files:
+            candidate_path = root_path / filename
+            if candidate_path.suffix.lower() not in SCRIPT_FILE_SUFFIXES:
+                continue
+            relative_path = candidate_path.relative_to(workspace)
+            score = _score_implicit_existing_entrypoint_candidate(prompt_tokens, relative_path, candidate_path)
+            if score > best_score:
+                best_score = score
+                best_path = candidate_path.resolve()
+                best_relative = relative_path
+    if best_path is None or best_relative is None or best_score < IMPLICIT_ENTRYPOINT_MIN_SCORE:
+        return None
+    return {
+        "kind": "file",
+        "path": best_path,
+        "label": str(best_relative),
+        "origin": "implicit_discovery",
+        "score": best_score,
+    }
 
 
 def _collect_browser_helper_candidates(workspace: Path) -> list[Path]:
@@ -468,10 +713,12 @@ def _requested_output_fields(prompt: str) -> list[str]:
         for canonical, aliases in DIRECT_RESULT_FIELD_ALIASES.items():
             best: int | None = None
             for alias in aliases:
-                position = lowered.find(alias)
-                if position == -1:
+                if alias == "by":
                     continue
-                best = position if best is None else min(best, position)
+                match = re.search(rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])", lowered)
+                if match is None:
+                    continue
+                best = match.start() if best is None else min(best, match.start())
             if best is not None:
                 positions.append((best, canonical))
         for _, field in sorted(positions):
@@ -2144,9 +2391,22 @@ def _preferred_project_python(workspace: Path) -> Path | None:
 
 
 def _preferred_project_linux_python(workspace: Path) -> Path | None:
-    candidate = workspace / ".venv" / "bin" / "python"
-    if _path_exists_safely(candidate):
-        return candidate
+    for candidate in (
+        workspace / ".venv" / "bin" / "python",
+        workspace / ".venv_linux" / "bin" / "python",
+        workspace / ".venv_wsl" / "bin" / "python",
+        workspace / "venv" / "bin" / "python",
+        workspace / "env" / "bin" / "python",
+    ):
+        if _path_exists_safely(candidate):
+            return candidate
+    try:
+        for child in sorted(workspace.iterdir()):
+            candidate = child / "bin" / "python"
+            if _path_exists_safely(child / "pyvenv.cfg") and _path_exists_safely(candidate):
+                return candidate
+    except OSError:
+        return None
     return None
 
 
@@ -2155,9 +2415,19 @@ def _preferred_project_windows_python(workspace: Path) -> Path | None:
         workspace / ".venv312" / "Scripts" / "python.exe",
         workspace / ".venv313" / "Scripts" / "python.exe",
         workspace / ".venv" / "Scripts" / "python.exe",
+        workspace / ".venv_win" / "Scripts" / "python.exe",
+        workspace / "venv" / "Scripts" / "python.exe",
+        workspace / "env" / "Scripts" / "python.exe",
     ):
         if _path_exists_safely(candidate):
             return candidate
+    try:
+        for child in sorted(workspace.iterdir()):
+            candidate = child / "Scripts" / "python.exe"
+            if _path_exists_safely(child / "pyvenv.cfg") and _path_exists_safely(candidate):
+                return candidate
+    except OSError:
+        return None
     return None
 
 
@@ -3025,6 +3295,39 @@ def _select_direct_workspace_python(base: Any, workspace: Path) -> tuple[Path, s
     return None
 
 
+def _build_powershell_management_command(base: Any, script: str) -> list[str] | None:
+    in_wsl_fn = getattr(base, "in_wsl", None)
+    in_wsl_session = callable(in_wsl_fn) and in_wsl_fn()
+    candidates: list[str] = []
+    if in_wsl_session:
+        candidates.extend(
+            [
+                shutil.which("powershell.exe") or "",
+                shutil.which("pwsh.exe") or "",
+                "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+                "/mnt/c/Program Files/PowerShell/7/pwsh.exe",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                shutil.which("powershell.exe") or shutil.which("powershell") or "",
+                shutil.which("pwsh.exe") or shutil.which("pwsh") or "",
+            ]
+        )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate_path = Path(candidate)
+        if candidate_path.anchor and not candidate_path.exists():
+            continue
+        command = [candidate, "-NoProfile", "-Command", script]
+        if in_wsl_session and candidate.lower().endswith(".exe"):
+            command = base.wrap_windows_command_for_wsl(command)
+        return command
+    return None
+
+
 def _terminate_llamacpp_listener_processes(
     base: Any,
     base_url: str,
@@ -3043,26 +3346,22 @@ def _terminate_llamacpp_listener_processes(
         if managed_pid > 0:
             terminated.add(managed_pid)
     port = _llamacpp_listener_port_for_base(base, base_url)
-    in_wsl_fn = getattr(base, "in_wsl", None)
-    powershell = shutil.which("powershell.exe") if callable(in_wsl_fn) and in_wsl_fn() else (shutil.which("powershell.exe") or shutil.which("powershell"))
-    if powershell:
-        script = textwrap.dedent(
-            f"""
-            $ErrorActionPreference = 'SilentlyContinue'
-            $connections = Get-NetTCPConnection -LocalPort {port} -State Listen
-            $pids = @()
-            if ($connections) {{
-                $pids = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object {{ $_ -gt 0 }})
-            }}
-            foreach ($processId in $pids) {{
-                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-            }}
-            $pids | ConvertTo-Json -Compress
-            """
-        ).strip()
-        powershell_command = [powershell, "-NoProfile", "-Command", script]
-        if callable(in_wsl_fn) and in_wsl_fn() and str(powershell).lower().endswith(".exe"):
-            powershell_command = base.wrap_windows_command_for_wsl(powershell_command)
+    script = textwrap.dedent(
+        f"""
+        $ErrorActionPreference = 'SilentlyContinue'
+        $connections = Get-NetTCPConnection -LocalPort {port} -State Listen
+        $pids = @()
+        if ($connections) {{
+            $pids = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object {{ $_ -gt 0 }})
+        }}
+        foreach ($processId in $pids) {{
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+        }}
+        $pids | ConvertTo-Json -Compress
+        """
+    ).strip()
+    powershell_command = _build_powershell_management_command(base, script)
+    if powershell_command:
         completed = subprocess.run(
             powershell_command,
             capture_output=True,
@@ -3094,28 +3393,24 @@ def _terminate_llamacpp_listener_processes(
 def _terminate_llamacpp_processes_by_name(base: Any) -> list[int]:
     terminated: set[int] = set()
     process_names = ("llama-server", "llama-server.exe")
-    in_wsl_fn = getattr(base, "in_wsl", None)
-    powershell = shutil.which("powershell.exe") if callable(in_wsl_fn) and in_wsl_fn() else (shutil.which("powershell.exe") or shutil.which("powershell"))
-    if powershell:
-        names_literal = ", ".join(f"'{name}'" for name in process_names)
-        script = textwrap.dedent(
-            f"""
-            $ErrorActionPreference = 'SilentlyContinue'
-            $names = @({names_literal})
-            $pids = @()
-            foreach ($name in $names) {{
-                $pids += @(Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-            }}
-            $pids = @($pids | Where-Object {{ $_ -gt 0 }} | Select-Object -Unique)
-            foreach ($processId in $pids) {{
-                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-            }}
-            $pids | ConvertTo-Json -Compress
-            """
-        ).strip()
-        powershell_command = [powershell, "-NoProfile", "-Command", script]
-        if callable(in_wsl_fn) and in_wsl_fn() and str(powershell).lower().endswith(".exe"):
-            powershell_command = base.wrap_windows_command_for_wsl(powershell_command)
+    names_literal = ", ".join(f"'{name}'" for name in process_names)
+    script = textwrap.dedent(
+        f"""
+        $ErrorActionPreference = 'SilentlyContinue'
+        $names = @({names_literal})
+        $pids = @()
+        foreach ($name in $names) {{
+            $pids += @(Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+        }}
+        $pids = @($pids | Where-Object {{ $_ -gt 0 }} | Select-Object -Unique)
+        foreach ($processId in $pids) {{
+            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+        }}
+        $pids | ConvertTo-Json -Compress
+        """
+    ).strip()
+    powershell_command = _build_powershell_management_command(base, script)
+    if powershell_command:
         completed = subprocess.run(
             powershell_command,
             capture_output=True,
@@ -3528,7 +3823,7 @@ _EMBEDDED_BASE_SOURCE = (
     '    "cublasLt64_12.dll",\n'
     '    "cudart64_12.dll",\n'
     ')\n'
-    'DEFAULT_EMBED_MODEL = "codesage/codesage-large-v2"\n'
+    'DEFAULT_EMBED_MODEL = "BAAI/bge-code-v1"\n'
     'DEFAULT_HARNESS_NAME = "HARNESS.txt"\n'
     'DEFAULT_ENCRYPTED_HARNESS_NAME = "HARNESS.enc"\n'
     'HARNESS_KEY_ENV_NAME = "QUBITZ_HARNESS_KEY"\n'
@@ -8467,6 +8762,72 @@ def _patch_gemma_model_defaults(base: Any) -> None:
 
     base.download_default_gguf_model = _download_default_gguf_model
 
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    '            "--parallel",\n'
+    '            str(DEFAULT_LLAMACPP_PARALLEL),\n',
+    '            "--parallel",\n'
+    '            str(DEFAULT_LLAMACPP_PARALLEL),\n'
+    '            "--cache-type-k",\n'
+    '            "q8_0",\n'
+    '            "--cache-type-v",\n'
+    '            "q8_0",\n',
+)
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    "        import torch\n"
+    "        import torch.nn.functional as torch_f\n"
+    "        from transformers import AutoModel, AutoTokenizer\n",
+    "        import torch\n"
+    "        import torch.nn.functional as torch_f\n"
+    "        import transformers.modeling_utils as transformers_modeling_utils\n"
+    "        from transformers.pytorch_utils import Conv1D as TransformersConv1D\n"
+    "        if not hasattr(transformers_modeling_utils, \"Conv1D\"):\n"
+    "            transformers_modeling_utils.Conv1D = TransformersConv1D\n"
+    "        from transformers import AutoModel, AutoTokenizer\n",
+)
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    "        except Exception as exc:\n"
+    "            if target_device != \"cuda\":\n"
+    "                raise\n"
+    "            self.load_warning = f\"CUDA embedder load failed, falling back to CPU: {type(exc).__name__}: {exc}\"\n"
+    "            self._report(self.load_warning)\n"
+    "            if torch.cuda.is_available():\n"
+    "                torch.cuda.empty_cache()\n"
+    "            self._model = self._load_model(AutoModel, base_load_kwargs)\n"
+    "            self.device = \"cpu\"\n"
+    "            load_kwargs = dict(base_load_kwargs)\n",
+    "        except Exception as exc:\n"
+    "            if target_device != \"cuda\":\n"
+    "                raise\n"
+    "            if load_kwargs.get(\"attn_implementation\") == \"flash_attention_2\":\n"
+    "                self._report(\n"
+    "                    f\"CUDA embedder load with FlashAttention2 failed: {type(exc).__name__}: {exc}; retrying CUDA without FlashAttention2.\"\n"
+    "                )\n"
+    "                if torch.cuda.is_available():\n"
+    "                    torch.cuda.empty_cache()\n"
+    "                load_kwargs = dict(base_load_kwargs)\n"
+    "                load_kwargs[\"dtype\"] = torch.float16\n"
+    "                try:\n"
+    "                    self._model = self._load_model(AutoModel, load_kwargs)\n"
+    "                    self.device = target_device\n"
+    "                except Exception as retry_exc:\n"
+    "                    self.load_warning = f\"CUDA embedder load failed, falling back to CPU: {type(retry_exc).__name__}: {retry_exc}\"\n"
+    "                    self._report(self.load_warning)\n"
+    "                    if torch.cuda.is_available():\n"
+    "                        torch.cuda.empty_cache()\n"
+    "                    self._model = self._load_model(AutoModel, base_load_kwargs)\n"
+    "                    self.device = \"cpu\"\n"
+    "                    load_kwargs = dict(base_load_kwargs)\n"
+    "            else:\n"
+    "                self.load_warning = f\"CUDA embedder load failed, falling back to CPU: {type(exc).__name__}: {exc}\"\n"
+    "                self._report(self.load_warning)\n"
+    "                if torch.cuda.is_available():\n"
+    "                    torch.cuda.empty_cache()\n"
+    "                self._model = self._load_model(AutoModel, base_load_kwargs)\n"
+    "                self.device = \"cpu\"\n"
+    "                load_kwargs = dict(base_load_kwargs)\n",
+)
+
+
 def _load_embedded_base_module() -> Any:
     internal_name = f"{_EMBEDDED_BASE_MODULE_LABEL}__embedded__{Path(__file__).stem}"
     existing = sys.modules.get(internal_name)
@@ -8500,9 +8861,149 @@ def _patch_harness_loader(base: Any) -> None:
     excluded.add(getattr(base, "DEFAULT_ENCRYPTED_HARNESS_NAME", "HARNESS.enc"))
     base.EXCLUDED_RETRIEVAL_FILENAMES = excluded
     excluded_dirs = set(getattr(base, "EXCLUDED_DIRS", set()))
-    excluded_dirs.add(".ump")
+    excluded_dirs.update({".qubitz", ".ump", "backup"})
     base.EXCLUDED_DIRS = excluded_dirs
+    original_is_excluded_dir_name = base.is_excluded_dir_name
+
+    def _is_excluded_dir_name(name: str, configured: set[str] | None = None) -> bool:
+        normalized = name.strip().lower()
+        if normalized.startswith("tmp_smoke_results_"):
+            return True
+        return original_is_excluded_dir_name(name, configured)
+
+    base.is_excluded_dir_name = _is_excluded_dir_name
     base.load_harness_text = _load_harness_text
+
+
+def _patch_streaming_chat(base: Any) -> None:
+    if getattr(base.LlamaCppClient, "_qubitz_streaming_patched", False):
+        return
+    import httpx
+
+    original_chat = base.LlamaCppClient.chat
+    stream_state = threading.local()
+
+    def _chat(self: Any, **kwargs: Any) -> dict[str, Any]:
+        callback = getattr(stream_state, "callback", None)
+        transport = getattr(self, "transport", None)
+        if callback is None or getattr(transport, "label", "") != "direct":
+            return original_chat(self, **kwargs)
+        payload = {
+            "model": kwargs["model_name"],
+            "messages": kwargs["messages"],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "tools": kwargs["tools"],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "parse_tool_calls": True,
+            "max_tokens": kwargs["num_predict"],
+            "temperature": kwargs["temperature"],
+            "top_p": kwargs["top_p"],
+            "min_p": kwargs["min_p"],
+            "repeat_penalty": kwargs["repeat_penalty"],
+        }
+        reasoning_budget = getattr(stream_state, "reasoning_budget", None)
+        if reasoning_budget is not None:
+            payload["reasoning_budget"] = int(reasoning_budget)
+        reasoning_mode = getattr(stream_state, "reasoning_mode", None)
+        if reasoning_mode is not None:
+            payload["reasoning"] = reasoning_mode
+        content_parts: list[str] = []
+        pending_parts: list[str] = []
+        pending_chars = 0
+        last_emit_at = time.monotonic()
+        tool_parts: dict[int, dict[str, Any]] = {}
+        usage: dict[str, Any] = {}
+        finish_reason: str | None = None
+        received_event = False
+        try:
+            with httpx.Client(timeout=600.0) as client:
+                with client.stream(
+                    "POST",
+                    f"{transport.base_url}/v1/chat/completions",
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        event = json.loads(data)
+                        received_event = True
+                        if isinstance(event.get("usage"), dict):
+                            usage = event["usage"]
+                        choices = event.get("choices") or []
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        finish_reason = choice.get("finish_reason") or finish_reason
+                        delta = choice.get("delta") or {}
+                        content = delta.get("content") or ""
+                        if content:
+                            content = str(content)
+                            content_parts.append(content)
+                            pending_parts.append(content)
+                            pending_chars += len(content)
+                            now = time.monotonic()
+                            if pending_chars >= 64 or "\n" in content or now - last_emit_at >= 1.0:
+                                callback("".join(pending_parts))
+                                pending_parts.clear()
+                                pending_chars = 0
+                                last_emit_at = now
+                        for item in delta.get("tool_calls") or []:
+                            index = int(item.get("index", len(tool_parts)))
+                            current = tool_parts.setdefault(
+                                index,
+                                {
+                                    "id": "",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                },
+                            )
+                            if item.get("id"):
+                                current["id"] = item["id"]
+                            function = item.get("function") or {}
+                            if function.get("name"):
+                                current["function"]["name"] += str(function["name"])
+                            if function.get("arguments"):
+                                current["function"]["arguments"] += str(function["arguments"])
+                        if choice.get("finish_reason") is not None:
+                            break
+        except Exception:
+            if received_event:
+                raise
+            return original_chat(self, **kwargs)
+        if pending_parts:
+            callback("".join(pending_parts))
+        tool_calls = [tool_parts[index] for index in sorted(tool_parts)]
+        return {
+            "message": {
+                "role": "assistant",
+                "content": "".join(content_parts),
+                "tool_calls": base.LlamaCppClient._normalize_tool_calls(tool_calls),
+            },
+            "usage": usage,
+            "timings": {},
+            "finish_reason": finish_reason,
+        }
+
+    def _set_stream_callback(callback: Callable[[str], None] | None) -> None:
+        stream_state.callback = callback
+
+    def _set_reasoning_budget(reasoning_budget: int | None) -> None:
+        stream_state.reasoning_budget = reasoning_budget
+
+    def _set_reasoning_mode(reasoning_mode: str | None) -> None:
+        stream_state.reasoning_mode = reasoning_mode
+
+    base.LlamaCppClient.chat = _chat
+    base.LlamaCppClient._qubitz_streaming_patched = True
+    base.set_qubitz_stream_callback = _set_stream_callback
+    base.set_qubitz_reasoning_budget = _set_reasoning_budget
+    base.set_qubitz_reasoning_mode = _set_reasoning_mode
 
 
 class LocalOnlyApp:
@@ -8513,6 +9014,7 @@ class LocalOnlyApp:
         self.display_name = display_name
         _patch_gemma_model_defaults(self.base)
         _patch_local_only_dependencies(self.base)
+        _patch_streaming_chat(self.base)
         _patch_harness_loader(self.base)
         self.base.MCPHost = self._build_mcp_host_class()
         self.base.AgentRunner = self._build_agent_runner_class()
@@ -8559,13 +9061,14 @@ class LocalOnlyApp:
                 effective = self._effective_max_steps()
                 prompt_limit: int | None = None
                 retry_override = int(getattr(self, "_prompt_step_retry_override", 0) or 0)
+                selected_route = self._selected_route_name(prompt)
                 if retry_override < 0:
                     prompt_limit = 0
                 elif retry_override > 0:
                     prompt_limit = retry_override
-                elif self._should_bypass_embedding_retrieval(prompt):
+                elif selected_route == "simple_answer":
                     prompt_limit = SIMPLE_DIRECT_QUESTION_STEP_CAP
-                elif self._is_foreground_existing_script_task(prompt):
+                elif selected_route == "direct_existing_entrypoint":
                     prompt_limit = FOREGROUND_EXISTING_SCRIPT_STEP_CAP
                 if prompt_limit is None:
                     return effective
@@ -8594,10 +9097,8 @@ class LocalOnlyApp:
                 lowered = normalized.lower()
                 if "you returned neither tool calls nor a final answer" in lowered:
                     return True
-                if not (
-                    self._should_bypass_embedding_retrieval(prompt)
-                    or self._is_foreground_existing_script_task(prompt)
-                ):
+                selected_route = self._selected_route_name(prompt)
+                if selected_route not in {"simple_answer", "direct_existing_entrypoint"}:
                     return False
                 obvious_non_answer_markers = (
                     "i do not have enough context",
@@ -8615,9 +9116,10 @@ class LocalOnlyApp:
                     return None, ""
                 if not self._is_retryable_final_answer(prompt, answer):
                     return None, ""
-                if self._should_bypass_embedding_retrieval(prompt):
+                selected_route = self._selected_route_name(prompt)
+                if selected_route == "simple_answer":
                     return SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP, "simple direct question"
-                if self._is_foreground_existing_script_task(prompt):
+                if selected_route == "direct_existing_entrypoint":
                     return FOREGROUND_EXISTING_SCRIPT_RETRY_STEP_CAP, "foreground existing-entrypoint task"
                 return None, ""
 
@@ -8647,12 +9149,442 @@ class LocalOnlyApp:
                 lowered = cleaned.lower()
                 if "/bg" in lowered or "background job" in lowered:
                     return False
-                if _resolve_existing_entrypoint_spec(base, self.workspace, cleaned) is None:
+                entrypoint = _resolve_existing_entrypoint_spec(base, self.workspace, cleaned)
+                if entrypoint is None:
                     return False
-                return any(hint in lowered for hint in FOREGROUND_EXISTING_SCRIPT_HINTS) or _prompt_has_explicit_entrypoint_command(cleaned)
+                if re.search(r"\b(?:do not|without)\s+(?:run|execute|launch|start|invoke)\b", lowered):
+                    return False
+                if _prompt_has_explicit_entrypoint_command(cleaned):
+                    return True
+                if any(hint in lowered for hint in FOREGROUND_EXISTING_SCRIPT_HINTS):
+                    return True
+                if re.search(r"\b(run|execute|launch|start|invoke|test|use)\b", lowered):
+                    return True
+                return (
+                    str(entrypoint.get("origin", "") or "") == "implicit_discovery"
+                    and _prompt_prefers_implicit_existing_entrypoint(cleaned)
+                )
 
             def _resolve_existing_entrypoint_for_prompt(self, prompt: str) -> dict[str, Any] | None:
                 return _resolve_existing_entrypoint_spec(base, self.workspace, prompt)
+
+            def _resolve_read_only_prompt_files(self, prompt: str) -> list[Path]:
+                files: list[Path] = []
+                seen: set[str] = set()
+                max_files = int(getattr(base, "MAX_DIRECT_READ_FILES", 4))
+                for raw_token in getattr(base, "extract_file_tokens", lambda _text: [])(prompt):
+                    token = _normalize_prompt_path_token(raw_token)
+                    if not token or token.startswith(("http://", "https://")):
+                        continue
+                    try:
+                        candidate = base.resolve_workspace_path(
+                            self.workspace,
+                            token,
+                            allow_missing=False,
+                            allow_external=True,
+                        )
+                    except Exception:
+                        continue
+                    if not candidate.is_file():
+                        continue
+                    resolved = candidate.resolve()
+                    key = str(resolved).casefold()
+                    if key in seen:
+                        continue
+                    if callable(getattr(base, "is_sensitive_path_name", None)) and base.is_sensitive_path_name(resolved):
+                        continue
+                    text_checker = getattr(base, "is_probably_text_file", None)
+                    if callable(text_checker):
+                        with suppress(Exception):
+                            if not text_checker(resolved):
+                                continue
+                    elif resolved.suffix.lower() not in getattr(base, "TEXT_SUFFIXES", {".md", ".py", ".txt"}):
+                        continue
+                    seen.add(key)
+                    files.append(resolved)
+                    if len(files) >= max_files:
+                        break
+                return files
+
+            def _build_read_only_workspace_context(self, prompt: str) -> str:
+                files = self._resolve_read_only_prompt_files(prompt)
+                if not files:
+                    return ""
+                total_budget = max(1200, int(getattr(base, "MAX_DIRECT_READ_CHARS", 12000)))
+                per_file_budget = max(800, total_budget // max(1, len(files)))
+                parts = [
+                    "Wrapper read-only workspace context:",
+                    "The wrapper read these exact text file excerpts before model or tool orchestration.",
+                ]
+                used_chars = 0
+                for path in files:
+                    try:
+                        text = path.read_text(encoding="utf-8", errors="ignore")
+                    except Exception as exc:
+                        rel_error = str(path)
+                        with suppress(Exception):
+                            rel_error = str(base.relative_path(path, self.workspace))
+                        parts.append(f"File read failed: {rel_error} ({type(exc).__name__}: {exc})")
+                        continue
+                    if not text.strip():
+                        continue
+                    rel = str(path)
+                    with suppress(Exception):
+                        rel = str(base.relative_path(path, self.workspace))
+                    remaining = max(0, total_budget - used_chars)
+                    if remaining <= 0:
+                        break
+                    file_budget = min(per_file_budget, remaining)
+                    numbered_lines: list[str] = []
+                    char_count = 0
+                    for line_number, line in enumerate(text.splitlines(), start=1):
+                        numbered = f"{line_number}: {line}"
+                        projected = char_count + len(numbered) + 1
+                        if projected > file_budget:
+                            break
+                        numbered_lines.append(numbered)
+                        char_count = projected
+                    if not numbered_lines:
+                        continue
+                    used_chars += char_count
+                    parts.append(f"File: {rel}\nExcerpt:\n" + "\n".join(numbered_lines))
+                if len(parts) <= 2:
+                    return ""
+                parts.append(
+                    "Use only this read-only context unless it is insufficient; do not edit files or run commands for this route."
+                )
+                return "\n\n".join(parts)
+
+            def _extract_route_features(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+                cleaned = prompt.strip()
+                lowered = cleaned.lower()
+                mutation_forbidden = bool(
+                    re.search(
+                        r"\b(?:do not|don't|never|without)\b[^\n.;]{0,160}\b(?:create|edit|modify|change|write|delete|remove|move|rename)\w*\b",
+                        lowered,
+                    )
+                )
+                execution_forbidden = bool(
+                    re.search(
+                        r"\b(?:do not|don't|never|without)\b[^\n.;]{0,160}\b(?:run|execute|start|serve|build|compile|test|lint|benchmark|deploy|command)\w*\b",
+                        lowered,
+                    )
+                )
+                file_tokens = getattr(base, "extract_file_tokens", lambda _text: [])(cleaned)
+                entrypoint = self._resolve_existing_entrypoint_for_prompt(cleaned)
+                missing_context_markers = (
+                    "that file",
+                    "that script",
+                    "that function",
+                    "that class",
+                    "that error",
+                    "the above",
+                    "above code",
+                    "previous answer",
+                    "last answer",
+                    "which one",
+                )
+                features = {
+                    "prompt_length": len(cleaned),
+                    "line_count": max(1, cleaned.count("\n") + 1),
+                    "simple_question_candidate": self._should_bypass_embedding_retrieval(cleaned),
+                    "explicit_existing_entrypoint": self._is_foreground_existing_script_task(cleaned),
+                    "read_intent": bool(base.READ_INTENT_PATTERN.search(cleaned))
+                    or bool(
+                        re.search(
+                            r"\b(analy[sz]e|explain|summarize|compare|assess|understand)\b",
+                            lowered,
+                        )
+                    ),
+                    "edit_intent": bool(base.EDIT_INTENT_PATTERN.search(cleaned)) and not mutation_forbidden,
+                    "verify_intent": bool(base.VERIFY_INTENT_PATTERN.search(cleaned)),
+                    "workspace_context_needed": bool(
+                        any(hint in lowered for hint in WORKSPACE_CONTEXT_HINTS)
+                        or file_tokens
+                        or base.READ_INTENT_PATTERN.search(cleaned)
+                    ),
+                    "file_token_count": len(file_tokens),
+                    "mentions_tools_or_mcp": bool(
+                        any(token in lowered for token in ("tool", "tools", "mcp", "plugin", "server", "command"))
+                    ) and not execution_forbidden,
+                    "powershell_or_side_effect": bool(
+                        any(token in lowered for token in ("start-process", "powershell", "activate.ps1", ".ps1"))
+                    ),
+                    "plugin_or_skill_request": bool(
+                        any(token in lowered for token in ("skill", ".skills", "plugin", ".qubitz/plugins"))
+                    ),
+                    "has_entrypoint_spec": entrypoint is not None,
+                    "entrypoint_kind": str(entrypoint.get("kind", "") or "") if entrypoint is not None else "",
+                    "needs_missing_context": bool(
+                        (
+                            any(marker in lowered for marker in missing_context_markers)
+                            and not file_tokens
+                            and entrypoint is None
+                        )
+                        or _project_use_prompt_lacks_concrete_goal(base, cleaned, entrypoint, file_tokens)
+                    ),
+                }
+                return features, entrypoint
+
+            def _score_routes(self, features: dict[str, Any]) -> dict[str, int]:
+                scores = {
+                    "simple_answer": 0,
+                    "direct_existing_entrypoint": 0,
+                    "read_only_workspace": 0,
+                    "retrieval_plus_model": 0,
+                    "tool_loop": 0,
+                    "ask_user_missing_info": 0,
+                }
+                if features["simple_question_candidate"]:
+                    scores["simple_answer"] += 30
+                    scores["retrieval_plus_model"] -= 8
+                    scores["tool_loop"] -= 10
+                if features["explicit_existing_entrypoint"]:
+                    scores["direct_existing_entrypoint"] += 28
+                    scores["retrieval_plus_model"] -= 4
+                    scores["tool_loop"] -= 6
+                elif features["has_entrypoint_spec"]:
+                    scores["read_only_workspace"] += 8 if features["read_intent"] else 0
+                    scores["retrieval_plus_model"] += 8
+                if features["read_intent"]:
+                    scores["read_only_workspace"] += 10
+                if features["file_token_count"]:
+                    scores["read_only_workspace"] += 12
+                    scores["retrieval_plus_model"] += 4
+                if features["workspace_context_needed"]:
+                    scores["read_only_workspace"] += 5
+                    scores["retrieval_plus_model"] += 10
+                    scores["simple_answer"] -= 12
+                if features["edit_intent"]:
+                    scores["retrieval_plus_model"] += 12
+                    scores["tool_loop"] += 6
+                    scores["simple_answer"] -= 20
+                    scores["read_only_workspace"] -= 4
+                if features["verify_intent"]:
+                    scores["retrieval_plus_model"] += 10
+                    scores["tool_loop"] += 8
+                    scores["simple_answer"] -= 20
+                if features["mentions_tools_or_mcp"]:
+                    scores["tool_loop"] += 14
+                    scores["simple_answer"] -= 12
+                if features["powershell_or_side_effect"]:
+                    scores["direct_existing_entrypoint"] += 6
+                    scores["tool_loop"] += 4
+                if features["plugin_or_skill_request"]:
+                    scores["tool_loop"] += 10
+                    scores["simple_answer"] -= 8
+                if features["line_count"] > 1 or features["prompt_length"] > 220:
+                    scores["retrieval_plus_model"] += 4
+                    scores["simple_answer"] -= 6
+                if features["needs_missing_context"]:
+                    scores["ask_user_missing_info"] += 18
+                    scores["retrieval_plus_model"] -= 4
+                if max(scores.values()) <= 0:
+                    scores["retrieval_plus_model"] += 3
+                return scores
+
+            @staticmethod
+            def _fallback_routes_for_selection(selected_route: str) -> list[str]:
+                if selected_route in {"simple_answer", "direct_existing_entrypoint", "read_only_workspace"}:
+                    return ["retrieval_plus_model", "tool_loop"]
+                if selected_route == "tool_loop":
+                    return ["retrieval_plus_model"]
+                if selected_route == "ask_user_missing_info":
+                    return ["read_only_workspace", "retrieval_plus_model"]
+                return ["tool_loop"]
+
+            def _decide_route(self, prompt: str) -> RouteDecision:
+                features, entrypoint = self._extract_route_features(prompt)
+                scores = self._score_routes(features)
+                selected_route = max(
+                    scores.items(),
+                    key=lambda item: (
+                        item[1],
+                        item[0] == "simple_answer",
+                        item[0] == "direct_existing_entrypoint",
+                        item[0] == "retrieval_plus_model",
+                    ),
+                )[0]
+                if selected_route == "simple_answer":
+                    reason = "Short direct question with no workspace, file, or tool cues."
+                elif selected_route == "direct_existing_entrypoint":
+                    entry_label = str((entrypoint or {}).get("label", "") or "existing entrypoint")
+                    reason = f"Prompt points at {entry_label} and asks to use the existing workspace path first."
+                elif selected_route == "read_only_workspace":
+                    reason = "Read-oriented workspace prompt with explicit repo or file context and no edit requirement."
+                elif selected_route == "tool_loop":
+                    reason = "Prompt explicitly leans on tools, commands, MCP, plugins, or verification."
+                elif selected_route == "ask_user_missing_info":
+                    reason = "Prompt appears to reference missing context that should be clarified before proceeding."
+                else:
+                    reason = "Default project route: retrieve focused context first, then reason or use tools as needed."
+                return RouteDecision(
+                    selected_route=selected_route,
+                    reason=reason,
+                    scores=scores,
+                    features=features,
+                    fallback_routes=self._fallback_routes_for_selection(selected_route),
+                )
+
+            def _decide_locked_route(self, prompt: str) -> tuple[str, str]:
+                self._route_decision = self._decide_route(prompt)
+                return self._route_decision.selected_route, self._route_decision.reason
+
+            def _build_focused_file_context(self, prompt: str) -> str:
+                context = self._build_read_only_workspace_context(prompt)
+                if not context:
+                    return ""
+                return (
+                    context.replace("Wrapper read-only workspace context:", "Wrapper focused file context:", 1)
+                    .replace(
+                        "The wrapper read these exact text file excerpts before model or tool orchestration.",
+                        "The wrapper read these exact text file excerpts before semantic retrieval or tool orchestration.",
+                        1,
+                    )
+                    .replace(
+                        "Use only this read-only context unless it is insufficient; do not edit files or run commands for this route.",
+                        "Use this focused context first. Use file or command tools only when the task requires them, and widen to semantic retrieval only if these excerpts are insufficient.",
+                        1,
+                    )
+                )
+
+            def _build_metadata_or_lexical_context(self, prompt: str) -> str:
+                lowered = prompt.lower()
+                metadata_names: list[str] = []
+                metadata_groups = (
+                    (r"\b(python|dependency|dependencies|package|install|pytest|ruff)\b", ("pyproject.toml", "requirements.txt", "setup.cfg", "setup.py")),
+                    (r"\b(node|npm|pnpm|yarn|javascript|typescript)\b", ("package.json", "pnpm-workspace.yaml", "tsconfig.json")),
+                    (r"\b(make|cmake|build configuration)\b", ("Makefile", "CMakeLists.txt")),
+                    (r"\b(docker|container|compose)\b", ("Dockerfile", "docker-compose.yml", "compose.yml")),
+                )
+                for pattern, names in metadata_groups:
+                    if re.search(pattern, lowered):
+                        metadata_names.extend(names)
+                candidates: list[tuple[Path, int]] = []
+                for name in dict.fromkeys(metadata_names):
+                    path = (self.workspace / name).resolve()
+                    if path.is_file():
+                        candidates.append((path, 1))
+
+                symbols: list[str] = []
+                for match in re.finditer(r"`([A-Za-z_][A-Za-z0-9_.:-]{2,80})`", prompt):
+                    token = match.group(1)
+                    if "/" not in token and "\\" not in token and not Path(token).suffix:
+                        symbols.append(token)
+                for match in re.finditer(
+                    r"\b(?:class|function|method|symbol|variable|component|module)\s+([A-Za-z_][A-Za-z0-9_.:]{2,80})",
+                    prompt,
+                    re.IGNORECASE,
+                ):
+                    symbols.append(match.group(1))
+                rg = shutil.which("rg")
+                if rg is not None:
+                    for symbol in list(dict.fromkeys(symbols))[:3]:
+                        completed = subprocess.run(
+                            [
+                                rg,
+                                "-n",
+                                "--fixed-strings",
+                                "--max-count",
+                                "3",
+                                "--glob",
+                                "!**/.git/**",
+                                "--glob",
+                                "!**/.venv*/**",
+                                "--glob",
+                                "!**/node_modules/**",
+                                symbol,
+                                ".",
+                            ],
+                            cwd=self.workspace,
+                            capture_output=True,
+                            timeout=10,
+                            check=False,
+                        )
+                        output = base.decode_subprocess_output(completed.stdout)
+                        for raw_line in output.splitlines():
+                            path_text, separator, remainder = raw_line.partition(":")
+                            if not separator:
+                                continue
+                            line_text, separator, _ = remainder.partition(":")
+                            if not separator or not line_text.isdigit():
+                                continue
+                            path = (self.workspace / path_text).resolve()
+                            try:
+                                path.relative_to(self.workspace)
+                            except ValueError:
+                                continue
+                            if path.is_file():
+                                candidates.append((path, int(line_text)))
+
+                unique_candidates: list[tuple[Path, int]] = []
+                seen_paths: set[str] = set()
+                for path, line_number in candidates:
+                    key = str(path).casefold()
+                    if key in seen_paths:
+                        continue
+                    seen_paths.add(key)
+                    unique_candidates.append((path, line_number))
+                    if len(unique_candidates) >= 4:
+                        break
+                if not unique_candidates:
+                    return ""
+
+                parts = [
+                    "Wrapper staged metadata and lexical context:",
+                    "These exact local matches were resolved before semantic retrieval.",
+                ]
+                remaining_budget = max(1200, int(getattr(base, "MAX_DIRECT_READ_CHARS", 12000)))
+                for path, line_number in unique_candidates:
+                    try:
+                        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    except OSError:
+                        continue
+                    start = max(1, line_number - 25)
+                    end = min(len(lines), line_number + 25)
+                    excerpt_lines: list[str] = []
+                    for current in range(start, end + 1):
+                        rendered = f"{current}: {lines[current - 1]}"
+                        if len(rendered) + 1 > remaining_budget:
+                            break
+                        excerpt_lines.append(rendered)
+                        remaining_budget -= len(rendered) + 1
+                    if excerpt_lines:
+                        parts.append(
+                            f"File: {base.relative_path(path, self.workspace)}\nExcerpt:\n" + "\n".join(excerpt_lines)
+                        )
+                    if remaining_budget <= 0:
+                        break
+                if len(parts) <= 2:
+                    return ""
+                parts.append("Use these exact matches first; use tools to retrieve more context only if needed.")
+                return "\n\n".join(parts)
+
+            def _selected_route_name(self, prompt: str) -> str:
+                locked_name = str(getattr(self, "_locked_route_name", "") or "")
+                if locked_name:
+                    return locked_name
+                return self._decide_locked_route(prompt)[0]
+
+            def _clear_locked_route(self) -> None:
+                self._locked_route_name = ""
+                self._locked_route_reason = ""
+
+            def _route_status_message(self, prompt: str) -> str:
+                selected_route = self._selected_route_name(prompt)
+                if selected_route == "simple_answer":
+                    return (
+                        "Wrapper route: simple_answer. Hard-skip repository retrieval, embeddings, local plugins or skills, "
+                        "and MCP tool loading unless the direct answer path fails."
+                    )
+                if selected_route == "direct_existing_entrypoint":
+                    return (
+                        "Wrapper route: direct_existing_entrypoint. Run the existing workspace path first, then widen only "
+                        "if that path fails or returns insufficient verified output."
+                    )
+                if selected_route == "read_only_workspace":
+                    return "Wrapper route: read_only_workspace. Prefer focused repository context and read-only inspection first."
+                return "Wrapper route: retrieval_plus_model. Use focused local context before broader tool use."
 
             def _try_direct_existing_script_completion(
                 self,
@@ -8670,6 +9602,12 @@ class LocalOnlyApp:
                     for candidate in _collect_browser_helper_candidates(self.workspace)
                 }
                 entrypoint_label = str(entrypoint.get("label", "") or "entrypoint")
+                if str(entrypoint.get("origin", "") or "") == "implicit_discovery":
+                    self._emit(
+                        callback,
+                        "status",
+                        f"Wrapper direct path: discovered workspace entrypoint {entrypoint_label} from the project-use prompt.",
+                    )
                 self._emit(
                     callback,
                     "status",
@@ -8805,19 +9743,20 @@ class LocalOnlyApp:
                             browser_helper_text = browser_helper_path.read_text(encoding="utf-8", errors="ignore")
                 browser_urls = _extract_start_process_urls(browser_helper_text)
                 rows = _extract_structured_result_rows(f"{result.get('stderr', '')}\n{result.get('stdout', '')}")
-                target_count = expected_count or len(rows)
-                if target_count <= 0 or len(rows) < target_count:
+                direct_rows = rows or [{"url": url} for url in browser_urls[:DIRECT_SCRIPT_COMPLETION_MAX_URLS] if str(url).strip()]
+                target_count = expected_count or len(direct_rows)
+                if target_count <= 0 or len(direct_rows) < target_count:
                     self._emit(
                         callback,
                         "status",
                         (
                             "Wrapper direct path: extracted incomplete structured results "
-                            f"({len(rows)} row(s), expected {target_count}); falling back to the model loop."
+                            f"({len(direct_rows)} row(s), expected {target_count}); falling back to the model loop."
                         ),
                     )
                     return None
                 completed_rows: list[dict[str, Any]] = []
-                for index, row in enumerate(rows[:target_count]):
+                for index, row in enumerate(direct_rows[:target_count]):
                     merged = _normalize_result_row(dict(row))
                     if not str(merged.get("url", "")).strip() and index < len(browser_urls):
                         merged["url"] = browser_urls[index]
@@ -8865,11 +9804,12 @@ class LocalOnlyApp:
                             DIRECT_SCRIPT_COMPLETION_TIMEOUT_SECONDS,
                         )
                     browser_open_ran = int(browser_result.get("return_code", browser_result.get("returncode", 0))) == 0
-                helper_label = (
-                    str(base.relative_path(browser_helper_path, self.workspace))
-                    if browser_helper_path is not None
-                    else "inline Start-Process"
-                )
+                if not requested_browser_open:
+                    helper_label = "none"
+                elif browser_helper_path is not None:
+                    helper_label = str(base.relative_path(browser_helper_path, self.workspace))
+                else:
+                    helper_label = "inline Start-Process"
                 self._emit(
                     callback,
                     "status",
@@ -8897,10 +9837,13 @@ class LocalOnlyApp:
                 return _workspace_runtime_capabilities(base, self.workspace)
 
             def _task_class_label(self, prompt: str) -> str:
-                if self._should_bypass_embedding_retrieval(prompt):
+                selected_route = self._selected_route_name(prompt)
+                if selected_route == "simple_answer":
                     return "simple_direct_question"
-                if self._is_foreground_existing_script_task(prompt):
+                if selected_route == "direct_existing_entrypoint":
                     return "foreground_existing_script_task"
+                if selected_route == "read_only_workspace":
+                    return "read_only_workspace_task"
                 lowered = prompt.strip().lower()
                 if any(token in lowered for token in ("start-process", "powershell", "activate.ps1", ".ps1")):
                     return "powershell_or_side_effect_task"
@@ -8938,6 +9881,7 @@ class LocalOnlyApp:
                     interop_state = "not_applicable"
                 lines = [
                     f"- Task class: {self._task_class_label(prompt)}",
+                    f"- Selected route: {self._selected_route_name(prompt)}",
                     f"- Runtime: {'wsl' if capabilities.get('in_wsl') else 'non_wsl'}",
                     f"- Workspace kind: {'windows_backed' if capabilities.get('workspace_is_windows_backed') else 'wsl_native'}",
                     f"- Windows executable interop: {interop_state}",
@@ -8946,17 +9890,19 @@ class LocalOnlyApp:
                     f"- Preferred project python: {preferred_python}",
                     f"- Preferred project runner: {capabilities.get('preferred_python_runner', 'none') or 'none'}",
                     f"- Preferred llama runtime: {self._preferred_llama_runtime_label(capabilities)}",
+                    f"- Route reason: {getattr(self, '_locked_route_reason', '') or self._decide_locked_route(prompt)[1]}",
                     "- These runtime facts are authoritative for this task. Do not override or re-decide them.",
                 ]
                 return "\n".join(lines)
 
             def _select_task_guidance(self, prompt: str) -> str:
-                if self._should_bypass_embedding_retrieval(prompt):
+                selected_route = self._selected_route_name(prompt)
+                if selected_route == "simple_answer":
                     return (
                         "- This is a simple direct question. Answer directly and do not use tools unless they are "
                         "truly necessary.\n"
                     )
-                if self._is_foreground_existing_script_task(prompt):
+                if selected_route == "direct_existing_entrypoint":
                     capabilities = self._runtime_capabilities()
                     guidance = [
                         "- This is a foreground active-workspace task that asks you to use existing project functionality.",
@@ -8986,13 +9932,131 @@ class LocalOnlyApp:
                         ]
                     )
                     return "\n".join(guidance)
+                if selected_route == "read_only_workspace":
+                    return (
+                        "- This is a read-only workspace task.\n"
+                        "- Use the wrapper-provided file excerpts first when present.\n"
+                        "- Do not edit files, run commands, or invoke broad tools unless the provided file context is insufficient.\n"
+                        "- Return only the requested result, concisely.\n"
+                        "- Do not add reasoning, assumptions, evidence-status, or next-step sections unless the user requested them.\n"
+                    )
                 return ""
 
-            def _prioritize_tools_for_prompt(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
-                if self._should_bypass_embedding_retrieval(prompt):
-                    return []
-                if not self._is_foreground_existing_script_task(prompt):
+            @staticmethod
+            def _tool_name(tool: Any) -> str:
+                if isinstance(tool, dict):
+                    function = tool.get("function")
+                    if isinstance(function, dict):
+                        return str(function.get("name", "") or "")
+                    return str(tool.get("name", "") or "")
+                return str(getattr(tool, "name", "") or "")
+
+            def _filter_tools_by_intent(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
+                lowered = prompt.lower()
+                mutation_forbidden = bool(
+                    re.search(
+                        r"\b(?:do not|don't|never|without)\b[^\n.;]{0,160}\b(?:create|edit|modify|change|write|delete|remove|move|rename)\w*\b",
+                        lowered,
+                    )
+                )
+                execution_forbidden = bool(
+                    re.search(
+                        r"\b(?:do not|don't|never|without)\b[^\n.;]{0,160}\b(?:run|execute|start|serve|build|compile|test|lint|benchmark|deploy|command)\w*\b",
+                        lowered,
+                    )
+                )
+                read_intent = bool(base.READ_INTENT_PATTERN.search(prompt)) or bool(
+                    re.search(r"\b(explain|summarize|analyse|analyze|compare|find|search|review|inspect)\b", lowered)
+                )
+                edit_intent = bool(base.EDIT_INTENT_PATTERN.search(prompt)) and not mutation_forbidden
+                verify_intent = bool(base.VERIFY_INTENT_PATTERN.search(prompt))
+                execute_intent = bool(
+                    re.search(r"\b(run|execute|start|serve|build|compile|test|lint|benchmark|deploy)\b", lowered)
+                ) and not execution_forbidden
+                install_intent = bool(re.search(r"\b(install|dependency|dependencies|package|requirements)\b", lowered))
+                browser_intent = bool(re.search(r"\b(browser|tab|tabs|url|urls|http|https)\b", lowered))
+                mcp_intent = bool(re.search(r"\b(mcp|model context protocol)\b", lowered))
+                skill_intent = bool(re.search(r"\b(skill|skills)\b", lowered))
+                memory_intent = bool(re.search(r"\b(memory|remember|recall)\b", lowered))
+                sandbox_intent = bool(re.search(r"\b(sandbox|isolated)\b", lowered))
+                background_intent = bool(re.search(r"\b(background|job|jobs)\b", lowered))
+                known_intent = any(
+                    (
+                        edit_intent,
+                        read_intent,
+                        verify_intent,
+                        execute_intent,
+                        install_intent,
+                        browser_intent,
+                        mcp_intent,
+                        skill_intent,
+                        memory_intent,
+                        sandbox_intent,
+                        background_intent,
+                    )
+                )
+                if not known_intent:
                     return list(tools)
+                destructive_intent = not mutation_forbidden and bool(re.search(r"\b(delete|remove|erase)\b", lowered))
+                move_intent = not mutation_forbidden and bool(re.search(r"\b(move|rename)\b", lowered))
+                create_intent = not mutation_forbidden and bool(re.search(r"\b(create|add|make|mkdir)\b", lowered))
+                selected: list[Any] = []
+                for tool in tools:
+                    name = self._tool_name(tool)
+                    normalized = name.lower()
+                    allowed = normalized in {"read_file", "list_files", "search_text"}
+                    if memory_intent and ("memory" in normalized or "recall" in normalized):
+                        allowed = True
+                    if skill_intent and "skill" in normalized:
+                        allowed = True
+                    if edit_intent and normalized in {"write_file", "replace_text"}:
+                        allowed = True
+                    if edit_intent and create_intent and normalized in {"make_directory", "write_file"}:
+                        allowed = True
+                    if edit_intent and move_intent and normalized == "move_path":
+                        allowed = True
+                    if edit_intent and destructive_intent and normalized == "delete_path":
+                        allowed = True
+                    if (execute_intent or verify_intent or edit_intent) and (
+                        normalized.startswith("run_") or "command" in normalized
+                    ):
+                        allowed = True
+                    if install_intent and ("install" in normalized or "package" in normalized):
+                        allowed = True
+                    if browser_intent and ("browser" in normalized or "url" in normalized):
+                        allowed = True
+                    if mcp_intent and "mcp" in normalized:
+                        allowed = True
+                    if sandbox_intent and "sandbox" in normalized:
+                        allowed = True
+                    if background_intent and ("background" in normalized or "job" in normalized):
+                        allowed = True
+                    if allowed:
+                        selected.append(tool)
+                return selected
+
+            def _filter_cached_tool_definitions(self, prompt: str) -> None:
+                if self._tool_definitions_cache is None:
+                    return
+                filtered = self._prioritize_tools_for_prompt(prompt, self._tool_definitions_cache)
+                self._tool_definitions_cache = list(filtered)
+                self._tool_count_cache = len(filtered)
+
+            def _prioritize_tools_for_prompt(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
+                selected_route = self._selected_route_name(prompt)
+                if selected_route == "simple_answer":
+                    return []
+                if selected_route == "read_only_workspace":
+                    if self._build_read_only_workspace_context(prompt):
+                        return []
+                    read_only_names = {"read_file", "list_files", "search_text"}
+                    return [
+                        tool
+                        for tool in tools
+                        if self._tool_name(tool) in read_only_names
+                    ]
+                if selected_route != "direct_existing_entrypoint":
+                    return self._filter_tools_by_intent(prompt, tools)
                 interop_available = self._wsl_windows_interop_available()
                 interop_unavailable = self._wsl_windows_interop_unavailable()
                 direct_names = {
@@ -9030,7 +10094,7 @@ class LocalOnlyApp:
                 }
                 ordered_tools: list[tuple[tuple[int, int], Any]] = []
                 for index, tool in enumerate(tools):
-                    name = str(getattr(tool, "name", "") or "")
+                    name = self._tool_name(tool)
                     if interop_unavailable and (
                         name in {
                             "run_powershell_command",
@@ -9060,6 +10124,7 @@ class LocalOnlyApp:
                 if getattr(config, "runtime_workspace", None) is None:
                     config.runtime_workspace = runtime_workspace
                 super().__init__(config)
+                self._foreground_run_lock = threading.RLock()
                 self.local_only_config = LocalOnlyConfig.load(self.runtime_workspace, self.workspace)
                 plugins_enabled = self.local_only_config.plugins_enabled and _local_plugins_available(
                     self.runtime_workspace,
@@ -9106,6 +10171,8 @@ class LocalOnlyApp:
                 self._background_model_prewarm_completed = False
                 self._background_model_prewarm_failed = False
                 self._background_model_prewarm_error = ""
+                self._locked_route_name = ""
+                self._locked_route_reason = ""
 
             def _get_llm(self) -> Any:
                 with self._background_model_lock:
@@ -9196,12 +10263,111 @@ class LocalOnlyApp:
                     return f"Background model prewarm ready for {model_label}. {resolution_note}"
                 return f"Background model prewarm ready for {model_label}."
 
+            def run_sync(
+                self,
+                prompt: str,
+                callback: Callable[[str, str], None] | None = None,
+            ) -> str:
+                with self._foreground_run_lock:
+                    return self._run_sync_locked(prompt, callback)
+
+            def _run_sync_locked(
+                self,
+                prompt: str,
+                callback: Callable[[str, str], None] | None = None,
+            ) -> str:
+                started_at = time.perf_counter()
+                marks: dict[str, float] = {}
+
+                def mark(name: str) -> None:
+                    marks.setdefault(name, time.perf_counter())
+
+                def timed_callback(kind: str, message: str) -> None:
+                    if kind == "status":
+                        if message.startswith("Wrapper route:") or "asking for clarification" in message:
+                            mark("route_ready")
+                        if message.startswith(("Preparing repository context", "Retrieval cache", "Loaded cached retrieval")):
+                            mark("retrieval_start")
+                        if message.startswith(("Loading embedder ", "Restoring the embedder to CUDA")):
+                            mark("embedder_start")
+                        if message.startswith(("Embedder active on ", "Keeping the embedder on CPU")):
+                            mark("embedder_ready")
+                        if message.startswith("Encoding ") and " query chunk(s)" in message:
+                            mark("query_embedding_start")
+                        if message.startswith("Repository context ready"):
+                            mark("retrieval_ready")
+                            mark("query_embedding_ready")
+                        if message.startswith("Detecting the local llama.cpp"):
+                            mark("model_ready_start")
+                        if message.startswith("llama.cpp model ready:"):
+                            mark("model_ready")
+                        if message.startswith("Model step 1/"):
+                            mark("first_model_step")
+                    elif kind in {"tool", "assistant_delta"}:
+                        mark("first_model_response")
+                    if callback is not None:
+                        callback(kind, message)
+
+                try:
+                    return super().run_sync(prompt, timed_callback)
+                finally:
+                    finished_at = time.perf_counter()
+                    if "first_model_step" in marks and "first_model_response" not in marks:
+                        marks["first_model_response"] = finished_at
+                    timings: dict[str, float] = {
+                        "total_seconds": round(finished_at - started_at, 4),
+                    }
+
+                    def add_span(name: str, start_name: str, end_name: str) -> None:
+                        if start_name in marks and end_name in marks:
+                            timings[name] = round(max(0.0, marks[end_name] - marks[start_name]), 4)
+
+                    if "route_ready" in marks:
+                        timings["route_seconds"] = round(max(0.0, marks["route_ready"] - started_at), 4)
+                    add_span("retrieval_seconds", "retrieval_start", "retrieval_ready")
+                    add_span("embedder_load_or_restore_seconds", "embedder_start", "embedder_ready")
+                    add_span("query_embedding_seconds", "query_embedding_start", "query_embedding_ready")
+                    add_span("model_ready_seconds", "model_ready_start", "model_ready")
+                    add_span("first_model_response_seconds", "first_model_step", "first_model_response")
+                    self._last_phase_timings = timings
+                    if callback is not None:
+                        rendered = ", ".join(
+                            f"{name.removesuffix('_seconds')}={value:.3f}s" for name, value in timings.items()
+                        )
+                        callback("status", f"Phase timings: {rendered}.")
+
             async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
-                self._local_plugin_context = (
-                    self.local_plugins.render_for_prompt(prompt) if self.local_only_config.plugins_enabled else "None"
+                user_prompt = prompt
+                self._emit(
+                    callback,
+                    "status",
+                    "Gemma runtime profile: q8_0 K/V cache with FlashAttention2 to reduce 262K-context VRAM pressure.",
                 )
-                self._task_case_guidance = self._select_task_guidance(prompt)
-                self._runtime_fact_context = self._runtime_fact_block(prompt)
+                selected_route, route_reason = self._decide_locked_route(user_prompt)
+                self._locked_route_name = selected_route
+                self._locked_route_reason = route_reason
+                if selected_route in {"simple_answer", "read_only_workspace"}:
+                    base.set_qubitz_reasoning_budget(0)
+                    base.set_qubitz_reasoning_mode("off")
+                    self._emit(
+                        callback,
+                        "status",
+                        "Gemma concise route: reasoning budget disabled for this grounded direct/read-only request.",
+                    )
+                if selected_route == "ask_user_missing_info":
+                    self._emit(
+                        callback,
+                        "status",
+                        "The project-use request lacks a concrete result or target; skipping retrieval and asking for clarification.",
+                    )
+                    return PROJECT_GOAL_CLARIFICATION
+                self._local_plugin_context = (
+                    self.local_plugins.render_for_prompt(user_prompt)
+                    if self.local_only_config.plugins_enabled and selected_route not in {"simple_answer", "read_only_workspace"}
+                    else "None"
+                )
+                self._task_case_guidance = self._select_task_guidance(user_prompt)
+                self._runtime_fact_context = self._runtime_fact_block(user_prompt)
                 if self._local_plugin_context != "None":
                     self._emit(callback, "status", "Activated local plugin guidance from .qubitz/plugins.")
                 self._emit(
@@ -9217,13 +10383,21 @@ class LocalOnlyApp:
                     "status",
                     f"Thinking effort preset: {_display_thinking_effort(getattr(self.config, 'thinking_effort', 'default'))}.",
                 )
+                self._emit(callback, "status", self._route_status_message(user_prompt))
                 self._prepare_local_runtime_for_llm(callback)
-                bypass_retrieval = self._should_bypass_embedding_retrieval(prompt)
-                foreground_existing_script_task = self._is_foreground_existing_script_task(prompt)
+                bypass_retrieval = selected_route == "simple_answer"
+                foreground_existing_script_task = selected_route == "direct_existing_entrypoint"
+                read_only_workspace_task = selected_route == "read_only_workspace"
                 self._ump_context = ""
-                if not bypass_retrieval and not foreground_existing_script_task and self._ump_store is not None:
+                self._route_decision: RouteDecision | None = None
+                if (
+                    not bypass_retrieval
+                    and not foreground_existing_script_task
+                    and not read_only_workspace_task
+                    and self._ump_store is not None
+                ):
                     self._ump_context = self._ump_store.render_summary(
-                        query=prompt,
+                        query=user_prompt,
                         limit=max(3, getattr(base, "MAX_MEMORY_CONTEXT_RESULTS", 2) * 3),
                         max_chars=getattr(base, "MAX_MEMORY_CONTEXT_CHARS", 1200),
                         project_only=True,
@@ -9235,12 +10409,15 @@ class LocalOnlyApp:
                             "Loaded scoped local memory context from the runtime-root UMP store.",
                         )
                 if foreground_existing_script_task:
-                    direct_answer = self._try_direct_existing_script_completion(prompt, callback)
+                    direct_answer = self._try_direct_existing_script_completion(user_prompt, callback)
                     if direct_answer is not None:
                         self._ump_context = ""
                         self._local_plugin_context = "None"
                         self._task_case_guidance = ""
+                        self._simple_direct_mode = False
                         self._runtime_fact_context = ""
+                        self._prompt_step_retry_override = None
+                        self._clear_locked_route()
                         return direct_answer
                 original_format_context = None
                 original_should_skip_repo_retrieval = self._should_skip_repo_retrieval
@@ -9311,16 +10488,88 @@ class LocalOnlyApp:
                     )
                     self._tool_definitions_cache = None
                     self._tool_count_cache = 0
+                elif read_only_workspace_task:
+                    read_only_context = self._build_read_only_workspace_context(user_prompt)
+                    if read_only_context:
+                        class _DisabledSkillRegistry:
+                            warnings: list[str] = []
+
+                            def count(self) -> int:
+                                return 0
+
+                            def select_for_prompt(self, _prompt: str) -> list[Any]:
+                                return []
+
+                            def render_active_context(self, _active_skills: list[Any]) -> str:
+                                return ""
+
+                        def _filtered_emit(
+                            callback_arg: Callable[[str, str], None] | None,
+                            kind: str,
+                            message: str,
+                        ) -> None:
+                            if kind == "status":
+                                if message == "Preparing repository context before loading the generation model to keep more VRAM free for embeddings.":
+                                    message = "Wrapper read-only path prepared direct file context without embedding generation."
+                                elif " local skill(s) from .skills." in message:
+                                    return
+                                elif message.startswith("Retrieval GPU policy:"):
+                                    return
+                                elif message.startswith("Retrieval backend preference:"):
+                                    return
+                                elif message.startswith("Adaptive repository context budget:"):
+                                    return
+                                elif message == "Repository and memory context prepared.":
+                                    message = "Read-only file context prepared; memory context was skipped."
+                            return original_emit(callback_arg, kind, message)
+
+                        self._emit(
+                            callback,
+                            "status",
+                            "Wrapper read-only path: using explicit file excerpts and skipping embeddings, local skills, memory context, and MCP tool loading.",
+                        )
+                        original_format_context = self.retriever.format_context
+                        self.skills = _DisabledSkillRegistry()
+                        self._emit = _filtered_emit
+                        self._should_skip_repo_retrieval = lambda _prompt: False
+                        self.memory.build_context = lambda _prompt: ""
+                        self.retriever.format_context = lambda _prompt: read_only_context
+                        self._tool_definitions_cache = []
+                        self._tool_count_cache = 0
+                    else:
+                        self._emit(
+                            callback,
+                            "status",
+                            "Wrapper read-only path found no explicit readable file target; falling back to focused retrieval.",
+                        )
+
+                if not bypass_retrieval and not foreground_existing_script_task and not read_only_workspace_task:
+                    staged_context = self._build_focused_file_context(user_prompt)
+                    staged_label = "focused-file"
+                    if not staged_context:
+                        staged_context = self._build_metadata_or_lexical_context(user_prompt)
+                        staged_label = "metadata/lexical"
+                    if staged_context:
+                        original_format_context = self.retriever.format_context
+                        self.retriever.format_context = lambda _prompt: staged_context
+                        self._emit(
+                            callback,
+                            "status",
+                            f"Wrapper {staged_label} path: using verified local context before semantic retrieval.",
+                        )
 
                 async def _prompt_aware_list_tools(host_self: Any) -> list[Any]:
                     tools = await original_list_tools(host_self)
-                    return self._prioritize_tools_for_prompt(prompt, tools)
+                    return self._prioritize_tools_for_prompt(user_prompt, tools)
 
-                if bypass_retrieval or foreground_existing_script_task:
-                    base.MCPHost.list_tools = _prompt_aware_list_tools
+                base.MCPHost.list_tools = _prompt_aware_list_tools
+                self._filter_cached_tool_definitions(prompt)
+                base.set_qubitz_stream_callback(
+                    lambda delta: self._emit(callback, "assistant_delta", delta)
+                )
                 try:
                     answer = await super()._run_async(prompt, callback)
-                    retry_step_cap, retry_label = self._retry_step_cap_for_failed_answer(prompt, answer)
+                    retry_step_cap, retry_label = self._retry_step_cap_for_failed_answer(user_prompt, answer)
                     if retry_step_cap is not None:
                         self._emit(
                             callback,
@@ -9329,7 +10578,7 @@ class LocalOnlyApp:
                         )
                         self._prompt_step_retry_override = retry_step_cap
                         answer = await super()._run_async(prompt, callback)
-                        if self._should_bypass_embedding_retrieval(prompt) and self._is_retryable_final_answer(prompt, answer):
+                        if selected_route == "simple_answer" and self._is_retryable_final_answer(user_prompt, answer):
                             self._emit(
                                 callback,
                                 "status",
@@ -9339,6 +10588,9 @@ class LocalOnlyApp:
                             answer = await super()._run_async(prompt, callback)
                     return answer
                 finally:
+                    base.set_qubitz_stream_callback(None)
+                    base.set_qubitz_reasoning_budget(None)
+                    base.set_qubitz_reasoning_mode(None)
                     base.MCPHost.list_tools = original_list_tools
                     self._tool_definitions_cache = original_cache
                     self._tool_count_cache = original_count
@@ -9354,6 +10606,7 @@ class LocalOnlyApp:
                     self._simple_direct_mode = False
                     self._runtime_fact_context = ""
                     self._prompt_step_retry_override = None
+                    self._clear_locked_route()
 
             def _system_prompt(
                 self,
@@ -9374,7 +10627,7 @@ class LocalOnlyApp:
                     if effort_section:
                         prompt = f"{prompt}\n\nAdditional effort guidance:\n{effort_section}"
                     return prompt
-                original = super()._system_prompt(memory_context, active_skill_context, history_summary)
+                original = super()._system_prompt("", "", "")
                 effort_section = _thinking_effort_guidance(getattr(self.config, "thinking_effort", "default"))
                 overlay = textwrap.dedent(
                     f"""
@@ -9405,6 +10658,15 @@ class LocalOnlyApp:
                     """
                 ).rstrip()
                 combined = original + overlay
+                dynamic_sections: list[str] = []
+                if memory_context:
+                    dynamic_sections.append(f"Current memory context:\n{memory_context}")
+                if active_skill_context:
+                    dynamic_sections.append(f"Active local skill context:\n{active_skill_context}")
+                if history_summary:
+                    dynamic_sections.append(f"Condensed earlier conversation summary:\n{history_summary}")
+                if dynamic_sections:
+                    combined = f"{combined}\n\nDynamic context for this task:\n" + "\n\n".join(dynamic_sections)
                 if effort_section:
                     combined = f"{combined}\n\nAdditional effort guidance:\n{effort_section}"
                 return combined
@@ -9483,6 +10745,98 @@ class LocalOnlyApp:
                 self._background_model_prewarm_started = False
                 self._background_model_prewarm_cancelled = False
                 self.root.after(1200, self._maybe_start_background_model_prewarm)
+
+            def _start_prompt(self, prompt: str, *, queued: bool = False) -> None:
+                if queued:
+                    remaining = len(self.pending_prompts)
+                    remaining_text = (
+                        f"{remaining} more queued after this."
+                        if remaining
+                        else "Queue will be empty after this task."
+                    )
+                    self._append_transcript("status", f"Starting queued task. {remaining_text}")
+                self._append_transcript("user", prompt)
+                self._set_busy(True)
+                self._gui_run_serial = int(getattr(self, "_gui_run_serial", 0)) + 1
+                self._active_gui_run_id = self._gui_run_serial
+                worker = threading.Thread(
+                    target=self._worker_run_tagged,
+                    args=(prompt, self._active_gui_run_id),
+                    daemon=True,
+                )
+                worker.start()
+
+            def _worker_run_tagged(self, prompt: str, run_id: int) -> None:
+                def emit(kind: str, message: str) -> None:
+                    self.event_queue.put((run_id, kind, message))
+
+                try:
+                    answer = self.agent.run_sync(prompt, emit)
+                except Exception as exc:
+                    details = "".join(base.traceback.format_exception(exc))
+                    self.event_queue.put((run_id, "error", details))
+                else:
+                    self.event_queue.put((run_id, "answer", answer))
+                finally:
+                    self.event_queue.put((run_id, "done", ""))
+
+            def _append_stream_delta(self, message: str) -> None:
+                if not message:
+                    return
+                self._ensure_transcript_tags()
+                if getattr(self, "_stream_preview_start", None) is None:
+                    self.transcript.configure(state="normal")
+                    self._stream_preview_start = self.transcript.index("end-1c")
+                    self.transcript.insert("end", "[assistant] ", ("role_assistant",))
+                else:
+                    self.transcript.configure(state="normal")
+                self.transcript.insert("end", message, ("role_assistant",))
+                self.transcript.configure(state="disabled")
+                self.transcript.see("end")
+
+            def _clear_stream_preview(self) -> None:
+                start = getattr(self, "_stream_preview_start", None)
+                if start is None:
+                    return
+                self.transcript.configure(state="normal")
+                self.transcript.delete(start, "end-1c")
+                self.transcript.configure(state="disabled")
+                self._stream_preview_start = None
+
+            def _poll_events(self) -> None:
+                while True:
+                    try:
+                        item = self.event_queue.get_nowait()
+                    except base.queue.Empty:
+                        break
+                    if len(item) == 3:
+                        run_id, kind, message = item
+                        if run_id != getattr(self, "_active_gui_run_id", run_id):
+                            continue
+                    else:
+                        kind, message = item
+                    if kind == "assistant_delta":
+                        self.status_var.set("Generating")
+                        self._append_stream_delta(message)
+                        continue
+                    self._clear_stream_preview()
+                    if kind == "status":
+                        self.status_var.set(message)
+                        self._append_transcript("status", message)
+                    elif kind == "tool":
+                        self._append_transcript("tool", message)
+                    elif kind == "answer":
+                        self._append_transcript("assistant", message)
+                    elif kind == "error":
+                        self._append_transcript("error", message)
+                        self.messagebox.showerror("AI Agent Qubitz", message)
+                    elif kind == "done":
+                        self._set_busy(False)
+                        if self.pending_prompts:
+                            next_prompt = self.pending_prompts.pop(0)
+                            self._update_send_button()
+                            self._start_prompt(next_prompt, queued=True)
+                self.root.after(100, self._poll_events)
 
             def _ensure_transcript_tags(self) -> None:
                 if getattr(self, "_transcript_tags_ready", False):
