@@ -3913,6 +3913,49 @@ _EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
 )
 
 
+_EMBEDDED_POWERSHELL_LAUNCH_OLD = """        if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
+            self.process = subprocess.Popen(
+                render_windows_command_for_wsl_shell(popen_command),
+                cwd=self.runtime_workspace,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                shell=True,
+                executable="/bin/bash",
+                creationflags=creationflags,
+                startupinfo=startupinfo,
+            )
+            return
+"""
+_EMBEDDED_POWERSHELL_LAUNCH_NEW = """        if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
+            powershell = shutil.which("powershell.exe") or popen_command[0]
+            popen_command[0] = powershell
+            if Path("/init").is_file():
+                popen_command.insert(0, "/init")
+            else:
+                self.process = subprocess.Popen(
+                    render_windows_command_for_wsl_shell(popen_command),
+                    cwd=self.runtime_workspace,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    shell=True,
+                    executable="/bin/bash",
+                    creationflags=creationflags,
+                    startupinfo=startupinfo,
+                )
+                return
+"""
+if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_POWERSHELL_LAUNCH_OLD) != 1:
+    raise RuntimeError("Embedded llama-server PowerShell launch block was not found exactly once.")
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    _EMBEDDED_POWERSHELL_LAUNCH_OLD,
+    _EMBEDDED_POWERSHELL_LAUNCH_NEW,
+)
+
+
 def _load_embedded_base_module() -> Any:
     internal_name = f"{_EMBEDDED_BASE_MODULE_LABEL}__embedded__{Path(__file__).stem}"
     existing = sys.modules.get(internal_name)
@@ -4184,6 +4227,31 @@ class LocalOnlyApp:
                 selected_route = self._selected_route_name(prompt)
                 if selected_route not in {"simple_answer", "direct_existing_entrypoint"}:
                     return False
+                if selected_route == "simple_answer":
+                    words = re.findall(r"[a-z0-9]+(?:['-][a-z0-9]+)?", lowered)
+                    fragment_nouns = {
+                        "answer",
+                        "capital",
+                        "cause",
+                        "city",
+                        "country",
+                        "date",
+                        "location",
+                        "name",
+                        "number",
+                        "person",
+                        "reason",
+                        "result",
+                        "time",
+                        "value",
+                    }
+                    if (
+                        1 < len(words) <= 4
+                        and words[0] in {"a", "an", "it", "that", "the", "this"}
+                        and words[-1] in fragment_nouns
+                        and normalized[-1] not in ".!?"
+                    ):
+                        return True
                 obvious_non_answer_markers = (
                     "i do not have enough context",
                     "i don't have enough context",

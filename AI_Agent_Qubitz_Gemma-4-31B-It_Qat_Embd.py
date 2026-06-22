@@ -8891,6 +8891,49 @@ _EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
 )
 
 
+_EMBEDDED_POWERSHELL_LAUNCH_OLD = """        if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
+            self.process = subprocess.Popen(
+                render_windows_command_for_wsl_shell(popen_command),
+                cwd=self.runtime_workspace,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                shell=True,
+                executable="/bin/bash",
+                creationflags=creationflags,
+                startupinfo=startupinfo,
+            )
+            return
+"""
+_EMBEDDED_POWERSHELL_LAUNCH_NEW = """        if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
+            powershell = shutil.which("powershell.exe") or popen_command[0]
+            popen_command[0] = powershell
+            if Path("/init").is_file():
+                popen_command.insert(0, "/init")
+            else:
+                self.process = subprocess.Popen(
+                    render_windows_command_for_wsl_shell(popen_command),
+                    cwd=self.runtime_workspace,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    shell=True,
+                    executable="/bin/bash",
+                    creationflags=creationflags,
+                    startupinfo=startupinfo,
+                )
+                return
+"""
+if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_POWERSHELL_LAUNCH_OLD) != 1:
+    raise RuntimeError("Embedded llama-server PowerShell launch block was not found exactly once.")
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    _EMBEDDED_POWERSHELL_LAUNCH_OLD,
+    _EMBEDDED_POWERSHELL_LAUNCH_NEW,
+)
+
+
 def _load_embedded_base_module() -> Any:
     internal_name = f"{_EMBEDDED_BASE_MODULE_LABEL}__embedded__{Path(__file__).stem}"
     existing = sys.modules.get(internal_name)
