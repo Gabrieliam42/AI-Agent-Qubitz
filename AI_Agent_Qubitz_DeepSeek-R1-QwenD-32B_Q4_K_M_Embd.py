@@ -492,7 +492,16 @@ def _prompt_prefers_implicit_existing_entrypoint(prompt: str) -> bool:
     lowered = cleaned.lower()
     if not any(hint in lowered for hint in WORKSPACE_CONTEXT_HINTS):
         return False
-    return any(hint in lowered for hint in IMPLICIT_EXISTING_ENTRYPOINT_HINTS)
+    if any(hint in lowered for hint in IMPLICIT_EXISTING_ENTRYPOINT_HINTS):
+        return True
+    if re.search(r"\b(?:do not|don't|never|without)\b[^\n.;]{0,120}\b(?:run|execute|launch|start|open)\w*\b", lowered):
+        return False
+    concrete_action = re.search(
+        r"\b(?:run|execute|launch|start|serve|build|compile|test|fetch|get|generate|export|convert|train|evaluate|benchmark)\b",
+        lowered,
+    )
+    browser_action = bool(re.search(r"\bopen(?:ing)?\b", lowered) and re.search(r"\b(?:browser|tabs?|windows?|urls?|links?)\b", lowered))
+    return bool(concrete_action or browser_action)
 
 
 def _implicit_entrypoint_prompt_tokens(prompt: str) -> set[str]:
@@ -546,6 +555,28 @@ def _score_implicit_existing_entrypoint_candidate(
             score += 6
         if stem_tokens.intersection({"summary", "summaries"}):
             score -= 4
+    return score
+
+
+def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -> int:
+    try:
+        source = candidate_path.read_text(encoding="utf-8", errors="ignore")[:65536]
+    except OSError:
+        return 0
+    score = 0
+    expected_count = _expected_result_count(prompt)
+    if expected_count is not None:
+        declared_counts = {
+            int(value)
+            for value in re.findall(r"(?:limit\s*=\s*|\[:\s*)(\d{1,4})", source, flags=re.IGNORECASE)
+        }
+        if expected_count in declared_counts:
+            score += 12
+        elif declared_counts and max(declared_counts) < expected_count:
+            score -= 12
+    if _prompt_requests_browser_open(prompt):
+        if re.search(r"Start-Process|webbrowser\s*\.\s*open|open[^\n]{0,80}\.ps1", source, flags=re.IGNORECASE):
+            score += 8
     return score
 
 
@@ -614,6 +645,7 @@ def _discover_implicit_existing_entrypoint_spec(base: Any, workspace: Path, prom
                 continue
             relative_path = candidate_path.relative_to(workspace)
             score = _score_implicit_existing_entrypoint_candidate(prompt_tokens, relative_path, candidate_path)
+            score += _score_implicit_entrypoint_capabilities(prompt, candidate_path)
             if score > best_score:
                 best_score = score
                 best_path = candidate_path.resolve()
@@ -658,9 +690,35 @@ def _extract_start_process_urls(script_text: str) -> list[str]:
 
 def _prompt_requests_browser_open(prompt: str) -> bool:
     lowered = prompt.lower()
+    if re.search(r"\b(?:do not|don't|never|without)\b[^\n.;]{0,120}\bopen(?:ing)?\b", lowered):
+        return False
     if "start-process" in lowered:
         return True
-    return bool(re.search(r"\bopen(?:ing)?\b.*\burls?\b", lowered))
+    return bool(
+        re.search(r"\bopen(?:ing)?\b", lowered)
+        and re.search(r"\b(?:browser|tabs?|windows?)\b", lowered)
+        and re.search(r"\b(?:urls?|links?|them|those)\b", lowered)
+    )
+
+
+def _is_external_http_url(value: Any) -> bool:
+    normalized = str(value or "").strip()
+    return bool(re.fullmatch(r"https?://[^\s]+", normalized, flags=re.IGNORECASE))
+
+
+def _validated_external_urls(values: Sequence[Any], limit: int) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip()
+        key = normalized.casefold()
+        if not _is_external_http_url(normalized) or key in seen:
+            continue
+        seen.add(key)
+        urls.append(normalized)
+        if len(urls) >= limit:
+            break
+    return urls
 
 
 def _run_inline_browser_open(
@@ -671,9 +729,8 @@ def _run_inline_browser_open(
 ) -> dict[str, Any]:
     commands = [
         f"Start-Process {_powershell_single_quote(url)}"
-        for url in urls
-        if str(url).strip() and str(url).strip() not in {"#", DIRECT_RESULT_MISSING_URL}
-    ][:SCRIPT_PREFLIGHT_MAX_URLS]
+        for url in _validated_external_urls(urls, SCRIPT_PREFLIGHT_MAX_URLS)
+    ]
     if not commands:
         return {"return_code": 1, "stderr": "No URLs were available for browser opening."}
     return _run_powershell_command(base, workspace, "; ".join(commands), timeout_seconds)
@@ -848,7 +905,7 @@ def _expected_result_count(prompt: str) -> int | None:
     match = re.search(r"\b(?:top|first)\s+(\d+)\b", prompt, flags=re.IGNORECASE)
     if match is None:
         match = re.search(
-            r"\b(\d+)\s+(?:items|results|rows|records|entries|files|objects|stories)\b",
+            r"\b(\d+)\s+(?:(?:external|news|story|article|result)\s+)?(?:items|results|rows|records|entries|files|objects|stories|urls?|links?|articles?|headlines?)\b",
             prompt,
             flags=re.IGNORECASE,
         )
@@ -2650,6 +2707,9 @@ def _run_powershell_command(base: Any, workspace: Path, command: str, timeout_se
     if powershell is None:
         raise RuntimeError("PowerShell was not found on this system.")
     use_windows_paths = powershell.lower().endswith(".exe") and callable(getattr(base, "in_wsl", None)) and base.in_wsl()
+    launch_command = [powershell]
+    if use_windows_paths and Path("/init").is_file():
+        launch_command.insert(0, "/init")
     workspace_windows = _workspace_windows_path(base, workspace) if use_windows_paths else str(workspace)
     script_body = _canonicalize_workspace_script(base, workspace, _extract_powershell_script(command))
     script_lines = [
@@ -2658,7 +2718,7 @@ def _run_powershell_command(base: Any, workspace: Path, command: str, timeout_se
         script_body,
     ]
     completed = subprocess.run(
-        [powershell, "-NoProfile", "-Command", "; ".join(line for line in script_lines if line)],
+        [*launch_command, "-NoProfile", "-Command", "; ".join(line for line in script_lines if line)],
         capture_output=True,
         timeout=max(1, timeout_seconds),
         check=False,
@@ -3247,10 +3307,13 @@ def _wsl_windows_executable_interop_probe() -> bool:
     command = shutil.which("cmd.exe") or shutil.which("powershell.exe")
     if not command:
         return False
+    launch_command = [command]
+    if Path("/init").is_file() and command.lower().endswith(".exe"):
+        launch_command.insert(0, "/init")
     probe_command = (
-        [command, "/c", "exit", "0"]
+        [*launch_command, "/c", "exit", "0"]
         if Path(command).name.lower() == "cmd.exe"
-        else [command, "-NoProfile", "-Command", "exit 0"]
+        else [*launch_command, "-NoProfile", "-Command", "exit 0"]
     )
     try:
         subprocess.run(
@@ -4330,7 +4393,7 @@ class LocalOnlyApp:
                     ) and not execution_forbidden,
                     "powershell_or_side_effect": bool(
                         any(token in lowered for token in ("start-process", "powershell", "activate.ps1", ".ps1"))
-                    ),
+                    ) or _prompt_requests_browser_open(cleaned),
                     "plugin_or_skill_request": bool(
                         any(token in lowered for token in ("skill", ".skills", "plugin", ".qubitz/plugins"))
                     ),
@@ -4389,8 +4452,9 @@ class LocalOnlyApp:
                     scores["tool_loop"] += 14
                     scores["simple_answer"] -= 12
                 if features["powershell_or_side_effect"]:
-                    scores["direct_existing_entrypoint"] += 6
-                    scores["tool_loop"] += 4
+                    scores["direct_existing_entrypoint"] += 12
+                    scores["tool_loop"] += 18
+                    scores["read_only_workspace"] -= 30
                 if features["plugin_or_skill_request"]:
                     scores["tool_loop"] += 10
                     scores["simple_answer"] -= 8
@@ -4724,76 +4788,55 @@ class LocalOnlyApp:
                 browser_urls = _extract_start_process_urls(browser_helper_text)
                 self._existing_script_browser_urls = browser_urls
                 browser_result: dict[str, Any] | None = None
-                if (
-                    browser_helper_path is not None
-                    and browser_urls
-                    and requested_browser_open
-                    and (self._wsl_windows_interop_available() or not (callable(getattr(base, "in_wsl", None)) and base.in_wsl()))
-                ):
-                    helper_command = (
-                        f"& {_powershell_single_quote(_workspace_relative_command_path(base, self.workspace, browser_helper_path))}"
-                    )
-                    browser_result = _run_powershell_command(
-                        base,
-                        self.workspace,
-                        helper_command,
-                        SCRIPT_PREFLIGHT_TIMEOUT_SECONDS,
-                    )
-                    browser_exit = int(browser_result.get("return_code", browser_result.get("returncode", 0)))
-                    self._emit(
-                        callback,
-                        "status",
-                        (
-                            "Wrapper direct path: executed the generated browser-opening helper "
-                            f"{base.relative_path(browser_helper_path, self.workspace)} (PowerShell exit {browser_exit})."
-                        ),
-                    )
-                elif browser_helper_path is not None and requested_browser_open:
-                    self._emit(
-                        callback,
-                        "status",
-                        (
-                            "Wrapper direct path captured the generated browser-opening helper "
-                            f"{base.relative_path(browser_helper_path, self.workspace)}, but did not execute it "
-                            "because Windows PowerShell interop is unavailable in this session."
-                        ),
-                    )
                 result_rows = _extract_structured_result_rows(f"{stderr_text}\n{stdout_text}")
                 structured_rows: list[dict[str, Any]] = []
                 for index, row in enumerate(result_rows):
-                    enriched = dict(row)
-                    enriched["url"] = browser_urls[index] if index < len(browser_urls) else ""
+                    enriched = _normalize_result_row(dict(row))
+                    if index < len(browser_urls) and _is_external_http_url(browser_urls[index]):
+                        enriched["url"] = browser_urls[index]
                     structured_rows.append(enriched)
+                valid_browser_urls = _validated_external_urls(browser_urls, SCRIPT_PREFLIGHT_MAX_URLS)
                 direct_rows = structured_rows or [
                     {"url": url}
-                    for url in browser_urls[:SCRIPT_PREFLIGHT_MAX_URLS]
-                    if str(url).strip()
+                    for url in valid_browser_urls
                 ]
                 self._existing_script_preflight_succeeded = return_code == 0
                 expected_count = _expected_result_count(prompt)
                 requested_fields = _requested_output_fields(prompt)
-                browser_open_ran = browser_result is not None and int(
-                    browser_result.get("return_code", browser_result.get("returncode", 0))
-                ) == 0
                 requires_url = requested_browser_open or "url" in requested_fields
-                if requested_browser_open and not browser_open_ran and browser_helper_path is None:
+                target_count = expected_count or len(direct_rows)
+                selected_rows = direct_rows[:target_count]
+                selected_urls = _validated_external_urls(
+                    [row.get("url", "") for row in selected_rows],
+                    target_count,
+                )
+                if (
+                    requested_browser_open
+                    and len(selected_urls) >= target_count
+                    and (
+                        self._wsl_windows_interop_available()
+                        or not (callable(getattr(base, "in_wsl", None)) and base.in_wsl())
+                    )
+                ):
                     browser_result = _run_inline_browser_open(
                         base,
                         self.workspace,
-                        [str(row.get("url", "")).strip() for row in structured_rows],
+                        selected_urls,
                         SCRIPT_PREFLIGHT_TIMEOUT_SECONDS,
                     )
-                    browser_open_ran = int(browser_result.get("return_code", browser_result.get("returncode", 0))) == 0
-                target_count = expected_count or len(direct_rows)
+                browser_open_ran = browser_result is not None and int(
+                    browser_result.get("return_code", browser_result.get("returncode", 0))
+                ) == 0
                 if (
                     return_code == 0
                     and target_count > 0
                     and len(direct_rows) >= target_count
-                    and (not requires_url or all(str(row.get("url", "")).strip() for row in direct_rows[:target_count]))
-                    and (not requested_fields or _rows_have_required_fields(direct_rows[:target_count], requested_fields))
+                    and (not requires_url or len(selected_urls) >= target_count)
+                    and (not requested_browser_open or browser_open_ran)
+                    and (not requested_fields or _rows_have_required_fields(selected_rows, requested_fields))
                 ):
                     self._existing_script_direct_answer = _format_direct_result_answer(
-                        direct_rows[:target_count],
+                        selected_rows,
                         browser_open_ran=browser_open_ran,
                         requested_browser_open=requested_browser_open,
                         requested_fields=requested_fields,
@@ -4804,7 +4847,7 @@ class LocalOnlyApp:
                         (
                             "Wrapper direct path completed the existing-script task without entering the model loop. "
                             f"Rows: {target_count}. Browser step: "
-                            f"{base.relative_path(browser_helper_path, self.workspace) if browser_helper_path is not None else 'none'}."
+                            f"{'inline Start-Process with validated URLs' if browser_open_ran else 'none'}."
                         ),
                     )
                 self._emit(
