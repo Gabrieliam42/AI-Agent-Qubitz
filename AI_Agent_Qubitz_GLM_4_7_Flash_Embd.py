@@ -1030,6 +1030,56 @@ def _rewrite_answer_urls_from_helper(answer: str, urls: Sequence[str]) -> str:
     return answer
 
 
+ROUTE_SAMPLING_PROFILES: dict[str, tuple[str, float, float, float, float]] = {
+    "simple_question": ("simple_question", 0.35, 0.92, 0.02, 1.03),
+    "mcp_tool": ("mcp_tool", 0.25, 0.90, 0.02, 1.05),
+    "coding_edit": ("coding_edit", 0.25, 0.92, 0.02, 1.04),
+    "debugging_reasoning": ("debugging_reasoning", 0.35, 0.92, 0.02, 1.02),
+    "brainstorming_explanation": ("brainstorming_explanation", 0.70, 0.98, 0.01, 1.00),
+}
+
+
+def _sampling_profile_for_route(prompt: str, selected_route: str) -> tuple[str, float, float, float, float]:
+    lowered = prompt.lower()
+    if selected_route == "simple_answer":
+        if "SIMPLE_DIRECT_QUESTION_TEMPERATURE" in globals():
+            return ("deepseek_simple_question", float(globals()["SIMPLE_DIRECT_QUESTION_TEMPERATURE"]), 0.92, 0.02, 1.03)
+        return ROUTE_SAMPLING_PROFILES["simple_question"]
+    if selected_route in {"direct_existing_entrypoint", "tool_loop"}:
+        return ROUTE_SAMPLING_PROFILES["mcp_tool"]
+    if re.search(r"\b(edit|modify|change|update|fix|refactor|rewrite|implement|patch|code|coding)\b", lowered):
+        return ROUTE_SAMPLING_PROFILES["coding_edit"]
+    if re.search(r"\b(debug|diagnose|traceback|exception|failure|failed|failing|bug|regression|smoke test|verify|test)\b", lowered):
+        return ROUTE_SAMPLING_PROFILES["debugging_reasoning"]
+    if re.search(r"\b(brainstorm|ideas?|creative|explain|summary|summarize|compare|recommend|what do you think)\b", lowered):
+        return ROUTE_SAMPLING_PROFILES["brainstorming_explanation"]
+    if re.search(r"\b(mcp|tool|tools|browser|url|urls|open|tabs?|run|command|script|server)\b", lowered):
+        return ROUTE_SAMPLING_PROFILES["mcp_tool"]
+    return ROUTE_SAMPLING_PROFILES["debugging_reasoning"]
+
+
+def _sampling_value(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _apply_sampling_profile(config: Any, profile: tuple[str, float, float, float, float]) -> None:
+    _, temperature, top_p, min_p, repeat_penalty = profile
+    setattr(config, "temperature", temperature)
+    setattr(config, "top_p", top_p)
+    setattr(config, "min_p", min_p)
+    setattr(config, "repeat_penalty", repeat_penalty)
+
+
+def _sampling_profile_status(profile: tuple[str, float, float, float, float]) -> str:
+    name, temperature, top_p, min_p, repeat_penalty = profile
+    return (
+        "Sampling profile: "
+        f"{name} temp={_sampling_value(temperature)} top_p={_sampling_value(top_p)} "
+        f"min_p={_sampling_value(min_p)} repeat_penalty={_sampling_value(repeat_penalty)} "
+        "(temporary route profile; original GUI/config values restore after this request)."
+    )
+
+
 def _truthy(value: Any, default: bool) -> bool:
     if value is None:
         return default
@@ -5593,6 +5643,10 @@ class LocalOnlyApp:
                 original_cache = self._tool_definitions_cache
                 original_count = self._tool_count_cache
                 original_list_tools = base.MCPHost.list_tools
+                original_temperature = getattr(self.config, "temperature", None)
+                original_top_p = getattr(self.config, "top_p", None)
+                original_min_p = getattr(self.config, "min_p", None)
+                original_repeat_penalty = getattr(self.config, "repeat_penalty", None)
                 if bypass_retrieval:
                     class _DisabledSkillRegistry:
                         warnings: list[str] = []
@@ -5754,6 +5808,9 @@ class LocalOnlyApp:
                     tools = await original_list_tools(host_self)
                     return self._prioritize_tools_for_prompt(prompt, tools)
 
+                sampling_profile = _sampling_profile_for_route(user_prompt, self._route_decision.selected_route)
+                _apply_sampling_profile(self.config, sampling_profile)
+                self._emit(callback, "status", _sampling_profile_status(sampling_profile))
                 base.MCPHost.list_tools = _prompt_aware_list_tools
                 self._filter_cached_tool_definitions(prompt)
                 base.set_qubitz_stream_callback(
@@ -5813,6 +5870,14 @@ class LocalOnlyApp:
                     base.set_qubitz_reasoning_budget(None)
                     base.set_qubitz_reasoning_mode(None)
                     base.MCPHost.list_tools = original_list_tools
+                    if original_temperature is not None:
+                        self.config.temperature = original_temperature
+                    if original_top_p is not None:
+                        self.config.top_p = original_top_p
+                    if original_min_p is not None:
+                        self.config.min_p = original_min_p
+                    if original_repeat_penalty is not None:
+                        self.config.repeat_penalty = original_repeat_penalty
                     self._tool_definitions_cache = original_cache
                     self._tool_count_cache = original_count
                     if original_format_context is not None:
@@ -6114,7 +6179,7 @@ class LocalOnlyApp:
                     trimmed_end = start + len(url)
                     self._link_tag_serial += 1
                     link_tag = f"link_{self._link_tag_serial}"
-                    self.transcript.tag_bind(link_tag, "<Button-1>", lambda _event, target=url: self._open_transcript_link(target))
+                    self.transcript.tag_bind(link_tag, "<Double-Button-1>", lambda _event, target=url: self._open_transcript_link(target))
                     self.transcript.insert(
                         "end",
                         url,
@@ -6386,6 +6451,116 @@ _APP = build_local_only_app(
     __file__,
     'AI Agent Qubitz GLM 4 7 Flash Embd General Fast Local-Only',
 )
+
+def _install_gui_temperature_status_patch(app: LocalOnlyApp) -> None:
+    base = app.base
+    original_gui = base.QubitzGUI
+    if getattr(original_gui, "_QUBITZ_TEMPERATURE_STATUS_PATCHED", False):
+        return
+
+    class TemperatureStatusGUI(original_gui):
+        _QUBITZ_TEMPERATURE_STATUS_PATCHED = True
+
+        def __init__(self, config: Any) -> None:
+            super().__init__(config)
+            if not hasattr(self, "temperature_var"):
+                self.temperature_var = self.tk.StringVar(
+                    master=self.root,
+                    value=f"{float(getattr(self.config, 'temperature', base.DEFAULT_CHAT_TEMPERATURE)):g}",
+                )
+                controls = self.num_predict_entry.master
+                self.ttk.Label(controls, text="Temperature").pack(side="left", padx=(16, 0))
+                self.temperature_entry = self.ttk.Entry(controls, textvariable=self.temperature_var, width=8)
+                self.temperature_entry.pack(side="left", padx=(6, 0))
+            backend_url = getattr(config, "server_url", "") or base.DEFAULT_LLAMACPP_BASE_URL
+            self._append_transcript("system", f"Local llama.cpp backend: {backend_url}")
+
+        def _format_local_skill_status(self) -> str:
+            skills = getattr(getattr(self, "agent", None), "skills", None)
+            if skills is None:
+                return ""
+            try:
+                count = int(skills.count())
+            except Exception:
+                count = 0
+            if count <= 0:
+                return ""
+            names: list[str] = []
+            try:
+                summaries = skills.list_summaries()
+            except Exception:
+                summaries = []
+            for item in summaries:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or item.get("skill_name") or "").strip()
+                else:
+                    name = str(getattr(item, "name", "") or "").strip()
+                if name:
+                    names.append(name)
+            if names:
+                rendered = ", ".join(names[:12])
+                if len(names) > 12:
+                    rendered += f", +{len(names) - 12} more"
+                return f"Local skills loaded: {rendered}"
+            return f"Local skills loaded: {count}"
+
+        def _filter_gui_transcript_message(self, role: str, message: str) -> str | None:
+            text = message.strip()
+            if role in {"status", "system"}:
+                if text.startswith("Thinking effort preset:"):
+                    return None
+                if text == "Adaptive tool-step budget for this request: unlimited.":
+                    return None
+                if text == "Local skills discovered: 0":
+                    return None
+                if re.fullmatch(r"Loaded 0 local skill\(s\) from \.skills\.", text):
+                    return None
+                if text.startswith("Local skills discovered:") or re.fullmatch(
+                    r"Loaded \d+ local skill\(s\) from \.skills\.",
+                    text,
+                ):
+                    return self._format_local_skill_status() or None
+            return text
+
+        def _append_transcript(self, role: str, message: str) -> None:
+            filtered = self._filter_gui_transcript_message(role, message)
+            if filtered is None:
+                return
+            super()._append_transcript(role, filtered)
+
+        def _set_busy(self, value: bool) -> None:
+            super()._set_busy(value)
+            if hasattr(self, "temperature_entry"):
+                self.temperature_entry.configure(state="disabled" if value else "normal")
+
+        def _open_transcript_link(self, url: str) -> None:
+            if sys.platform.startswith("linux") and base.in_wsl():
+                with suppress(Exception):
+                    subprocess.Popen(
+                        ["cmd.exe", "/c", "start", "", url],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+            with suppress(Exception):
+                webbrowser.open(url)
+
+        def _sync_runtime_settings(self) -> None:
+            super()._sync_runtime_settings()
+            if hasattr(self, "temperature_var"):
+                try:
+                    temperature = float(self.temperature_var.get().strip())
+                except ValueError as exc:
+                    raise ValueError("Temperature must be a number.") from exc
+                if temperature < 0:
+                    raise ValueError("Temperature must be a non-negative number.")
+                setattr(self.config, "temperature", temperature)
+                setattr(self.agent.config, "temperature", temperature)
+
+    base.QubitzGUI = TemperatureStatusGUI
+
+
+_install_gui_temperature_status_patch(_APP)
 
 parse_args = _APP.parse_args
 run_cli = _APP.run_cli
