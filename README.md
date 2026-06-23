@@ -10,7 +10,6 @@ It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted work
 - Task-routed workspace retrieval with local embedding models
 - Tk GUI, CLI, and stdio MCP server modes
 - Direct existing-entrypoint execution for explicit `.py`, `.ps1`, `.sh`, `.bat`, `.cmd`, `uv run`, `npm run`, `pnpm run`, and `make` tasks
-- Optional local UMP-backed memory through `qubitz_ump_local.py`
 - Local background jobs, local plugin guidance, and wrapper-local sandbox/tool orchestration
 
 ## Variant scripts
@@ -39,7 +38,6 @@ It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted work
 ## Main files
 
 - Variant scripts: the eight `AI_Agent_Qubitz_*.py` files above
-- `qubitz_ump_local.py` - optional local UMP (Universal Memory Protocol) helper used opportunistically by the variants
 - `HARNESS.enc` - AI Agent Harness
 - `QUBITZ_HARNESS_KEY.local.txt` - local harness-key helper file
 - `requirements.txt` - runtime dependencies
