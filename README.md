@@ -2,6 +2,37 @@
 
 Qubitz is a standalone local-only AI agent for GGUF models on `llama.cpp`. It is oriented to local LLM workflows only: no cloud inference, no subscriptions, and no paid hosted services are required.
 
+Qubitz is unusual compared to most AI agents because it is strongly local-first and wrapper-driven.
+
+Most agents out there are one of these:
+
+- Cloud/API agents: faster setup, stronger frontier models, but dependent on APIs, subscriptions, cloud state, and vendor limits.
+- IDE agents: good UX and repo integration, but usually tied to a hosted model or editor ecosystem.
+- Local chat wrappers: private/local, but often weak as real agents because tool routing, workspace handling, and recovery paths are thin.
+- Research agent frameworks: flexible, but often overcomplicated, brittle, and not optimized for one real workstation.
+
+Qubitz is closer to a local Codex-style agent harness. Its stronger points are:
+
+- Fully local orientation: no API, no cloud, no subscription dependency.
+- Multiple model variants: lets you compare behavior across 8B-35B-class local models.
+- Wrapper-owned routing: simple questions, direct existing scripts, read-only workspace tasks, and tool/MCP paths are not left entirely to the model.
+- Good WSL2/Windows awareness: this is a real advantage because many agents handle mixed Windows/WSL workspaces badly.
+- Strong direct-entrypoint path: this is better than many agents that overthink and rewrite instead of running what already exists.
+- Harness plus wrapper separation: useful because small models need both persistent policy and runtime facts.
+- Local retrieval/embeddings: gives project context without cloud retrieval.
+
+Its weaker points compared to top commercial agents:
+
+- Model quality ceiling: 8B-35B local models are still weaker than frontier cloud models for deep reasoning, large refactors, ambiguous tasks, and long multi-step planning.
+- Maintenance cost: many self-contained variants means repeated fixes across scripts.
+- UX/tool polish: good for a local agent, but not as polished as mature IDE products.
+- Evaluation burden: because local models vary a lot, smoke tests and task matrices are necessary.
+- Startup/model-load variance: unavoidable with large local GGUF models, especially on 24GB VRAM.
+
+A realistical view: Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is not better than frontier cloud coding agents on raw intelligence, but it is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
+
+The most valuable design choice is that Qubitz does not let small models decide everything. The wrapper owns routing, execution facts, and fast paths; the model handles language/reasoning where needed. That is the right architecture for 8B-35B local agents.
+
 It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted workspaces and Windows-hosted workspaces accessed through the WSL-to-Windows bridge.
 
 ## What it includes
