@@ -21,7 +21,6 @@ It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted work
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - 24 GB class embedding-enabled Devstral Small 2 variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` - 24 GB class embedding-enabled Gemma 4 31B IT QAT variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16_Embd.py` - 24 GB class embedding-enabled GPT-OSS 20B F16 variant using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_DeepSeek-R1-QwenD-32B_Q4_K_M_Embd.py` - 24 GB class embedding-enabled DeepSeek R1 Distill Qwen 32B variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Qwen3_6-35B-A3B_MTP_UD_Q4_K_M_Embd.py` - 24 GB class embedding-enabled Qwen 3.6 35B A3B MTP variant using `BAAI/bge-code-v1`
 
 ## Runtime behavior
