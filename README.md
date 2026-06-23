@@ -11,7 +11,7 @@ Most agents out there are one of these:
 - Local chat wrappers: private/local, but often weak as real agents because tool routing, workspace handling, and recovery paths are thin.
 - Research agent frameworks: flexible, but often overcomplicated, brittle, and not optimized for one real workstation.
 
-Qubitz is closer to a local Codex-style agent harness. Its stronger points are:
+Qubitz is closer to a local style agent harness. Its stronger points are:
 
 - Fully local orientation: no API, no cloud, no subscription dependency.
 - Multiple model variants: lets you compare behavior across 8B-35B-class local models.
