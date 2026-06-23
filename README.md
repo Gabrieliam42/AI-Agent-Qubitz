@@ -29,7 +29,7 @@ Its weaker points compared to top commercial agents:
 - Evaluation burden: because local models vary a lot, smoke tests and task matrices are necessary.
 - Startup/model-load variance: unavoidable with large local GGUF models, especially on 24GB VRAM.
 
-A realistical view: Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is not better than frontier cloud coding agents on raw intelligence, but it is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
+A realistical view: For its purposes Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is not better than frontier cloud coding agents on raw intelligence, but it is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
 
 The most valuable design choice is that Qubitz does not let small models decide everything. The wrapper owns routing, execution facts, and fast paths; the model handles language/reasoning where needed. That is the right architecture for 8B-35B local agents.
 
