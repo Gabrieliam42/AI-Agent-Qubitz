@@ -21,14 +21,6 @@ Qubitz is closer to a local style agent with a strong harness. Its stronger poin
 - Harness plus wrapper separation: useful because small models need both persistent policy and runtime facts.
 - Local retrieval/embeddings: gives project context without cloud retrieval.
 
-Its weaker points compared to top commercial agents:
-
-- Model quality ceiling: 8B-35B local models are still weaker than frontier cloud models for deep reasoning, large refactors, ambiguous tasks, and long multi-step planning.
-- Maintenance cost: many self-contained variants means repeated fixes across scripts.
-- UX/tool polish: good for a local agent, but not as polished as mature IDE products.
-- Evaluation burden: because local models vary a lot, smoke tests and task matrices are necessary.
-- Startup/model-load variance: unavoidable with large local GGUF models, especially on 24GB VRAM.
-
 A realistical view: For its purposes Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is not better than frontier cloud coding agents on raw intelligence, but it is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
 
 The most valuable design choice is that Qubitz does not let small models decide everything. The wrapper owns routing, execution facts, and fast paths; the model handles language/reasoning where needed. That is the right architecture for 8B-35B local agents.
