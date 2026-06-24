@@ -16,7 +16,7 @@ Limited Permission
 
 Subject to this license, you are granted a limited, revocable, non-exclusive, non-transferable permission to access, download, clone, execute, and run one copy of the Software solely for Evaluation.
 
-This permission does not allow development, customization, modification, republication, redistribution, commercial use, production use, hosted use, service use, dataset creation, model training, model configuration reuse, or incorporation into another project, product, service, repository, workflow, or system.
+This permission does not allow development, customization, modification, republication, commercial use, production use, hosted use, service use, dataset creation, model training, model configuration reuse, or incorporation into another project, product, service, repository, workflow, or system.
 
 Restrictions
 
@@ -24,15 +24,15 @@ Except for the limited Evaluation permission above, you may not, without prior w
 
 - copy, reproduce, mirror, scrape, export, republish, redistribute, or make available the Software or any substantial portion of its contents;
 - modify, adapt, translate, transform, personalize, improve, extend, refactor, reformat, restructure, port, or create derivative works based on the Software;
-- fork the repository for development, customization, modification, republication, redistribution, preservation, mirroring, derivative work, commercial, or public-use purposes;
-- use, publish, maintain, distribute, or make available any fork, modified fork, derivative copy, repackaged version, mirrored copy, or substantially similar copy of the Software;
+- fork the repository for development, customization, modification, republication, redistribution, preservation, mirroring, derivative work, commercial use purposes;
+- publish, maintain, or make available any fork, modified fork, derivative copy, repackaged version, mirrored copy, or substantially similar copy of the Software;
 - submit, publish, or distribute modified versions of the Software, including through pull requests, patches, diffs, branches, forks, archives, packages, containers, or other distribution formats;
 - sell, resell, sublicense, rent, lease, assign, transfer, commercially exploit, monetize, or provide the Software as a service;
 - use the Software in production, in a commercial product, in a hosted service, in a paid workflow, or for the benefit of any third party;
 - remove, alter, obscure, or misrepresent copyright, attribution, license, proprietary, or confidentiality notices;
 - claim the Software or any substantial portion of it as your own work;
-- use the Software to create, train, fine-tune, distill, benchmark, evaluate, or configure any AI model, agent, dataset, prompt set, harness, workflow, or automated system, except as strictly necessary for Evaluation of this Software itself;
-- copy, extract, disclose, publish, redistribute, reuse, adapt, transform, or use any Harness Materials in another project, repository, product, service, dataset, prompt set, model configuration, agent, workflow, or system; or
+- use the Software except as strictly necessary for Evaluation of this Software itself;
+- copy, extract, disclose, publish, adapt, transform, or use any Harness Materials in another project, repository, product, service, dataset, prompt set, model configuration, agent, workflow, or system; or
 - use HARNESS.enc except as part of this Software for the limited Evaluation permission granted by this license.
 
 Forking and Public Repository Notice
@@ -53,7 +53,7 @@ Third-Party Tools, Libraries, Modules, and AI Models
 
 Third-party tools, libraries, modules, AI models, dependencies, packages, services, APIs, or other components included in, referenced by, required by, or used with the Software are governed by their own licenses, terms, and owners.
 
-This license does not grant any rights to use, modify, distribute, sell, sublicense, or otherwise exploit any third-party component beyond the rights provided by the applicable third-party license or terms.
+This license does not grant any rights to modify, sell, sublicense, or otherwise exploit any third-party component beyond the rights provided by the applicable third-party license or terms.
 
 Termination
 
