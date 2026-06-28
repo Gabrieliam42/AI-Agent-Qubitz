@@ -25,7 +25,7 @@ import webbrowser
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TypedDict
 
 LOCAL_ONLY_CONFIG_NAME = "local_only.toml"
 LOCAL_ONLY_DIR_NAME = ".qubitz"
@@ -130,6 +130,60 @@ IMPLICIT_EXISTING_ENTRYPOINT_HINTS = (
     "do not reimplement it",
     "do not fix the project",
 )
+PROJECT_LAUNCH_REQUEST_PATTERN = re.compile(
+    r"\b(?:run|start|launch)\s+(?:up\s+)?(?:this|the(?:\s+current)?|current)\s+"
+    r"(?:project|workspace|repo(?:sitory)?|app(?:lication)?)\b",
+    re.IGNORECASE,
+)
+PROJECT_LAUNCH_EXPLANATION_PATTERN = re.compile(
+    r"\b(?:how\s+(?:do|can|should|would)\s+[^\n?]{0,80}|how\s+to\s+|"
+    r"what\s+(?:command|commands|steps?)\s+[^\n?]{0,80})(?:run|start|launch)\b",
+    re.IGNORECASE,
+)
+PROJECT_LAUNCH_BENIGN_TRAILING_PATTERN = re.compile(
+    r"^\s*[,;:-]?\s*(?:(?:now|please|for me|in the background|"
+    r"and\s+(?:keep|leave)\s+it\s+running)\s*)*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+PROJECT_LAUNCH_BENIGN_LEADING_PATTERN = re.compile(
+    r"^\s*(?:(?:please|can|could|would|will)\s+)*(?:you\s+)?(?:please\s+)?$",
+    re.IGNORECASE,
+)
+PROJECT_LAUNCH_LOCAL_URL_PATTERN = re.compile(
+    r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?[^\s'\"<>]*",
+    re.IGNORECASE,
+)
+PROJECT_LAUNCH_FATAL_LOG_PATTERN = re.compile(
+    r"(?:^|\n)\s*(?:Traceback \(most recent call last\):|"
+    r"(?:AssertionError|ImportError|ModuleNotFoundError|RuntimeError|SyntaxError|TypeError|ValueError):)",
+    re.IGNORECASE,
+)
+PROJECT_LAUNCH_READY_WAIT_SECONDS = 3.0
+PROJECT_LAUNCH_ROOT_FILENAMES = (
+    "main.py",
+    "app.py",
+    "server.py",
+    "run.py",
+    "start.py",
+    "launch.py",
+    "serve.py",
+    "run.ps1",
+    "start.ps1",
+    "launch.ps1",
+    "serve.ps1",
+    "run.sh",
+    "start.sh",
+    "launch.sh",
+    "serve.sh",
+    "run.cmd",
+    "start.cmd",
+    "launch.cmd",
+    "serve.cmd",
+    "run.bat",
+    "start.bat",
+    "launch.bat",
+    "serve.bat",
+)
 IMPLICIT_ENTRYPOINT_DISCOVERY_STOPWORDS = {
     "a",
     "an",
@@ -181,25 +235,24 @@ IMPLICIT_ENTRYPOINT_DISCOVERY_STOPWORDS = {
     "workspace",
 }
 IMPLICIT_ENTRYPOINT_WEIGHT_BY_TOKEN = {
-    "article": 5,
-    "articles": 5,
-    "browser": 2,
-    "fetch": 6,
-    "get": 6,
-    "headline": 5,
-    "headlines": 5,
-    "link": 4,
-    "links": 4,
-    "list": 4,
-    "news": 5,
-    "open": 2,
-    "story": 6,
-    "stories": 6,
-    "tab": 2,
-    "tabs": 2,
-    "top": 6,
-    "url": 4,
-    "urls": 4,
+    "benchmark": 5,
+    "build": 5,
+    "compile": 5,
+    "convert": 5,
+    "deploy": 5,
+    "evaluate": 5,
+    "export": 5,
+    "fetch": 4,
+    "generate": 5,
+    "launch": 4,
+    "lint": 5,
+    "migrate": 5,
+    "report": 4,
+    "run": 3,
+    "serve": 4,
+    "start": 3,
+    "test": 5,
+    "train": 5,
 }
 IMPLICIT_ENTRYPOINT_MIN_SCORE = 12
 THINKING_EFFORT_OPTIONS = ("default", "low", "medium", "high", "xhigh")
@@ -534,13 +587,6 @@ def _score_implicit_existing_entrypoint_candidate(
         score += 1
     if stem_tokens.intersection({"test", "tests", "smoke", "benchmark", "bench", "eval"}):
         score -= 12
-    if candidate_path.stem.lower().startswith("open") and prompt_tokens.intersection({"get", "fetch", "story", "stories", "news"}):
-        score -= 5
-    if prompt_tokens.intersection({"get", "fetch", "story", "stories", "news", "article", "articles", "headline", "headlines"}):
-        if candidate_path.suffix.lower() != ".py":
-            score -= 2
-        if stem_tokens.intersection({"get", "fetch", "story", "stories", "news", "article", "articles", "headline", "headlines", "top"}):
-            score += 6
     if prompt_tokens.intersection({"url", "urls"}):
         if stem_tokens.intersection({"url", "urls"}):
             score += 6
@@ -1007,6 +1053,304 @@ def _sampling_profile_status(profile: tuple[str, float, float, float, float]) ->
     )
 
 
+def _prompt_requests_project_launch(base: Any, prompt: str) -> bool:
+    cleaned = prompt.strip()
+    if not cleaned or PROJECT_LAUNCH_EXPLANATION_PATTERN.search(cleaned):
+        return False
+    lowered = cleaned.lower()
+    if re.search(
+        r"\b(?:do not|don't|never|without)\b[^\n.;]{0,120}\b(?:run|start|launch)\b",
+        lowered,
+    ):
+        return False
+    mutation_forbidden = bool(
+        re.search(
+            r"\b(?:do not|don't|never|without)\b[^\n.;]{0,160}"
+            r"\b(?:create|edit|modify|change|write|delete|remove|move|rename)\w*\b",
+            lowered,
+        )
+    )
+    if base.EDIT_INTENT_PATTERN.search(cleaned) and not mutation_forbidden:
+        return False
+    launch_match = PROJECT_LAUNCH_REQUEST_PATTERN.search(cleaned)
+    if launch_match is None:
+        return False
+    leading_request = cleaned[: launch_match.start()]
+    if not PROJECT_LAUNCH_BENIGN_LEADING_PATTERN.fullmatch(leading_request):
+        return False
+    trailing_request = cleaned[launch_match.end() :]
+    return bool(PROJECT_LAUNCH_BENIGN_TRAILING_PATTERN.fullmatch(trailing_request))
+
+
+def _project_launch_display_command(command: Sequence[str]) -> str:
+    return subprocess.list2cmdline([str(item) for item in command]) if os.name == "nt" else shlex.join(
+        str(item) for item in command
+    )
+
+
+def _project_launch_windows_argument(base: Any, value: str) -> str:
+    candidate = Path(value)
+    if not candidate.is_absolute() or not _path_exists_safely(candidate):
+        return value
+    translator = getattr(base, "wsl_path_to_windows", None)
+    if callable(translator):
+        translated = translator(candidate)
+        if translated:
+            return str(translated)
+    fallback = getattr(base, "wsl_path_to_windows_path", None)
+    if callable(fallback):
+        return str(fallback(candidate))
+    return value
+
+
+def _project_launch_wrap_command(base: Any, workspace: Path, command: Sequence[str]) -> list[str]:
+    normalized = [str(item) for item in command if str(item)]
+    if not normalized:
+        return []
+    executable = normalized[0]
+    executable_suffix = Path(executable).suffix.lower()
+    if (
+        callable(getattr(base, "in_wsl", None))
+        and base.in_wsl()
+        and shutil.which("powershell.exe") is not None
+        and executable_suffix in {".exe", ".cmd", ".bat"}
+    ):
+        workspace_windows = _workspace_windows_path(base, workspace)
+        translated = [_project_launch_windows_argument(base, part) for part in normalized]
+        script = "; ".join(
+            [
+                "$ProgressPreference = 'SilentlyContinue'",
+                f"Set-Location -LiteralPath {_powershell_single_quote(workspace_windows)}",
+                "& " + " ".join(_powershell_single_quote(part) for part in translated),
+            ]
+        )
+        return ["powershell.exe", "-NoProfile", "-Command", script]
+    return normalized
+
+
+def _project_launch_file_plan(base: Any, workspace: Path, script_path: Path, *, source: str) -> dict[str, Any]:
+    suffix = script_path.suffix.lower()
+    if suffix == ".py":
+        interpreter = _preferred_project_python(workspace)
+        if interpreter is None:
+            return {
+                "status": "missing",
+                "reason": "No compatible project-local Python interpreter was found.",
+            }
+        command = _project_launch_wrap_command(base, workspace, [str(interpreter), str(script_path)])
+    elif suffix == ".ps1":
+        if shutil.which("powershell.exe") is not None:
+            workspace_windows = _workspace_windows_path(base, workspace)
+            script_windows = _project_launch_windows_argument(base, str(script_path))
+            powershell_script = "; ".join(
+                [
+                    "$ProgressPreference = 'SilentlyContinue'",
+                    f"Set-Location -LiteralPath {_powershell_single_quote(workspace_windows)}",
+                    f"& {_powershell_single_quote(script_windows)}",
+                ]
+            )
+            command = ["powershell.exe", "-NoProfile", "-Command", powershell_script]
+        elif shutil.which("pwsh") is not None:
+            command = [str(shutil.which("pwsh")), "-NoProfile", "-File", str(script_path)]
+        else:
+            return {"status": "missing", "reason": "PowerShell is unavailable for the selected .ps1 entrypoint."}
+    elif suffix == ".sh":
+        shell = shutil.which("bash") or shutil.which("sh")
+        if shell is None:
+            return {"status": "missing", "reason": "No compatible shell is available for the selected .sh entrypoint."}
+        command = [str(shell), str(script_path)]
+    elif suffix in {".cmd", ".bat"}:
+        command = _project_launch_wrap_command(base, workspace, [str(script_path)])
+        if command == [str(script_path)] and os.name != "nt":
+            return {
+                "status": "missing",
+                "reason": "Windows command interop is unavailable for the selected batch entrypoint.",
+            }
+    else:
+        return {"status": "missing", "reason": f"Unsupported project launch entrypoint: {script_path.name}"}
+    return {
+        "status": "ready",
+        "label": str(script_path.relative_to(workspace)),
+        "command": command,
+        "source": source,
+    }
+
+
+def _project_launch_command_executable(*names: str) -> str | None:
+    for name in names:
+        resolved = shutil.which(name)
+        if resolved:
+            return str(resolved)
+    return None
+
+
+def _project_launch_manifest_candidates(base: Any, workspace: Path) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    package_path = workspace / "package.json"
+    if package_path.is_file():
+        with suppress(Exception):
+            payload = json.loads(package_path.read_text(encoding="utf-8", errors="ignore"))
+            scripts = payload.get("scripts") if isinstance(payload, dict) else None
+            if isinstance(scripts, dict):
+                manager = None
+                if (workspace / "pnpm-lock.yaml").exists():
+                    manager = _project_launch_command_executable("pnpm", "pnpm.cmd")
+                manager = manager or _project_launch_command_executable("npm", "npm.cmd")
+                if manager:
+                    names = [name for name in ("start", "dev", "serve") if str(scripts.get(name, "")).strip()]
+                    for name in names:
+                        rank = 10 if name == "start" else 11
+                        command = _project_launch_wrap_command(base, workspace, [manager, "run", name])
+                        candidates.append(
+                            {
+                                "status": "ready",
+                                "rank": rank,
+                                "label": f"package.json script {name}",
+                                "command": command,
+                                "source": "package.json",
+                            }
+                        )
+
+    for make_name in MAKEFILE_CANDIDATE_NAMES:
+        make_path = workspace / make_name
+        if not make_path.is_file():
+            continue
+        make_executable = _project_launch_command_executable("make", "make.exe")
+        if make_executable is None:
+            break
+        with suppress(Exception):
+            make_text = make_path.read_text(encoding="utf-8", errors="ignore")
+            targets = set(re.findall(r"(?m)^([A-Za-z0-9_.-]+)\s*:(?![=])", make_text))
+            for target in ("start", "run", "serve"):
+                if target not in targets:
+                    continue
+                candidates.append(
+                    {
+                        "status": "ready",
+                        "rank": 20 if target == "start" else 21,
+                        "label": f"{make_name} target {target}",
+                        "command": _project_launch_wrap_command(base, workspace, [make_executable, target]),
+                        "source": make_name,
+                    }
+                )
+        break
+
+    pyproject_path = workspace / "pyproject.toml"
+    uv_executable = _project_launch_command_executable("uv", "uv.exe")
+    if pyproject_path.is_file() and uv_executable:
+        with suppress(Exception):
+            pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8", errors="ignore"))
+            project = pyproject.get("project") if isinstance(pyproject, dict) else None
+            scripts = project.get("scripts") if isinstance(project, dict) else None
+            if isinstance(scripts, dict):
+                for name in sorted(str(item) for item in scripts if str(item).strip()):
+                    candidates.append(
+                        {
+                            "status": "ready",
+                            "rank": 25,
+                            "label": f"pyproject script {name}",
+                            "command": _project_launch_wrap_command(
+                                base,
+                                workspace,
+                                [uv_executable, "run", name],
+                            ),
+                            "source": "pyproject.toml",
+                        }
+                    )
+
+    for filename in PROJECT_LAUNCH_ROOT_FILENAMES:
+        path = workspace / filename
+        if path.is_file():
+            plan = _project_launch_file_plan(base, workspace, path.resolve(), source="root entrypoint")
+            if plan.get("status") == "ready":
+                plan["rank"] = 30
+                candidates.append(plan)
+
+    cargo = _project_launch_command_executable("cargo", "cargo.exe")
+    if (workspace / "Cargo.toml").is_file() and cargo:
+        candidates.append(
+            {
+                "status": "ready",
+                "rank": 40,
+                "label": "Cargo.toml via cargo run",
+                "command": _project_launch_wrap_command(base, workspace, [cargo, "run"]),
+                "source": "Cargo.toml",
+            }
+        )
+    go = _project_launch_command_executable("go", "go.exe")
+    if (workspace / "go.mod").is_file() and go:
+        candidates.append(
+            {
+                "status": "ready",
+                "rank": 40,
+                "label": "go.mod via go run .",
+                "command": _project_launch_wrap_command(base, workspace, [go, "run", "."]),
+                "source": "go.mod",
+            }
+        )
+    dotnet = _project_launch_command_executable("dotnet", "dotnet.exe")
+    csproj_files = sorted(workspace.glob("*.csproj"))
+    if len(csproj_files) == 1 and dotnet:
+        project_path = csproj_files[0].resolve()
+        candidates.append(
+            {
+                "status": "ready",
+                "rank": 40,
+                "label": f"{project_path.name} via dotnet run",
+                "command": _project_launch_wrap_command(
+                    base,
+                    workspace,
+                    [dotnet, "run", "--project", str(project_path)],
+                ),
+                "source": project_path.name,
+            }
+        )
+    return candidates
+
+
+def _resolve_project_launch_plan(base: Any, workspace: Path, prompt: str) -> dict[str, Any]:
+    explicit = _resolve_existing_entrypoint_spec(base, workspace, prompt)
+    if explicit is not None and str(explicit.get("origin", "")) != "implicit_discovery":
+        if explicit.get("kind") == "file":
+            return _project_launch_file_plan(
+                base,
+                workspace,
+                Path(str(explicit["path"])).resolve(),
+                source="explicit prompt entrypoint",
+            )
+        command_text = str(explicit.get("command", "")).strip()
+        if command_text:
+            try:
+                command = shlex.split(command_text, posix=os.name != "nt")
+            except ValueError as exc:
+                return {"status": "missing", "reason": f"Unable to parse the explicit launch command: {exc}"}
+            return {
+                "status": "ready",
+                "label": str(explicit.get("label", command_text)),
+                "command": _project_launch_wrap_command(base, workspace, command),
+                "source": "explicit prompt command",
+            }
+
+    candidates = _project_launch_manifest_candidates(base, workspace)
+    if not candidates:
+        return {
+            "status": "missing",
+            "reason": (
+                "No deterministic existing launch command was found in package.json, pyproject.toml, a Makefile, "
+                "a conventional root entrypoint, Cargo.toml, go.mod, or a single root .csproj."
+            ),
+        }
+    best_rank = min(int(item.get("rank", 999)) for item in candidates)
+    best = [item for item in candidates if int(item.get("rank", 999)) == best_rank]
+    unique: dict[tuple[str, ...], dict[str, Any]] = {}
+    for item in best:
+        unique.setdefault(tuple(str(part) for part in item.get("command", [])), item)
+    if len(unique) != 1:
+        return {
+            "status": "ambiguous",
+            "candidates": [str(item.get("label", "launch command")) for item in unique.values()],
+        }
+    return next(iter(unique.values()))
 def _truthy(value: Any, default: bool) -> bool:
     if value is None:
         return default
@@ -1287,6 +1631,9 @@ class _DisabledLocalBackgroundJobManager:
         raise FileNotFoundError(f"Unknown local background job: {job_id}")
 
     def start(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("Local background jobs are disabled for this runtime.")
+
+    def start_command(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("Local background jobs are disabled for this runtime.")
 
 
@@ -2433,6 +2780,87 @@ class LocalBackgroundJobManager:
 
         threading.Thread(target=_watch, daemon=True).start()
         return meta
+    def start_command(
+        self,
+        command: Sequence[str],
+        *,
+        workspace: Path,
+        label: str,
+        wait_seconds: float = PROJECT_LAUNCH_READY_WAIT_SECONDS,
+    ) -> dict[str, Any]:
+        normalized_command = [str(item) for item in command if str(item)]
+        if not normalized_command:
+            raise ValueError("Project launch command must not be empty.")
+        job_id = uuid.uuid4().hex[:12]
+        job_dir = self.root / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        log_path = job_dir / "job.log"
+        env = os.environ.copy()
+        env["QUBITZ_PROJECT_LAUNCH"] = "1"
+        with log_path.open("w", encoding="utf-8", errors="ignore") as handle:
+            process = subprocess.Popen(
+                normalized_command,
+                cwd=workspace,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                env=env,
+                start_new_session=os.name != "nt",
+            )
+        meta = {
+            "job_id": job_id,
+            "job_type": "project_launch",
+            "status": "starting",
+            "label": label,
+            "workspace": workspace.as_posix(),
+            "runtime_workspace": self.runtime_workspace.as_posix(),
+            "pid": process.pid,
+            "command": normalized_command,
+            "created_at": _now_stamp(),
+            "finished_at": None,
+            "returncode": None,
+            "log_path": log_path.as_posix(),
+            "detected_urls": [],
+        }
+        self._write_meta(job_id, meta)
+        deadline = time.time() + max(0.0, float(wait_seconds))
+        while time.time() < deadline and process.poll() is None:
+            time.sleep(0.1)
+        returncode = process.poll()
+        if returncode is None:
+            meta["status"] = "running"
+        else:
+            meta["status"] = "completed" if returncode == 0 else "failed"
+            meta["returncode"] = returncode
+            meta["finished_at"] = _now_stamp()
+        log_text = ""
+        with suppress(Exception):
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+        if PROJECT_LAUNCH_FATAL_LOG_PATTERN.search(log_text):
+            returncode = process.poll()
+            meta["status"] = "failed"
+            meta["returncode"] = returncode
+            if returncode is not None:
+                meta["finished_at"] = _now_stamp()
+            meta["startup_error_detected"] = True
+        meta["detected_urls"] = list(dict.fromkeys(PROJECT_LAUNCH_LOCAL_URL_PATTERN.findall(log_text)))[:8]
+        self._write_meta(job_id, meta)
+
+        if returncode is None:
+            def _watch() -> None:
+                completed_code = process.wait()
+                latest = self._read_meta(job_id)
+                if latest.get("status") not in {"cancelling", "cancelled"}:
+                    latest["status"] = "completed" if completed_code == 0 else "failed"
+                    latest["finished_at"] = _now_stamp()
+                    latest["returncode"] = completed_code
+                    self._write_meta(job_id, latest)
+
+            threading.Thread(target=_watch, daemon=True).start()
+        result = dict(meta)
+        result["log_excerpt"] = _shorten(log_text.strip(), 2000)
+        return result
 
     def list_jobs(self) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
@@ -2455,8 +2883,32 @@ class LocalBackgroundJobManager:
         pid = meta.get("pid")
         if not pid:
             return {"job_id": job_id, "cancelled": False}
-        with suppress(Exception):
-            os.kill(int(pid), 15)
+        previous_status = str(meta.get("status") or "running")
+        meta["status"] = "cancelling"
+        self._write_meta(job_id, meta)
+        cancelled = False
+        if meta.get("job_type") == "project_launch" and os.name != "nt":
+            with suppress(Exception):
+                os.killpg(int(pid), 15)
+                cancelled = True
+        elif meta.get("job_type") == "project_launch" and shutil.which("taskkill.exe") is not None:
+            with suppress(Exception):
+                completed = subprocess.run(
+                    ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                cancelled = completed.returncode == 0
+        else:
+            with suppress(Exception):
+                os.kill(int(pid), 15)
+                cancelled = True
+        if not cancelled:
+            meta["status"] = previous_status
+            self._write_meta(job_id, meta)
+            return {"job_id": job_id, "cancelled": False}
         meta["status"] = "cancelled"
         meta["finished_at"] = _now_stamp()
         self._write_meta(job_id, meta)
@@ -7129,7 +7581,7 @@ _EMBEDDED_BASE_SOURCE = (
     '            "stream": False,\n'
     '            "tools": tools,\n'
     '            "tool_choice": "auto",\n'
-    '            "parallel_tool_calls": True,\n'
+    '            "parallel_tool_calls": False,\n'
     '            "parse_tool_calls": True,\n'
     '            "max_tokens": num_predict,\n'
     '            "temperature": temperature,\n'
@@ -8966,7 +9418,7 @@ def _patch_streaming_chat(base: Any) -> None:
             "stream_options": {"include_usage": True},
             "tools": kwargs["tools"],
             "tool_choice": "auto",
-            "parallel_tool_calls": True,
+            "parallel_tool_calls": False,
             "parse_tool_calls": True,
             "max_tokens": kwargs["num_predict"],
             "temperature": kwargs["temperature"],
@@ -9049,7 +9501,7 @@ def _patch_streaming_chat(base: Any) -> None:
             return original_chat(self, **kwargs)
         if pending_parts:
             callback("".join(pending_parts))
-        tool_calls = [tool_parts[index] for index in sorted(tool_parts)]
+        tool_calls = [tool_parts[index] for index in sorted(tool_parts)][:1]
         return {
             "message": {
                 "role": "assistant",
@@ -9658,6 +10110,89 @@ class LocalOnlyApp:
                     return "Wrapper route: read_only_workspace. Prefer focused repository context and read-only inspection first."
                 return "Wrapper route: retrieval_plus_model. Use focused local context before broader tool use."
 
+            def _run_project_launch_path(
+                self,
+                prompt: str,
+                callback: Callable[[str, str], None] | None,
+            ) -> str:
+                self._emit(
+                    callback,
+                    "status",
+                    "Wrapper route: project_launch. Resolve and start the existing project launch path without retrieval or model orchestration.",
+                )
+                plan = _resolve_project_launch_plan(base, self.workspace, prompt)
+                status = str(plan.get("status", "missing"))
+                if status == "ambiguous":
+                    labels = [str(item) for item in plan.get("candidates", []) if str(item)]
+                    rendered = "\n".join(f"- {label}" for label in labels)
+                    self._emit(
+                        callback,
+                        "status",
+                        "Project launch is ambiguous; no command was executed.",
+                    )
+                    return (
+                        "I found multiple plausible existing project launch commands:\n"
+                        f"{rendered}\n\nSpecify which one to run."
+                    ).strip()
+                if status != "ready":
+                    reason = str(plan.get("reason", "No deterministic existing project launch command was found."))
+                    self._emit(callback, "status", f"Project launch was not started: {reason}")
+                    return f"I could not safely determine one project launch command. {reason} Specify the command or entrypoint to run."
+                command = [str(item) for item in plan.get("command", []) if str(item)]
+                if not command:
+                    return "I could not safely determine one project launch command. Specify the command or entrypoint to run."
+                label = str(plan.get("label", "project launch command"))
+                source = str(plan.get("source", "existing project metadata"))
+                display_command = _project_launch_display_command(command)
+                self._emit(
+                    callback,
+                    "status",
+                    f"Wrapper project launch: starting {label} from {source} as a managed local background process.",
+                )
+                try:
+                    result = self.background_jobs.start_command(
+                        command,
+                        workspace=self.workspace,
+                        label=label,
+                    )
+                except Exception as exc:
+                    self._emit(
+                        callback,
+                        "status",
+                        f"Project launch failed before readiness: {type(exc).__name__}: {exc}",
+                    )
+                    return (
+                        f"Project launch failed before readiness. Command: `{display_command}`. "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                job_status = str(result.get("status", "unknown"))
+                job_id = str(result.get("job_id", ""))
+                pid = int(result.get("pid") or 0)
+                log_path = str(result.get("log_path", ""))
+                returncode = result.get("returncode")
+                urls = [str(item) for item in result.get("detected_urls", []) if str(item)]
+                log_excerpt = str(result.get("log_excerpt", "") or "")
+                lines = [
+                    f"Project launch status: {job_status}.",
+                    f"Command: `{display_command}`",
+                    f"Job ID: `{job_id}`",
+                    f"PID: `{pid}`",
+                    f"Log: `{log_path}`",
+                ]
+                if returncode is not None:
+                    lines.append(f"Exit code: `{returncode}`")
+                if urls:
+                    lines.append("Detected local URL(s): " + ", ".join(urls))
+                if log_excerpt:
+                    lines.append(f"Initial output:\n```text\n{log_excerpt}\n```")
+                if job_status == "running":
+                    lines.append("Use `/jobs` to inspect managed background jobs or `/cancel-job <job_id>` to stop this launch.")
+                self._emit(
+                    callback,
+                    "status",
+                    f"Wrapper project launch finished readiness check with status {job_status}; model loading was skipped.",
+                )
+                return "\n\n".join(lines)
             def _try_direct_existing_script_completion(
                 self,
                 prompt: str,
@@ -10394,6 +10929,8 @@ class LocalOnlyApp:
 
             async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
                 user_prompt = prompt
+                if _prompt_requests_project_launch(base, user_prompt):
+                    return self._run_project_launch_path(user_prompt, callback)
                 self._emit(
                     callback,
                     "status",
@@ -11047,6 +11584,17 @@ class LocalOnlyApp:
                     if payload["log"]:
                         self._append_transcript("tool", payload["log"])
                     return
+                if lowered.startswith("/cancel-job "):
+                    self.prompt_box.delete("1.0", "end")
+                    job_id = raw_prompt.split(None, 1)[1].strip()
+                    if not job_id:
+                        return
+                    payload = self.agent.background_jobs.cancel_job(job_id)
+                    self._append_transcript(
+                        "status",
+                        f"Background job {job_id} cancellation requested: {bool(payload.get('cancelled'))}.",
+                    )
+                    return
                 return super().send_prompt()
 
         return EnhancedGUI
@@ -11332,6 +11880,985 @@ def _install_gui_temperature_status_patch(app: LocalOnlyApp) -> None:
 
 
 _install_gui_temperature_status_patch(_APP)
+
+
+TOOL_EXPOSURE_MAX = 8
+TOOL_SEARCH_RESULT_MAX = 8
+TRANSACTIONAL_PATCH_MAX_BYTES = 16 * 1024 * 1024
+TRANSACTIONAL_PATCH_MAX_REPLACEMENTS = 64
+TOOL_AUDIT_FILE_NAME = "tool_audit.jsonl"
+_TOOL_CALL_CONTEXT = threading.local()
+_TOOL_AUDIT_LOCK = threading.Lock()
+
+
+def _tool_annotations(base: Any, name: str) -> Any:
+    normalized = name.lower()
+    destructive = any(token in normalized for token in ("delete", "destroy", "apply_back", "install"))
+    read_only = normalized in {
+        "search_tools",
+        "list_files",
+        "read_file",
+        "read_file_snapshot",
+        "search_text",
+        "list_skills",
+        "read_skill",
+        "read_skill_resource",
+        "list_local_plugins",
+        "read_local_plugin",
+        "read_local_only_config",
+        "workspace_symbols",
+        "document_symbols",
+        "find_symbol_definitions",
+        "find_symbol_references",
+        "find_symbol_callers",
+        "find_symbol_callees",
+        "find_symbol_type_info",
+        "codeintel_diagnostics",
+        "list_project_mcp_tools",
+        "read_project_mcp_server_log",
+        "list_sandboxes",
+        "sandbox_diff",
+        "list_background_jobs",
+        "read_background_job",
+    }
+    return base.mcp_types.ToolAnnotations(
+        title=name.replace("_", " ").title(),
+        readOnlyHint=read_only,
+        destructiveHint=destructive,
+        idempotentHint=read_only,
+        openWorldHint=False,
+    )
+
+
+def _strict_tool_schema(schema: Any) -> Any:
+    if isinstance(schema, list):
+        return [_strict_tool_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    tightened = {key: _strict_tool_schema(value) for key, value in schema.items()}
+    properties = tightened.get("properties")
+    if tightened.get("type") == "object" and isinstance(properties, dict):
+        tightened.setdefault("additionalProperties", False)
+        for name, property_schema in properties.items():
+            if not isinstance(property_schema, dict):
+                continue
+            if name in {"max_entries", "max_results"} and property_schema.get("type") == "integer":
+                property_schema.setdefault("minimum", 1)
+                property_schema.setdefault("maximum", 500)
+            elif name in {"start_line", "end_line"} and property_schema.get("type") == "integer":
+                property_schema.setdefault("minimum", 1)
+            elif name in {"timeout_seconds", "wait_seconds"} and property_schema.get("type") == "integer":
+                property_schema.setdefault("minimum", 1)
+                property_schema.setdefault("maximum", 1800)
+    return tightened
+
+
+def _json_schema_errors(value: Any, schema: Any, root_schema: Any | None = None, path: str = "$") -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    root = root_schema if isinstance(root_schema, dict) else schema
+    reference = schema.get("$ref")
+    if isinstance(reference, str) and reference.startswith("#/"):
+        target: Any = root
+        for part in reference[2:].split("/"):
+            if not isinstance(target, dict) or part not in target:
+                return [f"{path}: unresolved schema reference {reference}"]
+            target = target[part]
+        return _json_schema_errors(value, target, root, path)
+    alternatives = schema.get("anyOf") or schema.get("oneOf")
+    if isinstance(alternatives, list):
+        if any(not _json_schema_errors(value, candidate, root, path) for candidate in alternatives):
+            return []
+        return [f"{path}: value does not match any allowed schema"]
+    expected_type = schema.get("type")
+    valid_type = True
+    if expected_type == "object":
+        valid_type = isinstance(value, dict)
+    elif expected_type == "array":
+        valid_type = isinstance(value, list)
+    elif expected_type == "string":
+        valid_type = isinstance(value, str)
+    elif expected_type == "integer":
+        valid_type = isinstance(value, int) and not isinstance(value, bool)
+    elif expected_type == "number":
+        valid_type = isinstance(value, (int, float)) and not isinstance(value, bool)
+    elif expected_type == "boolean":
+        valid_type = isinstance(value, bool)
+    elif expected_type == "null":
+        valid_type = value is None
+    if not valid_type:
+        return [f"{path}: expected {expected_type}, received {type(value).__name__}"]
+    errors: list[str] = []
+    if expected_type == "object" and isinstance(value, dict):
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        for required_name in schema.get("required") or []:
+            if required_name not in value:
+                errors.append(f"{path}: missing required property {required_name}")
+        if schema.get("additionalProperties") is False:
+            for extra_name in set(value).difference(properties):
+                errors.append(f"{path}: unexpected property {extra_name}")
+        for name, item in value.items():
+            item_schema = properties.get(name)
+            if item_schema is None and isinstance(schema.get("additionalProperties"), dict):
+                item_schema = schema["additionalProperties"]
+            if item_schema is not None:
+                errors.extend(_json_schema_errors(item, item_schema, root, f"{path}.{name}"))
+    elif expected_type == "array" and isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            errors.extend(_json_schema_errors(item, schema["items"], root, f"{path}[{index}]"))
+    return errors
+
+
+def _redacted_tool_arguments(value: Any, key: str = "") -> Any:
+    if any(token in key.lower() for token in ("password", "secret", "token", "credential", "api_key")):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(item_key): _redacted_tool_arguments(item_value, str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_redacted_tool_arguments(item, key) for item in value]
+    return value
+
+
+@dataclass
+class _PendingToolApproval:
+    approval_id: str
+    fingerprint: str
+    tool_name: str
+    arguments: dict[str, Any]
+    preview: str
+
+
+class _TextReplacement(TypedDict):
+    old_text: str
+    new_text: str
+
+
+class _ToolPermissionBroker:
+    _READ_TOOLS = {
+        "search_tools",
+        "list_files",
+        "read_file",
+        "read_file_snapshot",
+        "search_text",
+        "list_skills",
+        "read_skill",
+        "read_skill_resource",
+        "list_local_plugins",
+        "read_local_plugin",
+        "read_local_only_config",
+        "workspace_symbols",
+        "document_symbols",
+        "find_symbol_definitions",
+        "find_symbol_references",
+        "find_symbol_callers",
+        "find_symbol_callees",
+        "find_symbol_type_info",
+        "codeintel_diagnostics",
+        "list_project_mcp_tools",
+        "read_project_mcp_server_log",
+        "list_sandboxes",
+        "sandbox_diff",
+        "list_background_jobs",
+        "read_background_job",
+    }
+    _MUTATION_TOOLS = {
+        "apply_text_patch",
+        "write_file",
+        "replace_text",
+        "make_directory",
+        "move_path",
+        "delete_path",
+        "sandbox_write_file",
+        "sandbox_replace_text",
+        "sandbox_make_directory",
+        "sandbox_move_path",
+        "sandbox_delete_path",
+        "sandbox_apply_back",
+        "sandbox_destroy",
+    }
+    _EXECUTION_TOOLS = {
+        "run_existing_entrypoint",
+        "run_command",
+        "run_project_command",
+        "run_powershell_command",
+        "sandbox_run_command",
+        "start_project_mcp_server",
+    }
+    _ALWAYS_APPROVAL = {
+        "install_python_package",
+        "delete_path",
+        "sandbox_delete_path",
+        "sandbox_apply_back",
+        "sandbox_destroy",
+    }
+    _PATH_KEYS = {
+        "path",
+        "source",
+        "destination",
+        "cwd",
+        "requirements_file",
+        "server_script",
+        "python_path",
+    }
+
+    def __init__(self, base: Any, workspace: Path, runtime_workspace: Path) -> None:
+        self.base = base
+        self.workspace = workspace.resolve()
+        self.audit_path = runtime_workspace.resolve() / LOCAL_ONLY_DIR_NAME / TOOL_AUDIT_FILE_NAME
+        self.pending: dict[str, _PendingToolApproval] = {}
+        self.current_prompt = ""
+        self.approved_once: set[str] = set()
+        self.callback: Callable[[str, str], None] | None = None
+
+    @staticmethod
+    def _fingerprint(name: str, arguments: dict[str, Any]) -> str:
+        encoded = json.dumps({"name": name, "arguments": arguments}, ensure_ascii=True, sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def begin_turn(self, prompt: str, callback: Callable[[str, str], None] | None) -> None:
+        self.current_prompt = prompt
+        self.callback = callback
+        self.approved_once.clear()
+        approval_match = re.search(r"\b(?:approve|approved|allow|proceed|confirm)(?:\s+(?:action\s+)?)?([a-f0-9]{8,64})?\b", prompt.lower())
+        if approval_match is None:
+            return
+        requested_id = (approval_match.group(1) or "").strip()
+        candidates = [
+            item
+            for item in self.pending.values()
+            if not requested_id or item.approval_id.startswith(requested_id) or item.fingerprint.startswith(requested_id)
+        ]
+        if len(candidates) == 1:
+            self.approved_once.add(candidates[0].fingerprint)
+
+    def end_turn(self) -> None:
+        self.current_prompt = ""
+        self.callback = None
+        self.approved_once.clear()
+
+    def _emit(self, message: str) -> None:
+        if self.callback is not None:
+            self.callback("status", message)
+
+    def _audit(self, status: str, name: str, arguments: dict[str, Any], fingerprint: str, reason: str = "") -> None:
+        payload = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "status": status,
+            "tool": name,
+            "fingerprint": fingerprint,
+            "workspace": str(self.workspace),
+            "arguments": _redacted_tool_arguments(arguments),
+            "reason": reason,
+        }
+        with suppress(Exception), _TOOL_AUDIT_LOCK:
+            self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.audit_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+    def _outside_workspace_paths(self, arguments: dict[str, Any]) -> list[str]:
+        outside: list[str] = []
+        for key in self._PATH_KEYS:
+            raw_value = arguments.get(key)
+            if not isinstance(raw_value, str) or not raw_value.strip():
+                continue
+            try:
+                target = self.base.resolve_workspace_path(
+                    self.workspace,
+                    raw_value,
+                    allow_missing=True,
+                    allow_external=True,
+                ).resolve()
+                target.relative_to(self.workspace)
+            except ValueError:
+                outside.append(raw_value)
+            except Exception:
+                continue
+        return outside
+
+    def _requires_command_approval(self, name: str, arguments: dict[str, Any]) -> bool:
+        if name == "run_powershell_command":
+            return True
+        if name not in {"run_command", "run_project_command"}:
+            return False
+        command_value = arguments.get("command", "")
+        if isinstance(command_value, list):
+            command_text = " ".join(str(item) for item in command_value)
+            executable = str(command_value[0]).lower() if command_value else ""
+        else:
+            command_text = str(command_value)
+            with suppress(ValueError):
+                parts = shlex.split(command_text, posix=True)
+                executable = parts[0].lower() if parts else ""
+            if "executable" not in locals():
+                executable = ""
+        if re.search(r"(?:^|\s)(?:rm|rmdir|del|erase|shutdown|reboot|format|sudo|runas)(?:\s|$)|reset\s+--hard|clean\s+-[a-z]*f", command_text, re.IGNORECASE):
+            return True
+        if re.search(r"[;&|`]|\$\(", command_text):
+            return True
+        allowed = {
+            "git",
+            "make",
+            "node",
+            "npm",
+            "npx",
+            "pnpm",
+            "py",
+            "pytest",
+            "python",
+            "python3",
+            "rg",
+            "ruff",
+            "uv",
+        }
+        return Path(executable).name.lower() not in allowed
+
+    def authorize(self, name: str, arguments: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        normalized = name.lower()
+        fingerprint = self._fingerprint(normalized, arguments)
+        if fingerprint in self.approved_once:
+            self.approved_once.remove(fingerprint)
+            self.pending.pop(fingerprint, None)
+            self._audit("approved", normalized, arguments, fingerprint)
+            self._emit(f"Approved tool action {fingerprint[:10]} is executing once.")
+            return True, None
+
+        prompt = self.current_prompt.lower()
+        edit_requested = bool(re.search(r"\b(?:add|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|replace|update|write)\b", prompt))
+        execution_requested = bool(re.search(r"\b(?:build|compile|execute|launch|lint|run|serve|start|test|verify)\b", prompt))
+        install_requested = bool(re.search(r"\b(?:install|upgrade|dependency|dependencies|package|requirements)\b", prompt))
+        if normalized in self._MUTATION_TOOLS and not edit_requested:
+            reason = "The current user prompt did not authorize workspace modification."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+        if normalized in self._EXECUTION_TOOLS and not execution_requested:
+            reason = "The current user prompt did not authorize command or entrypoint execution."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+        if normalized == "install_python_package" and not install_requested:
+            reason = "The current user prompt did not request dependency installation."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+
+        outside_paths = self._outside_workspace_paths(arguments)
+        requires_approval = normalized in self._ALWAYS_APPROVAL or bool(outside_paths)
+        if normalized == "write_file":
+            with suppress(Exception):
+                target = self.base.resolve_workspace_path(self.workspace, str(arguments.get("path", "")), allow_missing=True, allow_external=True)
+                requires_approval = requires_approval or target.exists()
+        if normalized in {"move_path", "sandbox_move_path"} and bool(arguments.get("overwrite")):
+            requires_approval = True
+        requires_approval = requires_approval or self._requires_command_approval(normalized, arguments)
+        if not requires_approval:
+            self._audit("allowed", normalized, arguments, fingerprint)
+            return True, None
+
+        redacted = _redacted_tool_arguments(arguments)
+        preview = f"{normalized}({json.dumps(redacted, ensure_ascii=True, sort_keys=True, default=str)})"
+        if outside_paths:
+            preview += f" outside_workspace={outside_paths}"
+        pending = _PendingToolApproval(
+            approval_id=fingerprint[:10],
+            fingerprint=fingerprint,
+            tool_name=normalized,
+            arguments=dict(arguments),
+            preview=preview,
+        )
+        self.pending[fingerprint] = pending
+        reason = "This action requires explicit approval before execution."
+        self._audit("approval_required", normalized, arguments, fingerprint, reason)
+        self._emit(f"Tool action {pending.approval_id} requires approval and was not executed.")
+        return False, {
+            "status": "approval_required",
+            "approval_id": pending.approval_id,
+            "tool": normalized,
+            "preview": preview,
+            "reason": reason,
+            "instruction": f"Ask the user to reply `approve {pending.approval_id}` to execute this exact action once.",
+        }
+
+
+_ORIGINAL_LOCAL_MCP_SERVER_BUILDER = _build_local_mcp_server
+
+
+def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path, launch_script: Path) -> Any:
+    server = _ORIGINAL_LOCAL_MCP_SERVER_BUILDER(base, workspace, runtime_workspace, launch_script)
+    workspace = workspace.resolve()
+
+    def annotations(name: str) -> Any:
+        return _tool_annotations(base, name)
+
+    @server.tool(
+        description="Search the local tool catalog by capability and return matching tool names and input schemas.",
+        annotations=annotations("search_tools"),
+        structured_output=True,
+    )
+    def search_tools(query: str, max_results: int = TOOL_SEARCH_RESULT_MAX) -> dict[str, Any]:
+        query_tokens = set(re.findall(r"[a-z0-9_]+", query.lower()))
+        ranked: list[tuple[int, str, Any]] = []
+        for tool in server._tool_manager.list_tools():
+            if tool.name == "search_tools":
+                continue
+            haystack = f"{tool.name} {tool.description or ''}".lower()
+            name_tokens = set(re.findall(r"[a-z0-9_]+", tool.name.lower().replace("_", " ")))
+            score = 4 * len(query_tokens.intersection(name_tokens))
+            score += sum(1 for token in query_tokens if token and token in haystack)
+            if score > 0:
+                ranked.append((score, tool.name, tool))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        matches = [
+            {
+                "name": tool.name,
+                "description": tool.description or "",
+                "input_schema": _strict_tool_schema(tool.parameters),
+            }
+            for _, _, tool in ranked[: max(1, min(int(max_results), TOOL_SEARCH_RESULT_MAX))]
+        ]
+        return {"query": query, "matches": matches, "usage": "Call a returned tool by its exact name and schema."}
+
+    @server.tool(
+        description="Read a UTF-8 workspace text file with a whole-file SHA-256 snapshot for transactional editing.",
+        annotations=annotations("read_file_snapshot"),
+        structured_output=True,
+    )
+    def read_file_snapshot(path: str, start_line: int = 1, end_line: int = 4000) -> dict[str, Any]:
+        target = base.resolve_workspace_path(workspace, path, allow_missing=False, allow_external=False)
+        if not target.is_file():
+            raise ValueError(f"Not a file: {path}")
+        data = target.read_bytes()
+        if len(data) > TRANSACTIONAL_PATCH_MAX_BYTES:
+            raise ValueError(f"File exceeds the {TRANSACTIONAL_PATCH_MAX_BYTES}-byte transactional edit limit: {path}")
+        text = data.decode("utf-8")
+        lines = text.splitlines()
+        first = max(1, int(start_line))
+        last = min(max(first, int(end_line)), len(lines))
+        return {
+            "path": base.relative_path(target, workspace),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+            "start_line": first,
+            "end_line": last,
+            "content": "\n".join(lines[first - 1 : last]),
+        }
+
+    @server.tool(
+        description="Atomically apply unique exact-text replacements to a workspace file after verifying its SHA-256 snapshot.",
+        annotations=annotations("apply_text_patch"),
+        structured_output=True,
+    )
+    def apply_text_patch(path: str, expected_sha256: str, replacements: list[_TextReplacement]) -> dict[str, Any]:
+        target = base.resolve_workspace_path(workspace, path, allow_missing=False, allow_external=False)
+        if not target.is_file():
+            raise ValueError(f"Not a file: {path}")
+        if not re.fullmatch(r"[a-fA-F0-9]{64}", expected_sha256):
+            raise ValueError("expected_sha256 must contain exactly 64 hexadecimal characters.")
+        if not 1 <= len(replacements) <= TRANSACTIONAL_PATCH_MAX_REPLACEMENTS:
+            raise ValueError(f"Provide 1-{TRANSACTIONAL_PATCH_MAX_REPLACEMENTS} replacements.")
+        original_bytes = target.read_bytes()
+        if len(original_bytes) > TRANSACTIONAL_PATCH_MAX_BYTES:
+            raise ValueError(f"File exceeds the {TRANSACTIONAL_PATCH_MAX_BYTES}-byte transactional edit limit: {path}")
+        original_hash = hashlib.sha256(original_bytes).hexdigest()
+        if original_hash.lower() != expected_sha256.lower():
+            raise ValueError(f"Stale file snapshot for {path}: expected {expected_sha256}, found {original_hash}.")
+        original = original_bytes.decode("utf-8")
+        updated = original
+        for index, replacement in enumerate(replacements, start=1):
+            if set(replacement) != {"old_text", "new_text"}:
+                raise ValueError(f"Replacement {index} must contain only old_text and new_text.")
+            old_text = str(replacement["old_text"])
+            new_text = str(replacement["new_text"])
+            if not old_text:
+                raise ValueError(f"Replacement {index} old_text cannot be empty.")
+            occurrences = updated.count(old_text)
+            if occurrences != 1:
+                raise ValueError(f"Replacement {index} expected one exact match, found {occurrences}.")
+            updated = updated.replace(old_text, new_text, 1)
+        updated_bytes = updated.encode("utf-8")
+        temporary = target.with_name(f".{target.name}.qubitz-{os.getpid()}-{threading.get_ident()}.tmp")
+        try:
+            temporary.write_bytes(updated_bytes)
+            with suppress(OSError):
+                temporary.chmod(target.stat().st_mode)
+            os.replace(temporary, target)
+        finally:
+            with suppress(FileNotFoundError):
+                temporary.unlink()
+        diff = "".join(
+            difflib.unified_diff(
+                original.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile=f"a/{base.relative_path(target, workspace)}",
+                tofile=f"b/{base.relative_path(target, workspace)}",
+            )
+        )
+        return {
+            "path": base.relative_path(target, workspace),
+            "old_sha256": original_hash,
+            "new_sha256": hashlib.sha256(updated_bytes).hexdigest(),
+            "replacement_count": len(replacements),
+            "bytes_written": len(updated_bytes),
+            "diff": _shorten(diff, LOCAL_ONLY_MAX_DIFF_CHARS),
+        }
+
+    @server.tool(
+        description="Run one validated existing workspace entrypoint directly without a shell.",
+        annotations=annotations("run_existing_entrypoint"),
+        structured_output=True,
+    )
+    def run_existing_entrypoint(
+        path: str,
+        arguments: list[str] | None = None,
+        cwd: str = ".",
+        timeout_seconds: int = 300,
+    ) -> dict[str, Any]:
+        target = base.resolve_workspace_path(workspace, path, allow_missing=False, allow_external=False)
+        target_cwd = base.resolve_workspace_path(workspace, cwd, allow_missing=False, allow_external=False)
+        if not target.is_file():
+            raise ValueError(f"Not a file: {path}")
+        args = [str(item) for item in (arguments or [])]
+        suffix = target.suffix.lower()
+        if suffix == ".py":
+            python_path = _preferred_project_python(workspace)
+            if python_path is None:
+                raise RuntimeError("No project-local Python interpreter was found for this entrypoint.")
+            script_path = str(target)
+            if base.in_wsl() and python_path.suffix.lower() == ".exe":
+                script_path = base.wsl_path_to_windows_path(target)
+            command = [str(python_path), script_path, *args]
+        elif suffix == ".sh":
+            bash = shutil.which("bash")
+            if bash is None:
+                raise RuntimeError("bash was not found for the requested shell entrypoint.")
+            command = [bash, str(target), *args]
+        elif suffix == ".ps1":
+            powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or shutil.which("pwsh")
+            if powershell is None:
+                raise RuntimeError("PowerShell was not found for the requested entrypoint.")
+            script_path = base.wsl_path_to_windows_path(target) if base.in_wsl() and powershell.lower().endswith(".exe") else str(target)
+            command = [powershell, "-NoProfile", "-File", script_path, *args]
+        elif suffix in {".bat", ".cmd"}:
+            cmd = shutil.which("cmd.exe")
+            if cmd is None:
+                raise RuntimeError("cmd.exe was not found for the requested entrypoint.")
+            script_path = base.wsl_path_to_windows_path(target) if base.in_wsl() else str(target)
+            command = [cmd, "/d", "/s", "/c", subprocess.list2cmdline([script_path, *args])]
+        elif suffix == ".exe" or os.access(target, os.X_OK):
+            command = [str(target), *args]
+        else:
+            raise ValueError(f"Unsupported existing entrypoint type: {suffix or '<none>'}")
+        completed = subprocess.run(
+            command,
+            cwd=target_cwd,
+            capture_output=True,
+            timeout=max(1, min(int(timeout_seconds), 1800)),
+            check=False,
+        )
+        return {
+            "path": base.relative_path(target, workspace),
+            "cwd": base.relative_path(target_cwd, workspace),
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout": _shorten(_decode_subprocess_output(completed.stdout), 12000),
+            "stderr": _shorten(_decode_subprocess_output(completed.stderr), 12000),
+        }
+
+    return server
+
+
+def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
+    base = app.base
+    original_build_model_tools = base.build_model_tools
+    original_chat = base.LlamaCppClient.chat
+    original_host = base.MCPHost
+    original_runner = base.AgentRunner
+    original_gui = base.QubitzGUI
+
+    def build_model_tools(tools: Sequence[Any]) -> list[dict[str, Any]]:
+        definitions = original_build_model_tools(tools)
+        for definition in definitions:
+            function = definition.get("function") or {}
+            name = str(function.get("name", ""))
+            function["parameters"] = _strict_tool_schema(function.get("parameters") or {"type": "object"})
+            annotation = _tool_annotations(base, name)
+            attributes: list[str] = []
+            if annotation.readOnlyHint:
+                attributes.append("read-only")
+            if annotation.destructiveHint:
+                attributes.append("destructive; approval-gated")
+            if attributes:
+                description = str(function.get("description", "")).strip()
+                function["description"] = f"[{'; '.join(attributes)}] {description}".strip()
+        return definitions
+
+    def one_tool_chat(self: Any, **kwargs: Any) -> dict[str, Any]:
+        response = original_chat(self, **kwargs)
+        message = response.get("message") if isinstance(response, dict) else None
+        if isinstance(message, dict) and isinstance(message.get("tool_calls"), list):
+            message["tool_calls"] = message["tool_calls"][:1]
+        return response
+
+    class HardenedMCPHost(original_host):
+        async def list_tools(self) -> list[Any]:
+            tools = await super().list_tools()
+            annotated = [tool.model_copy(update={"annotations": _tool_annotations(base, tool.name)}) for tool in tools]
+            self._qubitz_tool_contracts = {tool.name: tool for tool in annotated}
+            return annotated
+
+        @staticmethod
+        def _error_result(payload: dict[str, Any]) -> Any:
+            rendered = json.dumps(payload, ensure_ascii=True, sort_keys=True)
+            return base.mcp_types.CallToolResult(
+                content=[base.mcp_types.TextContent(type="text", text=rendered)],
+                structuredContent=payload,
+                isError=True,
+            )
+
+        async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+            contract = getattr(self, "_qubitz_tool_contracts", {}).get(name)
+            if contract is not None:
+                argument_errors = _json_schema_errors(arguments, _strict_tool_schema(contract.inputSchema))
+                if argument_errors:
+                    return self._error_result(
+                        {"status": "invalid_arguments", "tool": name, "errors": argument_errors[:12]}
+                    )
+            broker = getattr(_TOOL_CALL_CONTEXT, "broker", None)
+            if broker is not None:
+                allowed, error_payload = broker.authorize(name, arguments)
+                if not allowed:
+                    assert error_payload is not None
+                    return self._error_result(error_payload)
+            result = await super().call_tool(name, arguments)
+            if contract is not None and contract.outputSchema and not result.isError:
+                output_errors = _json_schema_errors(result.structuredContent, contract.outputSchema)
+                if output_errors:
+                    return self._error_result(
+                        {"status": "invalid_tool_result", "tool": name, "errors": output_errors[:12]}
+                    )
+            return result
+
+    class HardenedAgentRunner(original_runner):
+        def run_sync(self, prompt: str, callback: Any = None) -> str:
+            started_at = base.time.perf_counter()
+            answer = super().run_sync(prompt, callback)
+            elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
+            minutes, seconds = divmod(elapsed_seconds, 60)
+            return f"{str(answer).rstrip()}\n\n({minutes:02d}:{seconds:02d})"
+
+        def __init__(self, config: Any) -> None:
+            super().__init__(config)
+            self._tool_permission_broker = _ToolPermissionBroker(
+                base,
+                self.workspace,
+                getattr(self, "runtime_workspace", self.workspace),
+            )
+
+        @staticmethod
+        def _tool_description(tool: Any) -> str:
+            if isinstance(tool, dict):
+                function = tool.get("function") or {}
+                return str(function.get("description", "") or "")
+            return str(getattr(tool, "description", "") or "")
+
+        def _filter_tools_by_intent(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
+            lowered = prompt.lower()
+            tokens = set(re.findall(r"[a-z0-9_]+", lowered))
+            read_intent = bool(re.search(r"\b(?:analy[sz]e|compare|explain|find|inspect|list|read|review|search|show|summarize|view)\b", lowered))
+            edit_intent = bool(re.search(r"\b(?:add|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|replace|update|write)\b", lowered))
+            execute_intent = bool(re.search(r"\b(?:build|compile|execute|launch|lint|run|serve|start|test|verify)\b", lowered))
+            install_intent = bool(re.search(r"\b(?:install|upgrade|dependency|dependencies|package|requirements)\b", lowered))
+            mcp_intent = bool(re.search(r"\b(?:mcp|model context protocol)\b", lowered))
+            skill_intent = bool(re.search(r"\bskills?\b", lowered))
+            memory_intent = bool(re.search(r"\b(?:memory|recall|remember)\b", lowered))
+            sandbox_intent = bool(re.search(r"\b(?:sandbox|isolated)\b", lowered))
+            job_intent = bool(re.search(r"\b(?:background|job|jobs)\b", lowered))
+            destructive_intent = bool(re.search(r"\b(?:delete|destroy|erase|remove)\b", lowered))
+
+            def category(name: str) -> str:
+                normalized = name.lower()
+                if normalized == "search_tools":
+                    return "catalog"
+                if "skill" in normalized:
+                    return "skill"
+                if "memory" in normalized or "recall" in normalized:
+                    return "memory"
+                if "sandbox" in normalized:
+                    return "sandbox"
+                if "background" in normalized or "job" in normalized:
+                    return "job"
+                if "mcp" in normalized:
+                    return "mcp"
+                if "install" in normalized or "package" in normalized:
+                    return "install"
+                if normalized in _ToolPermissionBroker._MUTATION_TOOLS:
+                    return "edit"
+                if normalized in _ToolPermissionBroker._EXECUTION_TOOLS or normalized.startswith("run_"):
+                    return "execute"
+                if normalized in _ToolPermissionBroker._READ_TOOLS or normalized.startswith(("read_", "list_", "find_")):
+                    return "read"
+                return "other"
+
+            allowed_categories = {"catalog", "read"}
+            intent_categories: set[str] = set()
+            category_boosts: dict[str, int] = {}
+            if edit_intent:
+                allowed_categories.add("edit")
+                intent_categories.add("edit")
+                category_boosts["edit"] = 150
+            if execute_intent or edit_intent:
+                allowed_categories.add("execute")
+                intent_categories.add("execute")
+                category_boosts["execute"] = 140
+            if install_intent:
+                allowed_categories.add("install")
+                intent_categories.add("install")
+                category_boosts["install"] = 170
+            if mcp_intent:
+                allowed_categories.add("mcp")
+                intent_categories.add("mcp")
+                category_boosts["mcp"] = 170
+            if skill_intent:
+                allowed_categories.add("skill")
+                intent_categories.add("skill")
+                category_boosts["skill"] = 160
+            if memory_intent:
+                allowed_categories.add("memory")
+                intent_categories.add("memory")
+                category_boosts["memory"] = 160
+            if sandbox_intent:
+                allowed_categories.add("sandbox")
+                intent_categories.add("sandbox")
+                category_boosts["sandbox"] = 160
+            if job_intent:
+                allowed_categories.add("job")
+                intent_categories.add("job")
+                category_boosts["job"] = 160
+            if read_intent:
+                intent_categories.add("read")
+                category_boosts["read"] = 70
+
+            preferred_order = {
+                "read_file_snapshot": 100,
+                "apply_text_patch": 99,
+                "run_existing_entrypoint": 98,
+                "read_file": 90,
+                "search_text": 89,
+                "list_files": 88,
+                "workspace_symbols": 80,
+                "find_symbol_definitions": 79,
+                "find_symbol_references": 78,
+                "codeintel_diagnostics": 77,
+                "search_tools": 10,
+            }
+            ranked: list[tuple[int, int, Any]] = []
+            for index, tool in enumerate(tools):
+                name = self._tool_name(tool)
+                tool_category = category(name)
+                if tool_category not in allowed_categories:
+                    continue
+                if tool_category == "edit" and not edit_intent:
+                    continue
+                if name in {"delete_path", "sandbox_delete_path", "sandbox_destroy"} and not destructive_intent:
+                    continue
+                haystack = f"{name} {self._tool_description(tool)}".lower()
+                name_tokens = set(re.findall(r"[a-z0-9_]+", name.lower().replace("_", " ")))
+                score = preferred_order.get(name, 40)
+                score += category_boosts.get(tool_category, 0)
+                score += 8 * len(tokens.intersection(name_tokens))
+                score += sum(1 for token in tokens if len(token) > 2 and token in haystack)
+                if tool_category == "catalog":
+                    score = preferred_order["search_tools"]
+                ranked.append((score, -index, tool))
+            ranked.sort(key=lambda item: (-item[0], -item[1]))
+            selected_limit = TOOL_EXPOSURE_MAX if intent_categories else 5
+            if install_intent:
+                pinned_names = ["read_local_only_config", "list_files", "read_file_snapshot", "install_python_package"]
+            elif mcp_intent:
+                pinned_names = [
+                    "list_project_mcp_tools",
+                    "start_project_mcp_server",
+                    "read_project_mcp_server_log",
+                    "stop_project_mcp_server",
+                ]
+            elif edit_intent:
+                pinned_names = [
+                    "read_file_snapshot",
+                    "search_text",
+                    "apply_text_patch",
+                    "list_files",
+                    "run_existing_entrypoint",
+                    "codeintel_diagnostics",
+                ]
+                if destructive_intent:
+                    pinned_names.extend(["move_path", "delete_path"])
+                else:
+                    pinned_names.append("write_file")
+            elif execute_intent:
+                pinned_names = [
+                    "run_existing_entrypoint",
+                    "read_file_snapshot",
+                    "read_file",
+                    "search_text",
+                    "list_files",
+                    "run_command",
+                    "codeintel_diagnostics",
+                ]
+            else:
+                pinned_names = [
+                    "read_file_snapshot",
+                    "read_file",
+                    "search_text",
+                    "list_files",
+                    "workspace_symbols",
+                    "find_symbol_definitions",
+                    "find_symbol_references",
+                ]
+            ranked_by_name = {self._tool_name(tool): tool for _, _, tool in ranked}
+            selected = [ranked_by_name[name] for name in pinned_names if name in ranked_by_name]
+            selected_names = {self._tool_name(tool) for tool in selected}
+            for _, _, tool in ranked:
+                name = self._tool_name(tool)
+                if name in selected_names:
+                    continue
+                selected.append(tool)
+                selected_names.add(name)
+                if len(selected) >= selected_limit:
+                    break
+            selected = selected[:selected_limit]
+            catalog_tool = next((tool for tool in tools if self._tool_name(tool) == "search_tools"), None)
+            if catalog_tool is not None and all(self._tool_name(tool) != "search_tools" for tool in selected):
+                selected = selected[: max(0, selected_limit - 1)] + [catalog_tool]
+            if not selected and tools:
+                selected = [tool for tool in tools if self._tool_name(tool) == "search_tools"][:1]
+            return selected
+
+        async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
+            self._tool_permission_broker.begin_turn(prompt, callback)
+            previous = getattr(_TOOL_CALL_CONTEXT, "broker", None)
+            _TOOL_CALL_CONTEXT.broker = self._tool_permission_broker
+            try:
+                return await super()._run_async(prompt, callback)
+            finally:
+                self._tool_permission_broker.end_turn()
+                _TOOL_CALL_CONTEXT.broker = previous
+
+        def _system_prompt(self, *args: Any, **kwargs: Any) -> str:
+            prompt = super()._system_prompt(*args, **kwargs)
+            return (
+                f"{prompt}\n\n"
+                "Runtime tool contract:\n"
+                "- The visible tools are a bounded task-relevant subset; use search_tools only when a required capability is missing.\n"
+                "- Prefer read_file_snapshot plus apply_text_patch for existing-file edits and run_existing_entrypoint for named entrypoints.\n"
+                "- Execute state-changing tools sequentially. Approval-required results mean the action did not run; ask for the exact approval id."
+            )
+
+    cancel_pattern = re.compile(
+        r"^\s*(?:stop|cancel|abort|interrupt)(?:\s+(?:this|the|my)?\s*(?:current\s+)?(?:task|request|run|operation))?[.!]?\s*$",
+        re.IGNORECASE,
+    )
+    status_pattern = re.compile(r"^\s*(?:status|task status|what are you doing|are you running)[?!.]?\s*$", re.IGNORECASE)
+
+    class HardenedGUI(original_gui):
+        def _finalize_elapsed_message(self, message: str) -> str:
+            started_at = getattr(self, "_qubitz_prompt_started_at", base.time.perf_counter())
+            elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
+            minutes, seconds = divmod(elapsed_seconds, 60)
+            rendered = re.sub(r"\n\n\(\d+:\d{2}\)\s*$", "", str(message).rstrip())
+            return f"{rendered}\n\n({minutes:02d}:{seconds:02d})"
+
+        def _start_prompt(self, prompt: str, *, queued: bool = False) -> None:
+            if not getattr(self, "_qubitz_prompt_timer_armed", False):
+                self._qubitz_prompt_started_at = base.time.perf_counter()
+            self._qubitz_prompt_timer_armed = False
+            super()._start_prompt(prompt, queued=queued)
+
+        def _worker_run_tagged(self, prompt: str, run_id: int) -> None:
+            started_at = getattr(self, "_qubitz_prompt_started_at", base.time.perf_counter())
+
+            def emit(kind: str, message: str) -> None:
+                self.event_queue.put((run_id, kind, message))
+
+            try:
+                answer = self.agent.run_sync(prompt, emit)
+            except Exception as exc:
+                details = "".join(base.traceback.format_exception(exc))
+                self.event_queue.put((run_id, "error", details))
+            else:
+                elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
+                minutes, seconds = divmod(elapsed_seconds, 60)
+                rendered = re.sub(r"\n\n\(\d+:\d{2}\)\s*$", "", str(answer).rstrip())
+                self.event_queue.put((run_id, "answer", f"{rendered}\n\n({minutes:02d}:{seconds:02d})"))
+            finally:
+                self.event_queue.put((run_id, "done", ""))
+
+        def _poll_events(self) -> None:
+            while True:
+                try:
+                    item = self.event_queue.get_nowait()
+                except base.queue.Empty:
+                    break
+                if len(item) == 3:
+                    run_id, kind, message = item
+                    if run_id != getattr(self, "_active_gui_run_id", run_id):
+                        continue
+                else:
+                    kind, message = item
+                if kind == "assistant_delta":
+                    self.status_var.set("Generating")
+                    self._append_stream_delta(message)
+                    continue
+                self._clear_stream_preview()
+                if kind == "status":
+                    self.status_var.set(message)
+                    self._append_transcript("status", message)
+                elif kind == "tool":
+                    self._append_transcript("tool", message)
+                elif kind == "answer":
+                    self._append_transcript("assistant", self._finalize_elapsed_message(message))
+                elif kind == "error":
+                    self._append_transcript("error", message)
+                    self.messagebox.showerror("AI Agent Qubitz", message)
+                elif kind == "done":
+                    self._set_busy(False)
+                    if self.pending_prompts:
+                        next_prompt = self.pending_prompts.pop(0)
+                        self._update_send_button()
+                        self._start_prompt(next_prompt, queued=True)
+            self.root.after(100, self._poll_events)
+
+        def send_prompt(self) -> None:
+            raw_prompt = self.prompt_box.get("1.0", "end").strip()
+            if not raw_prompt:
+                return
+            if cancel_pattern.fullmatch(raw_prompt):
+                self.prompt_box.delete("1.0", "end")
+                self._append_transcript("user", raw_prompt)
+                if self.busy:
+                    queued = len(self.pending_prompts)
+                    self.pending_prompts.clear()
+                    self._request_cancel()
+                    suffix = f" and cleared {queued} queued task(s)" if queued else ""
+                    self._append_transcript("status", f"Cancelling the active Qubitz task{suffix}.")
+                else:
+                    self._append_transcript("assistant", "No foreground Qubitz task is running.")
+                return
+            if status_pattern.fullmatch(raw_prompt):
+                self.prompt_box.delete("1.0", "end")
+                self._append_transcript("user", raw_prompt)
+                state = "running" if self.busy else "idle"
+                self._append_transcript("assistant", f"Foreground task: {state}. Queued tasks: {len(self.pending_prompts)}.")
+                return
+            if not self.busy:
+                self._qubitz_prompt_started_at = base.time.perf_counter()
+                self._qubitz_prompt_timer_armed = True
+            super().send_prompt()
+
+    base.build_model_tools = build_model_tools
+    base.LlamaCppClient.chat = one_tool_chat
+    base.MCPHost = HardenedMCPHost
+    base.AgentRunner = HardenedAgentRunner
+    base.QubitzGUI = HardenedGUI
+
+
+_install_agent_tool_hardening(_APP)
 
 parse_args = _APP.parse_args
 run_cli = _APP.run_cli
