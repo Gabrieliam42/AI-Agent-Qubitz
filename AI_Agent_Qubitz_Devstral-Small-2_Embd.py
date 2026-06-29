@@ -2323,8 +2323,8 @@ class LocalMCPServerManager:
             return self._resolve_workspace_path(workspace, python_path, allow_missing=False)
         preferred = _preferred_project_python(workspace)
         if preferred is not None:
-            return preferred.resolve()
-        return Path(sys.executable).resolve()
+            return preferred.absolute()
+        return Path(sys.executable).absolute()
 
     def _normalize_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
         merged = {}
@@ -2459,19 +2459,54 @@ class LocalMCPServerManager:
             """
             import asyncio
             import json
+            import os
             import sys
+            from contextlib import asynccontextmanager
             from pathlib import Path
-            from fastmcp import Client
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from mcp.client.streamable_http import streamable_http_client
 
             BEGIN = "QUBITZ_JSON_BEGIN"
             END = "QUBITZ_JSON_END"
 
+            @asynccontextmanager
+            async def open_session(ref_mode: str, ref_value: str):
+                if ref_mode == "text":
+                    async with streamable_http_client(ref_value) as (read, write, _):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            yield session
+                    return
+                path = Path(ref_value)
+                if path.suffix.lower() == ".json":
+                    config = json.loads(path.read_text(encoding="utf-8"))
+                    servers = config.get("mcpServers", config)
+                    if not isinstance(servers, dict) or len(servers) != 1:
+                        raise ValueError("The MCP config must contain exactly one server entry.")
+                    entry = next(iter(servers.values()))
+                    command = str(entry["command"])
+                    args = [str(item) for item in entry.get("args", [])]
+                    env = os.environ.copy()
+                    env.update({str(key): str(value) for key, value in entry.get("env", {}).items()})
+                    cwd = entry.get("cwd") or str(path.parent)
+                else:
+                    command = sys.executable if path.suffix.lower() == ".py" else str(path)
+                    args = [str(path)] if path.suffix.lower() == ".py" else []
+                    env = None
+                    cwd = str(path.parent)
+                parameters = StdioServerParameters(command=command, args=args, env=env, cwd=cwd)
+                async with stdio_client(parameters) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        yield session
+
             async def main() -> None:
                 ref_mode = sys.argv[1]
                 ref_value = sys.argv[2]
-                ref = Path(ref_value) if ref_mode == "path" else ref_value
-                async with Client(ref) as client:
-                    tools = await client.list_tools()
+                async with open_session(ref_mode, ref_value) as session:
+                    response = await session.list_tools()
+                    tools = response.tools
                 serialized = []
                 for tool in tools:
                     if hasattr(tool, "model_dump"):
@@ -2513,6 +2548,115 @@ class LocalMCPServerManager:
                 "stderr": _shorten(stderr, 12000),
             }
         raise RuntimeError(_shorten(stderr or stdout or "Failed to probe MCP tools.", 4000))
+
+    def _invoke_tool(
+        self,
+        workspace: Path,
+        *,
+        server_reference: str,
+        python_path: Path,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        reference = self._resolve_reference(workspace, server_reference)
+        reference_mode = "path" if isinstance(reference, Path) else "text"
+        reference_value = str(reference)
+        script = textwrap.dedent(
+            """
+            import asyncio
+            import json
+            import os
+            import sys
+            from contextlib import asynccontextmanager
+            from pathlib import Path
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from mcp.client.streamable_http import streamable_http_client
+
+            BEGIN = "QUBITZ_JSON_BEGIN"
+            END = "QUBITZ_JSON_END"
+
+            @asynccontextmanager
+            async def open_session(ref_mode: str, ref_value: str):
+                if ref_mode == "text":
+                    async with streamable_http_client(ref_value) as (read, write, _):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            yield session
+                    return
+                path = Path(ref_value)
+                if path.suffix.lower() == ".json":
+                    config = json.loads(path.read_text(encoding="utf-8"))
+                    servers = config.get("mcpServers", config)
+                    if not isinstance(servers, dict) or len(servers) != 1:
+                        raise ValueError("The MCP config must contain exactly one server entry.")
+                    entry = next(iter(servers.values()))
+                    command = str(entry["command"])
+                    args = [str(item) for item in entry.get("args", [])]
+                    env = os.environ.copy()
+                    env.update({str(key): str(value) for key, value in entry.get("env", {}).items()})
+                    cwd = entry.get("cwd") or str(path.parent)
+                else:
+                    command = sys.executable if path.suffix.lower() == ".py" else str(path)
+                    args = [str(path)] if path.suffix.lower() == ".py" else []
+                    env = None
+                    cwd = str(path.parent)
+                parameters = StdioServerParameters(command=command, args=args, env=env, cwd=cwd)
+                async with stdio_client(parameters) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        yield session
+
+            async def main() -> None:
+                ref_mode, ref_value, tool_name, arguments_json = sys.argv[1:5]
+                arguments = json.loads(arguments_json)
+                async with open_session(ref_mode, ref_value) as session:
+                    result = await session.call_tool(tool_name, arguments)
+                if hasattr(result, "model_dump"):
+                    serialized = result.model_dump(mode="json")
+                elif hasattr(result, "dict"):
+                    serialized = result.dict()
+                else:
+                    serialized = {"repr": repr(result)}
+                print(BEGIN)
+                print(json.dumps({"tool": tool_name, "result": serialized}, ensure_ascii=False))
+                print(END)
+
+            asyncio.run(main())
+            """
+        ).strip()
+        completed = self._run_python(
+            workspace,
+            python_path,
+            [
+                "-c",
+                script,
+                reference_mode,
+                reference_value,
+                tool_name,
+                json.dumps(arguments or {}, ensure_ascii=True),
+            ],
+            env=env,
+            timeout_seconds=timeout_seconds,
+        )
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        begin = stdout.find("QUBITZ_JSON_BEGIN")
+        end = stdout.find("QUBITZ_JSON_END")
+        if completed.returncode == 0 and begin != -1 and end != -1 and end > begin:
+            json_text = stdout[begin + len("QUBITZ_JSON_BEGIN") : end].strip()
+            payload = json.loads(json_text)
+            return {
+                "reference": reference_value,
+                "tool": tool_name,
+                "result": payload.get("result"),
+                "returncode": completed.returncode,
+                "stdout": _shorten(stdout, 12000),
+                "stderr": _shorten(stderr, 12000),
+            }
+        raise RuntimeError(_shorten(stderr or stdout or f"Failed to invoke MCP tool {tool_name!r}.", 4000))
 
     def start_server(
         self,
@@ -2627,6 +2771,45 @@ class LocalMCPServerManager:
             workspace,
             server_reference=reference,
             python_path=interpreter,
+            env=env,
+            timeout_seconds=timeout_seconds,
+        )
+        if server_id:
+            payload["server_id"] = server_id
+        return payload
+
+    def call_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        server_id: str = "",
+        server_reference: str = "",
+        cwd: str = ".",
+        python_path: str | None = None,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        if not tool_name.strip():
+            raise ValueError("tool_name must not be empty.")
+        if server_id:
+            metadata = self._refresh_status(self._read_meta(server_id))
+            workspace = Path(metadata["workspace"])
+            interpreter = Path(metadata["python_path"])
+            reference = server_reference.strip() or metadata.get("connection_uri") or metadata.get("server_script") or ""
+            env = metadata.get("environment") or {}
+        else:
+            workspace = self._resolve_workspace_path(self.workspace, cwd, allow_missing=False)
+            interpreter = self._resolve_python(workspace, python_path)
+            reference = server_reference.strip()
+            env = None
+        if not reference:
+            raise ValueError("Provide server_id or server_reference.")
+        payload = self._invoke_tool(
+            workspace,
+            server_reference=reference,
+            python_path=interpreter,
+            tool_name=tool_name.strip(),
+            arguments=arguments,
             env=env,
             timeout_seconds=timeout_seconds,
         )
@@ -3577,6 +3760,31 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         timeout_seconds: int = 30,
     ) -> dict[str, Any]:
         return mcp_servers.list_tools(
+            server_id=server_id,
+            server_reference=server_reference,
+            cwd=cwd,
+            python_path=python_path,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @server.tool(
+        description=(
+            "Invoke one named tool on a local MCP server using its direct project interpreter path. "
+            "Accepts either a managed server_id or an explicit server_reference."
+        )
+    )
+    def call_project_mcp_tool(
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        server_id: str = "",
+        server_reference: str = "",
+        cwd: str = ".",
+        python_path: str | None = None,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        return mcp_servers.call_tool(
+            tool_name=tool_name,
+            arguments=arguments,
             server_id=server_id,
             server_reference=server_reference,
             cwd=cwd,
@@ -7102,6 +7310,7 @@ class _ToolPermissionBroker:
         "sandbox_destroy",
     }
     _EXECUTION_TOOLS = {
+        "call_project_mcp_tool",
         "run_existing_entrypoint",
         "run_command",
         "run_project_command",
@@ -7137,6 +7346,10 @@ class _ToolPermissionBroker:
         self.evidence: list[dict[str, Any]] = []
         self.schema_repairs: list[dict[str, Any]] = []
         self.approval_context_prompt = ""
+        self.required_postconditions: set[str] = set()
+        self.transaction_originals: dict[str, dict[str, Any]] = {}
+        self.transaction_snapshot_hashes: dict[str, str] = {}
+        self.transaction_changed_hashes: dict[str, str] = {}
 
     @staticmethod
     def _fingerprint(name: str, arguments: dict[str, Any]) -> str:
@@ -7150,6 +7363,10 @@ class _ToolPermissionBroker:
         self.evidence.clear()
         self.schema_repairs.clear()
         self.approval_context_prompt = ""
+        self.required_postconditions = self._completion_requirements(prompt)
+        self.transaction_originals.clear()
+        self.transaction_snapshot_hashes.clear()
+        self.transaction_changed_hashes.clear()
         approval_match = re.search(r"\b(?:approve|approved|allow|proceed|confirm)(?:\s+(?:action\s+)?)?([a-f0-9]{8,64})?\b", prompt.lower())
         if approval_match is None:
             return
@@ -7170,6 +7387,10 @@ class _ToolPermissionBroker:
         self.evidence.clear()
         self.schema_repairs.clear()
         self.approval_context_prompt = ""
+        self.required_postconditions.clear()
+        self.transaction_originals.clear()
+        self.transaction_snapshot_hashes.clear()
+        self.transaction_changed_hashes.clear()
 
     def _emit(self, message: str) -> None:
         if self.callback is not None:
@@ -7247,6 +7468,20 @@ class _ToolPermissionBroker:
         categories: set[str] = set()
         verified_paths: list[str] = []
 
+        if normalized == "read_file_snapshot" and success:
+            target = self._resolved_argument_path(arguments, "path")
+            snapshot_hash = str(structured.get("sha256", "")).strip().lower()
+            if target is not None and target.is_file() and re.fullmatch(r"[a-f0-9]{64}", snapshot_hash):
+                with suppress(OSError):
+                    current_data = target.read_bytes()
+                    if hashlib.sha256(current_data).hexdigest() == snapshot_hash:
+                        key = str(target)
+                        self.transaction_originals.setdefault(
+                            key,
+                            {"data": current_data, "mode": target.stat().st_mode, "sha256": snapshot_hash},
+                        )
+                        self.transaction_snapshot_hashes[key] = snapshot_hash
+
         if normalized in self._MUTATION_TOOLS and success:
             if normalized == "sandbox_apply_back":
                 applied = structured.get("applied")
@@ -7284,6 +7519,10 @@ class _ToolPermissionBroker:
                 categories.add("changed_files")
                 if normalized in {"write_file", "make_directory"}:
                     categories.add("created_outputs")
+                if normalized == "apply_text_patch" and target is not None:
+                    new_hash = str(structured.get("new_sha256", "")).strip().lower()
+                    if str(target) in self.transaction_originals and re.fullmatch(r"[a-f0-9]{64}", new_hash):
+                        self.transaction_changed_hashes[str(target)] = new_hash
 
         command_value = arguments.get("command", "")
         command_text = " ".join(str(item) for item in command_value) if isinstance(command_value, list) else str(command_value)
@@ -7298,6 +7537,12 @@ class _ToolPermissionBroker:
                 categories.add("service_started")
         if success and normalized == "stop_project_mcp_server" and bool(structured.get("stopped")):
             categories.add("service_stopped")
+        if success and normalized == "list_project_mcp_tools":
+            with suppress(TypeError, ValueError):
+                if int(structured.get("count") or 0) > 0:
+                    categories.add("mcp_ready")
+        if success and normalized == "call_project_mcp_tool" and structured.get("result") is not None:
+            categories.add("mcp_tool_called")
         if success and (
             re.search(r"(?:open|browser|url|link|tab|firefox|chrome|edge)", normalized, re.IGNORECASE)
             or re.search(r"\b(?:open|browser|url|link|tab|firefox|chrome|edge)\b", command_text, re.IGNORECASE)
@@ -7406,6 +7651,18 @@ class _ToolPermissionBroker:
             r"\b(?:browser|chrome|edge|firefox|links?|tabs?|urls?)\b",
         ):
             requirements.add("opened_urls")
+        if positive(
+            prompt,
+            r"\b(?:discover|inspect|list|verify)\b",
+            r"\b(?:mcp|model context protocol)\b.{0,40}\btools?\b|\btools?\b.{0,40}\b(?:mcp|model context protocol)\b",
+        ):
+            requirements.add("mcp_ready")
+        if re.search(r"\b(?:mcp|model context protocol)\b", prompt, re.IGNORECASE) and positive(
+            prompt,
+            r"\b(?:call|invoke)\b",
+            r"\b(?:mcp\s+)?tools?\b|\b[a-z][a-z0-9_]{2,}\b",
+        ):
+            requirements.add("mcp_tool_called")
         return requirements
 
     def completion_report(self, prompt: str) -> tuple[set[str], set[str]]:
@@ -7418,6 +7675,34 @@ class _ToolPermissionBroker:
             for category in evidence.get("categories", [])
         }
         return required, required.difference(verified)
+
+    def rollback_transaction(self) -> dict[str, list[str]]:
+        restored: list[str] = []
+        skipped: list[str] = []
+        for key, expected_hash in reversed(list(self.transaction_changed_hashes.items())):
+            target = Path(key)
+            original = self.transaction_originals.get(key)
+            if original is None or not target.is_file():
+                skipped.append(key)
+                continue
+            with suppress(OSError):
+                current_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+                if current_hash != expected_hash:
+                    skipped.append(key)
+                    continue
+                temporary = target.with_name(f".{target.name}.qubitz-rollback-{os.getpid()}-{threading.get_ident()}.tmp")
+                try:
+                    temporary.write_bytes(original["data"])
+                    with suppress(OSError):
+                        temporary.chmod(int(original["mode"]))
+                    os.replace(temporary, target)
+                finally:
+                    with suppress(FileNotFoundError):
+                        temporary.unlink()
+                restored.append(key)
+                continue
+            skipped.append(key)
+        return {"restored": restored, "skipped": skipped}
 
     def _outside_workspace_paths(self, arguments: dict[str, Any]) -> list[str]:
         outside: list[str] = []
@@ -7488,7 +7773,7 @@ class _ToolPermissionBroker:
 
         prompt = self.current_prompt.lower()
         edit_requested = bool(re.search(r"\b(?:add|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|replace|update|write)\b", prompt))
-        execution_requested = bool(re.search(r"\b(?:build|compile|execute|launch|lint|run|serve|start|test|verify)\b", prompt))
+        execution_requested = bool(re.search(r"\b(?:build|call|compile|execute|invoke|launch|lint|run|serve|start|test|verify)\b", prompt))
         install_requested = bool(re.search(r"\b(?:install|upgrade|dependency|dependencies|package|requirements)\b", prompt))
         if normalized in self._MUTATION_TOOLS and not edit_requested:
             reason = "The current user prompt did not authorize workspace modification."
@@ -7502,6 +7787,38 @@ class _ToolPermissionBroker:
             reason = "The current user prompt did not request dependency installation."
             self._audit("denied", normalized, arguments, fingerprint, reason)
             return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+
+        target = self._resolved_argument_path(arguments, "path")
+        if normalized in {"write_file", "replace_text"} and target is not None and target.is_file():
+            transactional = False
+            with suppress(OSError, UnicodeDecodeError):
+                data = target.read_bytes()
+                data.decode("utf-8")
+                transactional = len(data) <= TRANSACTIONAL_PATCH_MAX_BYTES
+            if transactional:
+                reason = (
+                    "Existing UTF-8 files within the transactional size limit must be read with "
+                    "read_file_snapshot and changed with apply_text_patch."
+                )
+                self._audit("transaction_required", normalized, arguments, fingerprint, reason)
+                return False, {
+                    "status": "transaction_required",
+                    "tool": normalized,
+                    "reason": reason,
+                    "instruction": "Call read_file_snapshot for this path, then apply_text_patch with its returned SHA-256.",
+                }
+        if normalized == "apply_text_patch":
+            expected_hash = str(arguments.get("expected_sha256", "")).strip().lower()
+            recorded_hash = self.transaction_snapshot_hashes.get(str(target)) if target is not None else None
+            if recorded_hash is None or expected_hash != recorded_hash:
+                reason = "apply_text_patch requires a successful current-turn read_file_snapshot for the same path and SHA-256."
+                self._audit("transaction_required", normalized, arguments, fingerprint, reason)
+                return False, {
+                    "status": "transaction_required",
+                    "tool": normalized,
+                    "reason": reason,
+                    "instruction": "Read the file with read_file_snapshot and retry once with the exact returned SHA-256.",
+                }
 
         outside_paths = self._outside_workspace_paths(arguments)
         requires_approval = normalized in self._ALWAYS_APPROVAL or bool(outside_paths)
@@ -7959,6 +8276,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             elif mcp_intent:
                 pinned_names = [
                     "list_project_mcp_tools",
+                    "call_project_mcp_tool",
                     "start_project_mcp_server",
                     "read_project_mcp_server_log",
                     "stop_project_mcp_server",
@@ -8022,11 +8340,27 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             try:
                 answer = await super()._run_async(prompt, callback)
                 required, missing = self._tool_permission_broker.completion_report(prompt)
+                rollback = {"restored": [], "skipped": []}
+                if missing.intersection({"changed_files", "tests"}) and self._tool_permission_broker.transaction_changed_hashes:
+                    rollback = self._tool_permission_broker.rollback_transaction()
+                    if rollback["restored"] and callback is not None:
+                        callback(
+                            "status",
+                            f"Transactional rollback restored {len(rollback['restored'])} file(s) after incomplete verification.",
+                        )
                 if missing:
                     missing_text = ", ".join(sorted(item.replace("_", " ") for item in missing))
                     if callback is not None:
                         callback("status", f"Completion verification is incomplete: {missing_text}.")
-                    return f"{str(answer).rstrip()}\n\n[Completion status: partial] Unverified postconditions: {missing_text}."
+                    rollback_text = ""
+                    if rollback["restored"]:
+                        rollback_text = f" Transaction rollback restored {len(rollback['restored'])} file(s)."
+                    if rollback["skipped"]:
+                        rollback_text += f" Rollback skipped {len(rollback['skipped'])} concurrently changed or unavailable file(s)."
+                    return (
+                        f"{str(answer).rstrip()}\n\n[Completion status: partial] "
+                        f"Unverified postconditions: {missing_text}.{rollback_text}"
+                    )
                 if required and callback is not None:
                     callback("status", "Completion verification passed for the requested postconditions.")
                 return answer
@@ -8040,7 +8374,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 f"{prompt}\n\n"
                 "Runtime tool contract:\n"
                 "- The visible tools are a bounded task-relevant subset; use search_tools only when a required capability is missing.\n"
-                "- Prefer read_file_snapshot plus apply_text_patch for existing-file edits and run_existing_entrypoint for named entrypoints.\n"
+                "- Existing UTF-8 files within the transaction limit must use read_file_snapshot then apply_text_patch; direct overwrite tools are rejected.\n"
+                "- Required tests or checks must pass after edits. If final verification is incomplete, transactional edits are rolled back when the file has not changed concurrently.\n"
+                "- For MCP work: establish readiness, list tools, invoke the intended tool when requested, verify its result, and stop managed servers started for the task.\n"
                 "- Execute state-changing tools sequentially. Approval-required results mean the action did not run; ask for the exact approval id.\n"
                 "- Claim completion only for postconditions verified by successful tool results; otherwise report the unverified remainder explicitly."
             )
