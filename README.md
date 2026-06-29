@@ -28,7 +28,7 @@ Qubitz is closer to a local style agent with a strong harness. Its stronger poin
 
 A realistical view: For its purposes Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is not better than frontier cloud coding agents on raw intelligence, but it is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
 
-The most valuable design choice is that Qubitz does not let small models decide everything. The wrapper owns routing, execution facts, and fast paths; the model handles language/reasoning where needed. That is the right architecture for 8B-35B local agents.
+The most valuable design choice is that Qubitz does not let small models decide everything. The wrapper owns routing, execution facts, and fast paths; the model handles language/reasoning where needed. That is the right architecture for 7B-35B local agents.
 
 It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted workspaces and Windows-hosted workspaces accessed through the WSL-to-Windows bridge.
 
