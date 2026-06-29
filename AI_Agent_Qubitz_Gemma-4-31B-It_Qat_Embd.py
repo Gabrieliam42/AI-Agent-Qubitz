@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import textwrap
@@ -3802,8 +3803,8 @@ def _build_powershell_management_command(base: Any, script: str) -> list[str] | 
         if candidate_path.anchor and not candidate_path.exists():
             continue
         command = [candidate, "-NoProfile", "-Command", script]
-        if in_wsl_session and candidate.lower().endswith(".exe"):
-            command = base.wrap_windows_command_for_wsl(command)
+        if in_wsl_session and candidate.lower().endswith(".exe") and Path("/init").is_file():
+            command.insert(0, "/init")
         return command
     return None
 
@@ -3828,16 +3829,29 @@ def _terminate_llamacpp_listener_processes(
     port = _llamacpp_listener_port_for_base(base, base_url)
     script = textwrap.dedent(
         f"""
-        $ErrorActionPreference = 'SilentlyContinue'
-        $connections = Get-NetTCPConnection -LocalPort {port} -State Listen
-        $pids = @()
-        if ($connections) {{
-            $pids = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object {{ $_ -gt 0 }})
+        $ErrorActionPreference = 'Stop'
+        $connections = @(Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue)
+        $terminated = @()
+        $ownerPids = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object {{ $_ -gt 0 }})
+        foreach ($ownerPid in $ownerPids) {{
+            $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction SilentlyContinue
+            if ($null -eq $process) {{ continue }}
+            $name = [IO.Path]::GetFileName([string]$process.Name).ToLowerInvariant()
+            $exeName = [IO.Path]::GetFileName([string]$process.ExecutablePath).ToLowerInvariant()
+            if (@('llama-server', 'llama-server.exe') -notcontains $name -and
+                @('llama-server', 'llama-server.exe') -notcontains $exeName) {{
+                continue
+            }}
+            Stop-Process -Id $ownerPid -Force -ErrorAction Stop
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            while ((Get-Process -Id $ownerPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {{
+                Start-Sleep -Milliseconds 100
+            }}
+            if (-not (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) {{
+                $terminated += [int]$ownerPid
+            }}
         }}
-        foreach ($processId in $pids) {{
-            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        }}
-        $pids | ConvertTo-Json -Compress
+        [Console]::Out.Write((ConvertTo-Json -InputObject @($terminated) -Compress))
         """
     ).strip()
     powershell_command = _build_powershell_management_command(base, script)
@@ -3862,61 +3876,48 @@ def _terminate_llamacpp_listener_processes(
         for pid in _parse_listener_pid_output(completed.stdout or ""):
             if pid in terminated:
                 continue
+            proc_root = Path("/proc") / str(pid)
             try:
-                os.kill(pid, 15)
-                terminated.add(pid)
+                names = {
+                    (proc_root / "comm").read_text(encoding="utf-8", errors="ignore").strip().lower(),
+                    (proc_root / "exe").resolve().name.lower(),
+                    Path(
+                        (proc_root / "cmdline")
+                        .read_bytes()
+                        .split(b"\0", 1)[0]
+                        .decode("utf-8", errors="ignore")
+                    ).name.lower(),
+                }
             except OSError:
                 continue
-    return sorted(terminated)
-
-
-def _terminate_llamacpp_processes_by_name(base: Any) -> list[int]:
-    terminated: set[int] = set()
-    process_names = ("llama-server", "llama-server.exe")
-    names_literal = ", ".join(f"'{name}'" for name in process_names)
-    script = textwrap.dedent(
-        f"""
-        $ErrorActionPreference = 'SilentlyContinue'
-        $names = @({names_literal})
-        $pids = @()
-        foreach ($name in $names) {{
-            $pids += @(Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-        }}
-        $pids = @($pids | Where-Object {{ $_ -gt 0 }} | Select-Object -Unique)
-        foreach ($processId in $pids) {{
-            Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-        }}
-        $pids | ConvertTo-Json -Compress
-        """
-    ).strip()
-    powershell_command = _build_powershell_management_command(base, script)
-    if powershell_command:
-        completed = subprocess.run(
-            powershell_command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if completed.returncode == 0:
-            terminated.update(_parse_listener_pid_output(completed.stdout or ""))
-    if os.name != "nt" and shutil.which("pgrep"):
-        completed = subprocess.run(
-            ["pgrep", "-f", "llama-server"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        for pid in _parse_listener_pid_output(completed.stdout or ""):
-            if pid in terminated:
+            if not names.intersection({"llama-server", "llama-server.exe"}):
                 continue
             try:
                 os.kill(pid, 15)
-                terminated.add(pid)
             except OSError:
                 continue
+            deadline = time.time() + 10.0
+            while time.time() < deadline and proc_root.exists():
+                time.sleep(0.1)
+            if proc_root.exists():
+                with suppress(OSError):
+                    os.kill(pid, 9)
+            if not proc_root.exists():
+                terminated.add(pid)
     return sorted(terminated)
+
+
+def _llamacpp_listener_port_is_bound(base: Any, base_url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(base.normalize_base_url(base_url))
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or _llamacpp_listener_port_for_base(base, base_url)
+    try:
+        with socket.create_connection((host, port), timeout=0.35):
+            return True
+    except OSError:
+        return False
 
 
 def _patch_local_only_dependencies(base: Any) -> None:
@@ -4095,10 +4096,24 @@ def _patch_local_only_dependencies(base: Any) -> None:
     def _wait_for_listener_shutdown(self: Any, timeout_seconds: float = 12.0) -> bool:
         deadline = time.time() + max(1.0, timeout_seconds)
         while time.time() < deadline:
-            if not self._reachable_transports(self.base_url):
+            if not _llamacpp_listener_port_is_bound(base, self.base_url):
                 return True
             time.sleep(0.25)
         return False
+
+    def _stop_verified_listener(self: Any, failure_message: str) -> None:
+        managed_process = self.server_process.process if self.server_process is not None else None
+        for _attempt in range(2):
+            _terminate_llamacpp_listener_processes(base, self.base_url, managed_process=managed_process)
+            if self._wait_for_listener_shutdown():
+                if self.server_process is not None:
+                    self.server_process.process = None
+                return
+            managed_process = None
+        raise RuntimeError(
+            f"{failure_message} The port remains bound after two verified PID cleanup attempts; "
+            "refusing to terminate an unverified process."
+        )
 
     def _wait_for_model_state_with_retry(
         self: Any,
@@ -4116,16 +4131,9 @@ def _patch_local_only_dependencies(base: Any) -> None:
             self.last_model_resolution_note = (
                 f"llama.cpp load failed once during startup; retrying once after clean restart for {model_name!r}."
             )
-            managed_process = self.server_process.process if self.server_process is not None else None
-            _terminate_llamacpp_listener_processes(base, self.base_url, managed_process=managed_process)
-            if not self._wait_for_listener_shutdown():
-                _terminate_llamacpp_processes_by_name(base)
-                if not self._wait_for_listener_shutdown():
-                    raise RuntimeError(
-                        f"Failed to stop the previous local llama-server listener at {self.base_url} before retrying model load."
-                    )
-            if self.server_process is not None:
-                self.server_process.process = None
+            self._stop_verified_listener(
+                f"Failed to stop the previous local llama-server listener at {self.base_url} before retrying model load."
+            )
             self.server_process = base.LlamaCppServerProcess(self.config)
             self.server_process.ensure_started()
             self.transports = []
@@ -4133,16 +4141,9 @@ def _patch_local_only_dependencies(base: Any) -> None:
             return self._wait_for_model_state(timeout_seconds)
 
     def _restart_with_requested_model(self: Any, timeout_seconds: float) -> None:
-        managed_process = self.server_process.process if self.server_process is not None else None
-        _terminate_llamacpp_listener_processes(base, self.base_url, managed_process=managed_process)
-        if not self._wait_for_listener_shutdown():
-            _terminate_llamacpp_processes_by_name(base)
-            if not self._wait_for_listener_shutdown():
-                raise RuntimeError(
-                    f"Failed to stop the previous local llama-server listener at {self.base_url} before starting the requested model."
-                )
-        if self.server_process is not None:
-            self.server_process.process = None
+        self._stop_verified_listener(
+            f"Failed to stop the previous local llama-server listener at {self.base_url} before starting the requested model."
+        )
         self.server_process = base.LlamaCppServerProcess(self.config)
         self.server_process.ensure_started()
         self.transports = []
@@ -4225,6 +4226,7 @@ def _patch_local_only_dependencies(base: Any) -> None:
     base.LlamaCppClient._wait_for_model_state = _wait_for_model_state
     base.LlamaCppClient._is_transient_model_load_exit_error = _is_transient_model_load_exit_error
     base.LlamaCppClient._wait_for_listener_shutdown = _wait_for_listener_shutdown
+    base.LlamaCppClient._stop_verified_listener = _stop_verified_listener
     base.LlamaCppClient._wait_for_model_state_with_retry = _wait_for_model_state_with_retry
     base.LlamaCppClient._raise_model_state_error = _raise_model_state_error
     base.LlamaCppClient._can_restart_mismatched_server = _can_restart_mismatched_server
@@ -10971,11 +10973,6 @@ class LocalOnlyApp:
                         "services, hosted inference APIs, or remote execution."
                     ),
                 )
-                self._emit(
-                    callback,
-                    "status",
-                    f"Thinking effort preset: {_display_thinking_effort(getattr(self.config, 'thinking_effort', 'default'))}.",
-                )
                 self._emit(callback, "status", self._route_status_message(user_prompt))
                 self._prepare_local_runtime_for_llm(callback)
                 bypass_retrieval = selected_route == "simple_answer"
@@ -11314,10 +11311,6 @@ class LocalOnlyApp:
                 self.prompt_box.bind("<Control-C>", self._handle_copy_shortcut)
                 self.prompt_box.bind("<Up>", self._handle_history_up)
                 self._ensure_transcript_tags()
-                self._append_transcript(
-                    "system",
-                    f"Thinking effort preset: {_display_thinking_effort(getattr(config, 'thinking_effort', 'default'))}.",
-                )
                 self._append_transcript(
                     "system",
                     (
@@ -12009,6 +12002,147 @@ def _json_schema_errors(value: Any, schema: Any, root_schema: Any | None = None,
     return errors
 
 
+def _schema_reference_target(schema: Any, root_schema: Any) -> Any:
+    if not isinstance(schema, dict):
+        return schema
+    reference = schema.get("$ref")
+    if not isinstance(reference, str) or not reference.startswith("#/"):
+        return schema
+    target: Any = root_schema
+    for part in reference[2:].split("/"):
+        if not isinstance(target, dict) or part not in target:
+            return schema
+        target = target[part]
+    return target
+
+
+def _normalized_schema_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def _repair_schema_value(
+    value: Any,
+    schema: Any,
+    root_schema: Any | None = None,
+    path: str = "$",
+    depth: int = 0,
+) -> tuple[Any, list[str]]:
+    """Apply one conservative, schema-guided repair pass without inventing values."""
+    if not isinstance(schema, dict) or depth > 16:
+        return value, []
+    root = root_schema if isinstance(root_schema, dict) else schema
+    schema = _schema_reference_target(schema, root)
+    if not isinstance(schema, dict):
+        return value, []
+    alternatives = schema.get("anyOf") or schema.get("oneOf")
+    if isinstance(alternatives, list):
+        for candidate in alternatives:
+            repaired, changes = _repair_schema_value(value, candidate, root, path, depth + 1)
+            if not _json_schema_errors(repaired, candidate, root, path):
+                return repaired, changes
+        return value, []
+
+    expected_type = schema.get("type")
+    changes: list[str] = []
+    if expected_type == "object":
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        if isinstance(value, str):
+            with suppress(Exception):
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    value = parsed
+                    changes.append(f"{path}: decoded JSON object string")
+        if isinstance(value, dict) and len(value) == 1:
+            wrapper_key = next(iter(value))
+            if wrapper_key in {"arguments", "input"} and wrapper_key not in properties:
+                wrapped = value[wrapper_key]
+                if isinstance(wrapped, str):
+                    with suppress(Exception):
+                        wrapped = json.loads(wrapped)
+                if isinstance(wrapped, dict):
+                    value = wrapped
+                    changes.append(f"{path}: unwrapped {wrapper_key}")
+        if not isinstance(value, dict):
+            return value, changes
+
+        normalized_properties: dict[str, list[str]] = {}
+        for property_name in properties:
+            normalized_properties.setdefault(_normalized_schema_key(property_name), []).append(property_name)
+        repaired_object: dict[str, Any] = {}
+        for raw_name, raw_item in value.items():
+            name = str(raw_name)
+            target_name = name
+            if name not in properties:
+                matches = normalized_properties.get(_normalized_schema_key(name), [])
+                if len(matches) == 1:
+                    target_name = matches[0]
+                    changes.append(f"{path}: renamed {name} to {target_name}")
+                elif schema.get("additionalProperties") is False:
+                    changes.append(f"{path}: removed unexpected property {name}")
+                    continue
+            item_schema = properties.get(target_name)
+            if item_schema is None and isinstance(schema.get("additionalProperties"), dict):
+                item_schema = schema["additionalProperties"]
+            repaired_item, item_changes = _repair_schema_value(
+                raw_item,
+                item_schema,
+                root,
+                f"{path}.{target_name}",
+                depth + 1,
+            )
+            repaired_object[target_name] = repaired_item
+            changes.extend(item_changes)
+        for property_name, property_schema in properties.items():
+            if property_name not in repaired_object and isinstance(property_schema, dict) and "default" in property_schema:
+                repaired_object[property_name] = property_schema["default"]
+                changes.append(f"{path}.{property_name}: applied schema default")
+        return repaired_object, changes
+
+    if expected_type == "array":
+        if isinstance(value, str):
+            with suppress(Exception):
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    value = parsed
+                    changes.append(f"{path}: decoded JSON array string")
+        if not isinstance(value, list) and not isinstance(value, (dict, type(None))):
+            value = [value]
+            changes.append(f"{path}: wrapped scalar as one-item array")
+        if isinstance(value, list) and isinstance(schema.get("items"), dict):
+            repaired_array: list[Any] = []
+            for index, item in enumerate(value):
+                repaired_item, item_changes = _repair_schema_value(
+                    item,
+                    schema["items"],
+                    root,
+                    f"{path}[{index}]",
+                    depth + 1,
+                )
+                repaired_array.append(repaired_item)
+                changes.extend(item_changes)
+            return repaired_array, changes
+        return value, changes
+
+    if expected_type == "integer" and isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        changes.append(f"{path}: converted string to integer")
+        return int(value.strip()), changes
+    if expected_type == "number" and isinstance(value, str) and re.fullmatch(
+        r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value.strip()
+    ):
+        changes.append(f"{path}: converted string to number")
+        return float(value.strip()), changes
+    if expected_type == "boolean" and isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        changes.append(f"{path}: converted string to boolean")
+        return value.strip().lower() == "true", changes
+    return value, changes
+
+
+def _repair_tool_arguments(arguments: Any, schema: Any) -> tuple[Any, list[str], list[str]]:
+    repaired, changes = _repair_schema_value(arguments, schema)
+    repaired_errors = _json_schema_errors(repaired, schema)
+    return repaired, changes, repaired_errors
+
+
 def _redacted_tool_arguments(value: Any, key: str = "") -> Any:
     if any(token in key.lower() for token in ("password", "secret", "token", "credential", "api_key")):
         return "<redacted>"
@@ -12026,6 +12160,7 @@ class _PendingToolApproval:
     tool_name: str
     arguments: dict[str, Any]
     preview: str
+    request_prompt: str
 
 
 class _TextReplacement(TypedDict):
@@ -12109,6 +12244,9 @@ class _ToolPermissionBroker:
         self.current_prompt = ""
         self.approved_once: set[str] = set()
         self.callback: Callable[[str, str], None] | None = None
+        self.evidence: list[dict[str, Any]] = []
+        self.schema_repairs: list[dict[str, Any]] = []
+        self.approval_context_prompt = ""
 
     @staticmethod
     def _fingerprint(name: str, arguments: dict[str, Any]) -> str:
@@ -12119,6 +12257,9 @@ class _ToolPermissionBroker:
         self.current_prompt = prompt
         self.callback = callback
         self.approved_once.clear()
+        self.evidence.clear()
+        self.schema_repairs.clear()
+        self.approval_context_prompt = ""
         approval_match = re.search(r"\b(?:approve|approved|allow|proceed|confirm)(?:\s+(?:action\s+)?)?([a-f0-9]{8,64})?\b", prompt.lower())
         if approval_match is None:
             return
@@ -12130,11 +12271,15 @@ class _ToolPermissionBroker:
         ]
         if len(candidates) == 1:
             self.approved_once.add(candidates[0].fingerprint)
+            self.approval_context_prompt = candidates[0].request_prompt
 
     def end_turn(self) -> None:
         self.current_prompt = ""
         self.callback = None
         self.approved_once.clear()
+        self.evidence.clear()
+        self.schema_repairs.clear()
+        self.approval_context_prompt = ""
 
     def _emit(self, message: str) -> None:
         if self.callback is not None:
@@ -12154,6 +12299,235 @@ class _ToolPermissionBroker:
             self.audit_path.parent.mkdir(parents=True, exist_ok=True)
             with self.audit_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+    def record_schema_repair(self, name: str, original: Any, repaired: Any, changes: list[str]) -> None:
+        record = {
+            "tool": name.lower(),
+            "original": _redacted_tool_arguments(original),
+            "repaired": _redacted_tool_arguments(repaired),
+            "changes": list(changes),
+        }
+        self.schema_repairs.append(record)
+        fingerprint = self._fingerprint(name.lower(), repaired if isinstance(repaired, dict) else {})
+        self._audit("schema_repaired", name.lower(), repaired if isinstance(repaired, dict) else {}, fingerprint, "; ".join(changes))
+        self._emit(f"Corrected one malformed {name} tool call using its declared schema.")
+
+    @staticmethod
+    def _structured_result(result: Any) -> dict[str, Any]:
+        structured = getattr(result, "structuredContent", None)
+        if structured is None:
+            structured = getattr(result, "structured_content", None)
+        return structured if isinstance(structured, dict) else {}
+
+    def _resolved_argument_path(self, arguments: dict[str, Any], key: str) -> Path | None:
+        raw_value = arguments.get(key)
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            return None
+        with suppress(Exception):
+            return self.base.resolve_workspace_path(
+                self.workspace,
+                raw_value,
+                allow_missing=True,
+                allow_external=False,
+            ).resolve()
+        return None
+
+    def record_result(self, name: str, arguments: dict[str, Any], result: Any) -> None:
+        normalized = name.lower()
+        structured = self._structured_result(result)
+        status = str(structured.get("status", "")).strip().lower()
+        return_code = structured.get("returncode", structured.get("return_code", structured.get("exit_code")))
+        success = not bool(getattr(result, "isError", False))
+        success = success and return_code in {None, 0}
+        success = success and status not in {
+            "ambiguous",
+            "approval_required",
+            "blocked",
+            "cancelled",
+            "canceled",
+            "denied",
+            "error",
+            "failed",
+            "invalid",
+            "missing",
+            "not_found",
+            "timed_out",
+            "timeout",
+        }
+        categories: set[str] = set()
+        verified_paths: list[str] = []
+
+        if normalized in self._MUTATION_TOOLS and success:
+            if normalized == "sandbox_apply_back":
+                applied = structured.get("applied")
+                success = isinstance(applied, list) and bool(applied)
+                for item in applied if isinstance(applied, list) else []:
+                    if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                        success = False
+                        continue
+                    target = self._resolved_argument_path({"path": item["path"]}, "path")
+                    action = str(item.get("action", "")).lower()
+                    item_verified = target is not None and (
+                        (action == "deleted" and not target.exists())
+                        or (action != "deleted" and target.exists())
+                    )
+                    success = success and item_verified
+                    if item_verified and target is not None:
+                        verified_paths.append(str(target))
+                if success and any(str(item.get("action", "")).lower() == "copied" for item in applied):
+                    categories.add("created_outputs")
+            elif normalized.startswith("sandbox_"):
+                success = False
+            else:
+                path_key = "destination" if normalized == "move_path" else "path"
+                target = self._resolved_argument_path(arguments, path_key)
+                if normalized == "delete_path":
+                    success = target is not None and not target.exists()
+                else:
+                    success = target is not None and target.exists()
+                    expected_hash = structured.get("new_sha256")
+                    if success and isinstance(expected_hash, str) and target is not None and target.is_file():
+                        success = hashlib.sha256(target.read_bytes()).hexdigest() == expected_hash
+                if success and target is not None:
+                    verified_paths.append(str(target))
+            if success:
+                categories.add("changed_files")
+                if normalized in {"write_file", "make_directory"}:
+                    categories.add("created_outputs")
+
+        command_value = arguments.get("command", "")
+        command_text = " ".join(str(item) for item in command_value) if isinstance(command_value, list) else str(command_value)
+        if not command_text:
+            command_text = json.dumps(arguments, ensure_ascii=True, sort_keys=True, default=str)
+        if success and normalized in self._EXECUTION_TOOLS:
+            if re.search(r"\b(?:pytest|unittest|ruff|lint|test|check)\b", command_text, re.IGNORECASE):
+                categories.add("tests")
+            if normalized == "start_project_mcp_server" and status in {"ready", "running", "started"}:
+                categories.add("service_started")
+            elif re.search(r"\b(?:serve|server|service|mcp)\b", command_text, re.IGNORECASE):
+                categories.add("service_started")
+        if success and normalized == "stop_project_mcp_server" and bool(structured.get("stopped")):
+            categories.add("service_stopped")
+        if success and (
+            re.search(r"(?:open|browser|url|link|tab|firefox|chrome|edge)", normalized, re.IGNORECASE)
+            or re.search(r"\b(?:open|browser|url|link|tab|firefox|chrome|edge)\b", command_text, re.IGNORECASE)
+            or any(key in structured for key in ("opened_urls", "opened_count", "browser"))
+        ):
+            categories.add("opened_urls")
+
+        evidence = {
+            "tool": normalized,
+            "success": success,
+            "categories": sorted(categories),
+            "paths": verified_paths,
+            "status": status,
+            "return_code": return_code,
+        }
+        self.evidence.append(evidence)
+        fingerprint = self._fingerprint(normalized, arguments)
+        self._audit("completed" if success else "failed", normalized, arguments, fingerprint, status)
+
+    @staticmethod
+    def _positive_requirement_match(prompt: str, action_pattern: str, target_pattern: str) -> bool:
+        denial_expected = bool(
+            re.search(
+                r"\b(?:must|should)\s+(?:be\s+)?(?:block(?:ed)?|deny|denied|prevent(?:ed)?)\b"
+                r"|\b(?:report|verify)\b.{0,50}\b(?:blocked|denial|denied|prevented)\b",
+                prompt,
+                re.IGNORECASE,
+            )
+        )
+        clauses = [
+            clause.strip()
+            for clause in re.split(r"(?:[!?;]+(?:\s+|$)|\.(?:\s+|$)|\n+)", prompt)
+            if clause.strip()
+        ]
+        for clause in clauses:
+            lowered = clause.lower()
+            if not re.search(target_pattern, lowered, re.IGNORECASE):
+                continue
+            for action_match in re.finditer(action_pattern, lowered, re.IGNORECASE):
+                prefix = lowered[max(0, action_match.start() - 100) : action_match.start()]
+                suffix = lowered[action_match.end() : action_match.end() + 60]
+                negated_before = re.search(
+                    r"(?:\bdo\s+not|\bdon't|\bnever|\bmust\s+not|\bshould\s+not|\bwithout"
+                    r"|\bavoid(?:ed|ing)?|\bblock(?:ed|ing)?|\bden(?:y|ied|ying)"
+                    r"|\bprevent(?:ed|ing)?|\brefus(?:e|ed|ing))"
+                    r"(?:\W+\w+){0,8}\W*$",
+                    prefix,
+                    re.IGNORECASE,
+                )
+                negated_after = re.match(
+                    r"\W*(?:(?:must|should)\s+be|is|was|were|be)\s+"
+                    r"(?:blocked|denied|prevented|refused|avoided)\b",
+                    suffix,
+                    re.IGNORECASE,
+                )
+                denied_attempt = (
+                    denial_expected
+                    and bool(re.search(r"\b(?:attempt|try)\b", lowered))
+                    and bool(re.search(r"\bwithout\b.{0,40}\bapproval\b", lowered))
+                )
+                if not negated_before and not negated_after and not denied_attempt:
+                    return True
+        return False
+
+    @staticmethod
+    def _completion_requirements(prompt: str) -> set[str]:
+        requirements: set[str] = set()
+        positive = _ToolPermissionBroker._positive_requirement_match
+        file_target = (
+            r"\b(?:class|code|config|directory|document|feature|file|folder|function|method|module|project|readme|repo|repository|script|source)\b"
+            r"|(?:^|[\s`'\"])[a-z0-9_.\\/-]+\.[a-z0-9]{1,12}(?:[\s`'\"]|$)"
+        )
+        if positive(
+            prompt,
+            r"\b(?:add|create|delete|edit|fix|implement|modify|move|overwrite|patch|refactor|remove|rename|replace|update|write)\b",
+            file_target,
+        ):
+            requirements.add("changed_files")
+        if positive(
+            prompt,
+            r"\b(?:run|execute|rerun|pass|fix|verify)\b",
+            r"\b(?:tests?|pytest|unittest|ruff|lint|checks?)\b",
+        ):
+            requirements.add("tests")
+        if positive(
+            prompt,
+            r"\b(?:start|launch|run|serve)\b",
+            r"\b(?:mcp|server|service|application)\b|\bapp\b(?!\.[a-z0-9])",
+        ):
+            requirements.add("service_started")
+        if positive(
+            prompt,
+            r"\b(?:stop|shutdown|terminate|close)\b",
+            r"\b(?:mcp|server|service|application)\b|\bapp\b(?!\.[a-z0-9])",
+        ):
+            requirements.add("service_stopped")
+        if positive(
+            prompt,
+            r"\b(?:create|generate|export|save|write)\b",
+            r"\b(?:artifact|dataset|document|file|output|report)\b",
+        ):
+            requirements.add("created_outputs")
+        if positive(
+            prompt,
+            r"\bopen\b",
+            r"\b(?:browser|chrome|edge|firefox|links?|tabs?|urls?)\b",
+        ):
+            requirements.add("opened_urls")
+        return requirements
+
+    def completion_report(self, prompt: str) -> tuple[set[str], set[str]]:
+        effective_prompt = f"{self.approval_context_prompt}\n{prompt}" if self.approval_context_prompt else prompt
+        required = self._completion_requirements(effective_prompt)
+        verified = {
+            category
+            for evidence in self.evidence
+            if evidence.get("success")
+            for category in evidence.get("categories", [])
+        }
+        return required, required.difference(verified)
 
     def _outside_workspace_paths(self, arguments: dict[str, Any]) -> list[str]:
         outside: list[str] = []
@@ -12262,6 +12636,7 @@ class _ToolPermissionBroker:
             tool_name=normalized,
             arguments=dict(arguments),
             preview=preview,
+            request_prompt=self.current_prompt,
         )
         self.pending[fingerprint] = pending
         reason = "This action requires explicit approval before execution."
@@ -12514,25 +12889,45 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
             contract = getattr(self, "_qubitz_tool_contracts", {}).get(name)
-            if contract is not None:
-                argument_errors = _json_schema_errors(arguments, _strict_tool_schema(contract.inputSchema))
-                if argument_errors:
-                    return self._error_result(
-                        {"status": "invalid_arguments", "tool": name, "errors": argument_errors[:12]}
-                    )
             broker = getattr(_TOOL_CALL_CONTEXT, "broker", None)
+            if contract is not None:
+                strict_schema = _strict_tool_schema(contract.inputSchema)
+                argument_errors = _json_schema_errors(arguments, strict_schema)
+                if argument_errors:
+                    repaired_arguments, repairs, repaired_errors = _repair_tool_arguments(arguments, strict_schema)
+                    if repairs and not repaired_errors and isinstance(repaired_arguments, dict):
+                        if broker is not None:
+                            broker.record_schema_repair(name, arguments, repaired_arguments, repairs)
+                        arguments = repaired_arguments
+                    else:
+                        payload = {
+                            "status": "invalid_arguments",
+                            "tool": name,
+                            "errors": (repaired_errors or argument_errors)[:12],
+                            "repair_attempted": True,
+                        }
+                        if repairs:
+                            payload["repairs"] = repairs[:12]
+                        return self._error_result(payload)
             if broker is not None:
                 allowed, error_payload = broker.authorize(name, arguments)
                 if not allowed:
                     assert error_payload is not None
-                    return self._error_result(error_payload)
+                    denied_result = self._error_result(error_payload)
+                    broker.record_result(name, arguments, denied_result)
+                    return denied_result
             result = await super().call_tool(name, arguments)
             if contract is not None and contract.outputSchema and not result.isError:
                 output_errors = _json_schema_errors(result.structuredContent, contract.outputSchema)
                 if output_errors:
-                    return self._error_result(
+                    invalid_result = self._error_result(
                         {"status": "invalid_tool_result", "tool": name, "errors": output_errors[:12]}
                     )
+                    if broker is not None:
+                        broker.record_result(name, arguments, invalid_result)
+                    return invalid_result
+            if broker is not None:
+                broker.record_result(name, arguments, result)
             return result
 
     class HardenedAgentRunner(original_runner):
@@ -12735,7 +13130,16 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             previous = getattr(_TOOL_CALL_CONTEXT, "broker", None)
             _TOOL_CALL_CONTEXT.broker = self._tool_permission_broker
             try:
-                return await super()._run_async(prompt, callback)
+                answer = await super()._run_async(prompt, callback)
+                required, missing = self._tool_permission_broker.completion_report(prompt)
+                if missing:
+                    missing_text = ", ".join(sorted(item.replace("_", " ") for item in missing))
+                    if callback is not None:
+                        callback("status", f"Completion verification is incomplete: {missing_text}.")
+                    return f"{str(answer).rstrip()}\n\n[Completion status: partial] Unverified postconditions: {missing_text}."
+                if required and callback is not None:
+                    callback("status", "Completion verification passed for the requested postconditions.")
+                return answer
             finally:
                 self._tool_permission_broker.end_turn()
                 _TOOL_CALL_CONTEXT.broker = previous
@@ -12747,7 +13151,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 "Runtime tool contract:\n"
                 "- The visible tools are a bounded task-relevant subset; use search_tools only when a required capability is missing.\n"
                 "- Prefer read_file_snapshot plus apply_text_patch for existing-file edits and run_existing_entrypoint for named entrypoints.\n"
-                "- Execute state-changing tools sequentially. Approval-required results mean the action did not run; ask for the exact approval id."
+                "- Execute state-changing tools sequentially. Approval-required results mean the action did not run; ask for the exact approval id.\n"
+                "- Claim completion only for postconditions verified by successful tool results; otherwise report the unverified remainder explicitly."
             )
 
     cancel_pattern = re.compile(
