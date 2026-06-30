@@ -132,13 +132,18 @@ IMPLICIT_EXISTING_ENTRYPOINT_HINTS = (
     "do not fix the project",
 )
 PROJECT_LAUNCH_REQUEST_PATTERN = re.compile(
-    r"\b(?:run|start|launch)\s+(?:up\s+)?(?:this|the(?:\s+current)?|current)\s+"
+    r"\b(?:run|execute|start|launch)\s+(?:up\s+)?(?:this|the(?:\s+current)?|current)\s+"
+    r"(?:project|workspace|repo(?:sitory)?|app(?:lication)?)\b",
+    re.IGNORECASE,
+)
+PROJECT_USE_TASK_PREFIX_PATTERN = re.compile(
+    r"\b(?P<verb>run|execute|start|launch|use)\s+(?:this|the(?:\s+current)?|current)\s+"
     r"(?:project|workspace|repo(?:sitory)?|app(?:lication)?)\b",
     re.IGNORECASE,
 )
 PROJECT_LAUNCH_EXPLANATION_PATTERN = re.compile(
     r"\b(?:how\s+(?:do|can|should|would)\s+[^\n?]{0,80}|how\s+to\s+|"
-    r"what\s+(?:command|commands|steps?)\s+[^\n?]{0,80})(?:run|start|launch)\b",
+    r"what\s+(?:command|commands|steps?)\s+[^\n?]{0,80})(?:run|execute|start|launch)\b",
     re.IGNORECASE,
 )
 PROJECT_LAUNCH_BENIGN_TRAILING_PATTERN = re.compile(
@@ -330,6 +335,279 @@ class RouteDecision:
     fallback_routes: list[str] = field(default_factory=list)
     profile: str = ROUTE_PROFILE_GLM_24G
     trace_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+ACCESS_MODE_ENV_NAME = "QUBITZ_ACCESS_MODE"
+ACCESS_MODE_READ_ONLY = "read_only"
+ACCESS_MODE_PLAN = "plan"
+ACCESS_MODE_FULL = "full"
+DEFAULT_ACCESS_MODE = ACCESS_MODE_FULL
+ACCESS_MODE_LABELS = {
+    ACCESS_MODE_READ_ONLY: "Read-only",
+    ACCESS_MODE_PLAN: "Plan Mode",
+    ACCESS_MODE_FULL: "Full Access",
+}
+ACCESS_MODE_VALUES = tuple(ACCESS_MODE_LABELS.values())
+
+
+def _normalize_access_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "read": ACCESS_MODE_READ_ONLY,
+        "readonly": ACCESS_MODE_READ_ONLY,
+        "read_only": ACCESS_MODE_READ_ONLY,
+        "plan": ACCESS_MODE_PLAN,
+        "plan_mode": ACCESS_MODE_PLAN,
+        "full": ACCESS_MODE_FULL,
+        "full_access": ACCESS_MODE_FULL,
+    }
+    return aliases.get(normalized, DEFAULT_ACCESS_MODE)
+
+
+def _access_mode_label(value: Any) -> str:
+    return ACCESS_MODE_LABELS[_normalize_access_mode(value)]
+
+
+def _full_access_enabled() -> bool:
+    return _normalize_access_mode(os.environ.get(ACCESS_MODE_ENV_NAME, DEFAULT_ACCESS_MODE)) == ACCESS_MODE_FULL
+
+
+@dataclass(frozen=True)
+class SemanticIntent:
+    speech_act: str
+    requested_actions: frozenset[str]
+    prohibited_actions: frozenset[str]
+    objects: frozenset[str]
+    execution_scope: str
+    required_postconditions: frozenset[str]
+
+    def requests(self, *actions: str) -> bool:
+        return bool(self.requested_actions.intersection(actions))
+
+
+_SEMANTIC_ACTION_PATTERN = re.compile(
+    r"\b(?P<verb>look\s+at|shut\s+down|"
+    r"read|show|view|inspect|examine|review|display|print|open|"
+    r"edit|modify|change|update|fix|refactor|rewrite|implement|patch|"
+    r"create|generate|export|save|write|add|remove|delete|erase|"
+    r"copy|duplicate|clone|move|rename|"
+    r"run|execute|start|launch|serve|stop|shutdown|terminate|kill|restart|"
+    r"install|upgrade|uninstall|verify|validate|test|lint|fetch|download|call|invoke|list|discover|cancel)\b",
+    re.IGNORECASE,
+)
+_SEMANTIC_SIDE_EFFECT_ACTIONS = frozenset(
+    {
+        "copy",
+        "clone_repository",
+        "create",
+        "delete",
+        "edit",
+        "execute",
+        "install",
+        "mcp_call",
+        "move",
+        "open_browser",
+        "open_project",
+        "restart",
+        "start",
+        "stop",
+        "uninstall",
+        "upgrade",
+    }
+)
+
+
+def _semantic_objects(text: str) -> set[str]:
+    objects: set[str] = set()
+    patterns = {
+        "application": r"\b(?:application|executable|program)\b|\bapp\b(?!\.[a-z0-9])",
+        "browser": r"https?://|\b(?:browser|chrome|edge|firefox|links?|tabs?|urls?)\b",
+        "code": r"\b(?:class|code|function|method|module|source|symbol|text|line)\b",
+        "file": (
+            r"\b(?:config|directory|document|file|folder|path|readme)\b"
+            r"|(?:^|[^a-z0-9_])[a-z0-9_.\\/-]+\.[a-z0-9]{1,12}(?=$|[^a-z0-9_])"
+        ),
+        "mcp": r"\b(?:mcp|model context protocol|mcp tool|tool)\b",
+        "package": (
+            r"\b(?:dependencies|dependency|pip|requirements|uv)\b"
+            r"|\bpackages?\b(?!\.(?:json|lock))"
+        ),
+        "project": r"\b(?:codebase|project|repo|repository|workspace)\b",
+        "script": r"\b(?:command|entrypoint|helper|script|\.bat|\.cmd|\.exe|\.ps1|\.py|\.sh)\b",
+        "service": r"\b(?:background job|job|process|server|service)\b",
+        "test": r"\b(?:check|checks|lint|pytest|ruff|test|tests|unittest)\b",
+    }
+    for name, pattern in patterns.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            objects.add(name)
+    return objects
+
+
+def _semantic_action_is_negated(clause: str, action_start: int) -> bool:
+    prefix = clause[:action_start]
+    return bool(
+        re.search(
+            r"(?:\bdo\s+not|\bdon't|\bnever|\bmust\s+not|\bshould\s+not|"
+            r"\bwithout|\bavoid(?:ed|ing)?|\brefus(?:e|ed|ing)|\bprevent(?:ed|ing)?)"
+            r"(?:\W+\w+){0,7}\W*$",
+            prefix,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _analyze_semantic_intent(prompt: str) -> SemanticIntent:
+    text = " ".join(str(prompt).strip().split())
+    lowered = text.lower()
+    directed_request = bool(
+        re.search(
+            r"^(?:please\s+)?(?:can|could|would|will)\s+you\b"
+            r"|^(?:please\s+)|\b(?:i\s+(?:want|need)|i(?:'d|\s+would)\s+like)\s+you\s+to\b",
+            lowered,
+        )
+    )
+    imperative = bool(re.match(rf"^(?:please\s+)?{_SEMANTIC_ACTION_PATTERN.pattern}", lowered, re.IGNORECASE))
+    explanatory = bool(
+        re.search(
+            r"\b(?:explain|describe)\b|\bhow\s+(?:do|can|should|would)\s+(?:i|we|someone)\b"
+            r"|\bhow\s+to\b|\bwhat\s+(?:command|steps?)\b",
+            lowered,
+        )
+    )
+    hypothetical = bool(re.search(r"\b(?:hypothetically|suppose|what\s+if|would\s+it\s+if)\b", lowered))
+    if directed_request or imperative:
+        speech_act = "request"
+    elif explanatory:
+        speech_act = "explanation"
+    elif hypothetical:
+        speech_act = "hypothetical"
+    elif text.endswith("?"):
+        speech_act = "question"
+    else:
+        speech_act = "request"
+
+    requested: set[str] = set()
+    prohibited: set[str] = set()
+    all_objects: set[str] = set()
+    clauses = [
+        clause.strip()
+        for clause in re.split(r"(?:[.;\n]+|\bbut\b|\bhowever\b|\binstead\b)", lowered)
+        if clause.strip()
+    ]
+    for clause in clauses or [lowered]:
+        objects = _semantic_objects(clause)
+        all_objects.update(objects)
+        for match in _SEMANTIC_ACTION_PATTERN.finditer(clause):
+            verb = re.sub(r"\s+", " ", match.group("verb").lower())
+            actions: set[str] = set()
+            if verb in {"read", "show", "view", "inspect", "examine", "review", "display", "print", "look at"}:
+                actions.add("read")
+            elif verb == "open":
+                if "browser" in objects:
+                    actions.add("open_browser")
+                elif objects.intersection({"file", "code"}):
+                    actions.add("read")
+                elif "application" in objects:
+                    actions.add("start")
+                elif "project" in objects:
+                    actions.add("open_project")
+                elif objects.intersection({"service", "script"}):
+                    actions.add("start")
+                else:
+                    actions.add("read")
+            elif verb in {"edit", "modify", "change", "fix", "refactor", "rewrite", "implement", "patch"}:
+                actions.add("edit")
+            elif verb == "update":
+                actions.add("upgrade" if "package" in objects and "file" not in objects else "edit")
+            elif verb in {"create", "generate", "export", "save", "write"}:
+                actions.update({"create", "edit"})
+            elif verb == "add":
+                actions.add("install" if "package" in objects and "file" not in objects else "edit")
+            elif verb == "remove":
+                if "file" in objects:
+                    actions.add("delete")
+                elif "code" in objects:
+                    actions.add("edit")
+                elif "package" in objects:
+                    actions.add("uninstall")
+                else:
+                    actions.add("edit")
+            elif verb in {"delete", "erase"}:
+                actions.add("delete")
+            elif verb in {"copy", "duplicate"}:
+                actions.add("copy")
+            elif verb == "clone":
+                actions.add("clone_repository" if "project" in objects else "copy")
+            elif verb in {"move", "rename"}:
+                actions.add("move")
+            elif verb in {"run", "execute"}:
+                actions.add("execute")
+            elif verb in {"start", "launch", "serve"}:
+                actions.add("execute" if "script" in objects and not objects.intersection({"project", "service"}) else "start")
+            elif verb in {"stop", "shutdown", "shut down", "terminate", "kill"}:
+                actions.add("stop")
+            elif verb == "restart":
+                actions.add("restart")
+            elif verb == "install":
+                actions.add("install")
+            elif verb == "upgrade":
+                actions.add("upgrade")
+            elif verb == "uninstall":
+                actions.add("uninstall")
+            elif verb in {"verify", "validate", "test", "lint"}:
+                actions.add("verify")
+            elif verb == "fetch":
+                actions.add("fetch_url")
+            elif verb == "download":
+                actions.update({"create", "execute"})
+            elif verb in {"call", "invoke"} and "mcp" in objects:
+                actions.add("mcp_call")
+            elif verb in {"list", "discover"} and "mcp" in objects:
+                actions.add("mcp_discover")
+            elif verb == "cancel":
+                actions.add("stop")
+            if _semantic_action_is_negated(clause, match.start()):
+                prohibited.update(actions)
+            else:
+                requested.update(actions)
+
+    if speech_act != "request":
+        requested.difference_update(_SEMANTIC_SIDE_EFFECT_ACTIONS)
+    requested.difference_update(prohibited)
+
+    named_process = bool(all_objects.intersection({"application", "service", "mcp"}))
+    if requested.intersection({"restart", "start", "stop"}) and named_process:
+        execution_scope = "managed_service"
+    elif requested == {"stop"} and not named_process:
+        execution_scope = "foreground_task"
+    else:
+        execution_scope = "workspace"
+
+    postconditions: set[str] = set()
+    if requested.intersection({"delete", "edit", "move"}):
+        postconditions.add("changed_files")
+    if requested.intersection({"clone_repository", "copy", "create"}):
+        postconditions.update({"changed_files", "created_outputs"})
+    if "verify" in requested and "test" in all_objects:
+        postconditions.add("tests")
+    if "start" in requested or "restart" in requested:
+        postconditions.add("service_started")
+    if ("stop" in requested and named_process) or "restart" in requested:
+        postconditions.add("service_stopped")
+    if "open_browser" in requested:
+        postconditions.add("opened_urls")
+    if "mcp_discover" in requested:
+        postconditions.add("mcp_ready")
+    if "mcp_call" in requested:
+        postconditions.add("mcp_tool_called")
+    return SemanticIntent(
+        speech_act=speech_act,
+        requested_actions=frozenset(requested),
+        prohibited_actions=frozenset(prohibited),
+        objects=frozenset(all_objects),
+        execution_scope=execution_scope,
+        required_postconditions=frozenset(postconditions),
+    )
+
+
 DIRECT_RESULT_MISSING_URL = "(no URL)"
 SCRIPT_PREFLIGHT_MAX_CONTEXT_CHARS = 12000
 SCRIPT_PREFLIGHT_BROWSER_GLOB_PATTERNS = ("open*.ps1", "open*.bat", "open*.cmd")
@@ -403,6 +681,16 @@ def _normalize_prompt_path_token(token: str) -> str:
     if candidate.startswith("\\") and not candidate.startswith("\\\\"):
         return f".{candidate}"
     return candidate
+
+
+def _normalize_project_use_task_prompt(prompt: str) -> str:
+    match = PROJECT_USE_TASK_PREFIX_PATTERN.search(prompt)
+    if match is None or match.group("verb").lower() == "use":
+        return prompt
+    trailing = prompt[match.end() :]
+    if PROJECT_LAUNCH_BENIGN_TRAILING_PATTERN.fullmatch(trailing):
+        return prompt
+    return f"{prompt[: match.start('verb')]}use{prompt[match.end('verb') :]}"
 
 
 def _iter_prioritized_script_tokens(base: Any, prompt: str) -> list[str]:
@@ -479,6 +767,7 @@ def _load_make_targets(workspace: Path) -> set[str]:
 
 
 def _resolve_existing_entrypoint_spec(base: Any, workspace: Path, prompt: str) -> dict[str, Any] | None:
+    prompt = _normalize_project_use_task_prompt(prompt)
     specs: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -652,6 +941,12 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
     score = 0
     expected_count = _expected_result_count(prompt)
     if expected_count is not None:
+        filename_counts = {
+            int(value)
+            for value in re.findall(r"(?<!\d)(\d{1,4})(?!\d)", candidate_path.stem)
+        }
+        if expected_count in filename_counts:
+            score += 16
         declared_counts = {
             int(value)
             for value in re.findall(r"(?:limit\s*=\s*|\[:\s*)(\d{1,4})", source, flags=re.IGNORECASE)
@@ -5208,19 +5503,24 @@ class LocalOnlyApp:
                 return ROUTE_RETRIEVAL_PLUS_MODEL
 
             def _extract_route_features(self, prompt: str) -> tuple[RouteFeatures, dict[str, Any] | None]:
-                cleaned = prompt.strip()
+                cleaned = _normalize_project_use_task_prompt(prompt.strip())
                 lowered = cleaned.lower()
-                mutation_forbidden = bool(
-                    re.search(
-                        r"\b(?:do not|don't|never|without)\b[^\n.;]{0,160}\b(?:create|edit|modify|change|write|delete|remove|move|rename)\w*\b",
-                        lowered,
-                    )
-                )
-                execution_forbidden = bool(
-                    re.search(
-                        r"\b(?:do not|don't|never|without)\b[^\n.;]{0,160}\b(?:run|execute|start|serve|build|compile|test|lint|benchmark|deploy|command)\w*\b",
-                        lowered,
-                    )
+                semantic = _analyze_semantic_intent(cleaned)
+                mutation_forbidden = not semantic.requests("copy", "create", "delete", "edit", "move")
+                execution_forbidden = not semantic.requests(
+                    "execute",
+                    "clone_repository",
+                    "mcp_call",
+                    "mcp_discover",
+                    "open_browser",
+                    "open_project",
+                    "restart",
+                    "start",
+                    "stop",
+                    "verify",
+                    "install",
+                    "uninstall",
+                    "upgrade",
                 )
                 file_tokens = getattr(base, "extract_file_tokens", lambda _text: [])(cleaned)
                 entrypoint = self._resolve_existing_entrypoint_for_prompt(cleaned)
@@ -5241,27 +5541,27 @@ class LocalOnlyApp:
                     line_count=max(1, cleaned.count("\n") + 1),
                     simple_question_candidate=self._should_bypass_embedding_retrieval(cleaned),
                     explicit_existing_entrypoint=self._is_foreground_existing_script_task(cleaned),
-                    read_intent=bool(base.READ_INTENT_PATTERN.search(cleaned))
+                    read_intent=semantic.requests("fetch_url", "read")
                     or bool(
                         re.search(
                             r"\b(analy[sz]e|explain|summarize|compare|assess|understand)\b",
                             lowered,
                         )
                     ),
-                    edit_intent=bool(base.EDIT_INTENT_PATTERN.search(cleaned)) and not mutation_forbidden,
-                    verify_intent=bool(base.VERIFY_INTENT_PATTERN.search(cleaned)),
+                    edit_intent=not mutation_forbidden,
+                    verify_intent=semantic.requests("verify"),
                     workspace_context_needed=bool(
                         any(hint in lowered for hint in WORKSPACE_CONTEXT_HINTS)
                         or file_tokens
                         or base.READ_INTENT_PATTERN.search(cleaned)
                     ),
                     file_token_count=len(file_tokens),
-                    mentions_tools_or_mcp=bool(
-                        any(token in lowered for token in ("tool", "tools", "mcp", "plugin", "server", "command"))
-                    ) and not execution_forbidden,
+                    mentions_tools_or_mcp=bool(semantic.objects.intersection({"mcp", "service"}))
+                    and not execution_forbidden,
                     powershell_or_side_effect=bool(
                         any(token in lowered for token in ("start-process", "powershell", "activate.ps1", ".ps1"))
-                    ) or _prompt_requests_browser_open(cleaned),
+                    )
+                    or semantic.requests("open_browser", "restart", "start", "stop"),
                     plugin_or_skill_request=bool(
                         any(token in lowered for token in ("skill", ".skills", "plugin", ".qubitz/plugins"))
                     ),
@@ -5809,6 +6109,7 @@ class LocalOnlyApp:
 
             def _runtime_fact_block(self, prompt: str) -> str:
                 capabilities = self._runtime_capabilities()
+                semantic = _analyze_semantic_intent(prompt)
                 decision = getattr(self, "_route_decision", None)
                 preferred_python = "none"
                 preferred_python_path = capabilities.get("preferred_python_path")
@@ -5821,6 +6122,10 @@ class LocalOnlyApp:
                     interop_state = "not_applicable"
                 lines = [
                     f"- Task class: {self._task_class_label(prompt)}",
+                    f"- Semantic speech act: {semantic.speech_act}",
+                    f"- Requested actions: {', '.join(sorted(semantic.requested_actions)) or 'none'}",
+                    f"- Prohibited actions: {', '.join(sorted(semantic.prohibited_actions)) or 'none'}",
+                    f"- Action objects and scope: {', '.join(sorted(semantic.objects)) or 'none'}; {semantic.execution_scope}",
                     f"- Selected route: {decision.selected_route if isinstance(decision, RouteDecision) else self._selected_route_name(prompt)}",
                     f"- Route profile: {decision.profile if isinstance(decision, RouteDecision) else ROUTE_PROFILE_GLM_24G}",
                     f"- Runtime: {'wsl' if capabilities.get('in_wsl') else 'non_wsl'}",
@@ -6655,6 +6960,8 @@ class LocalOnlyApp:
                 self.thinking_effort_combo.pack(fill="x", pady=(4, 0))
                 self.transcript.bind("<Control-c>", self._handle_copy_shortcut)
                 self.transcript.bind("<Control-C>", self._handle_copy_shortcut)
+                self.transcript.bind("<Control-a>", self._handle_transcript_select_all)
+                self.transcript.bind("<Control-A>", self._handle_transcript_select_all)
                 self.prompt_box.bind("<Control-c>", self._handle_copy_shortcut)
                 self.prompt_box.bind("<Control-C>", self._handle_copy_shortcut)
                 self.prompt_box.bind("<Up>", self._handle_history_up)
@@ -6666,6 +6973,12 @@ class LocalOnlyApp:
                         "dependencies, and adds sandbox, code-intel, plugin, and background-job support."
                     ),
                 )
+
+            def _handle_transcript_select_all(self, _event: Any) -> str:
+                self.transcript.focus_set()
+                self.transcript.tag_add("sel", "1.0", "end-1c")
+                self.transcript.mark_set("insert", "1.0")
+                return "break"
 
             def _start_prompt(self, prompt: str, *, queued: bool = False) -> None:
                 if queued:
@@ -7078,6 +7391,40 @@ _APP = build_local_only_app(
     'AI Agent Qubitz GLM 4 7 Flash Embd General Fast Local-Only',
 )
 
+
+def _install_workspace_picker_interop_patch(app: LocalOnlyApp) -> None:
+    base = app.base
+    original_picker = base.pick_workspace_directory
+    if getattr(original_picker, "_QUBITZ_WSL_INTEROP_FALLBACK", False):
+        return
+
+    def _pick_workspace_directory(
+        current_workspace: Path,
+        filedialog: Any,
+        parent: Any | None = None,
+    ) -> Path | None:
+        try:
+            return original_picker(current_workspace, filedialog, parent=parent)
+        except OSError:
+            if not base.in_wsl():
+                raise
+            dialog_kwargs: dict[str, Any] = {
+                "initialdir": current_workspace.as_posix(),
+                "mustexist": True,
+            }
+            if parent is not None:
+                dialog_kwargs["parent"] = parent
+            selected = filedialog.askdirectory(**dialog_kwargs)
+            if not selected:
+                return None
+            return base.normalize_workspace_directory(selected).resolve()
+
+    _pick_workspace_directory._QUBITZ_WSL_INTEROP_FALLBACK = True
+    base.pick_workspace_directory = _pick_workspace_directory
+
+
+_install_workspace_picker_interop_patch(_APP)
+
 def _install_gui_temperature_status_patch(app: LocalOnlyApp) -> None:
     base = app.base
     original_gui = base.QubitzGUI
@@ -7202,6 +7549,7 @@ def _tool_annotations(base: Any, name: str) -> Any:
     normalized = name.lower()
     destructive = any(token in normalized for token in ("delete", "destroy", "apply_back", "install"))
     read_only = normalized in {
+        "fetch_url",
         "search_tools",
         "list_files",
         "read_file",
@@ -7484,6 +7832,7 @@ class _TextReplacement(TypedDict):
 
 class _ToolPermissionBroker:
     _READ_TOOLS = {
+        "fetch_url",
         "search_tools",
         "list_files",
         "read_file",
@@ -7510,8 +7859,10 @@ class _ToolPermissionBroker:
         "list_background_jobs",
         "read_background_job",
     }
+    _RESTRICTED_MODE_TOOLS = _READ_TOOLS - {"list_project_mcp_tools"}
     _MUTATION_TOOLS = {
         "apply_text_patch",
+        "copy_path",
         "write_file",
         "replace_text",
         "make_directory",
@@ -7526,13 +7877,16 @@ class _ToolPermissionBroker:
         "sandbox_destroy",
     }
     _EXECUTION_TOOLS = {
+        "cancel_background_job",
         "call_project_mcp_tool",
         "run_existing_entrypoint",
         "run_command",
+        "run_cmd_command",
         "run_project_command",
         "run_powershell_command",
         "sandbox_run_command",
         "start_project_mcp_server",
+        "stop_project_mcp_server",
     }
     _ALWAYS_APPROVAL = {
         "install_python_package",
@@ -7566,6 +7920,10 @@ class _ToolPermissionBroker:
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_snapshot_hashes: dict[str, str] = {}
         self.transaction_changed_hashes: dict[str, str] = {}
+        self.access_mode = DEFAULT_ACCESS_MODE
+
+    def set_access_mode(self, value: Any) -> None:
+        self.access_mode = _normalize_access_mode(value)
 
     @staticmethod
     def _fingerprint(name: str, arguments: dict[str, Any]) -> str:
@@ -7621,6 +7979,7 @@ class _ToolPermissionBroker:
             "workspace": str(self.workspace),
             "arguments": _redacted_tool_arguments(arguments),
             "reason": reason,
+            "access_mode": self.access_mode,
         }
         with suppress(Exception), _TOOL_AUDIT_LOCK:
             self.audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7655,7 +8014,7 @@ class _ToolPermissionBroker:
                 self.workspace,
                 raw_value,
                 allow_missing=True,
-                allow_external=False,
+                allow_external=True,
             ).resolve()
         return None
 
@@ -7720,7 +8079,7 @@ class _ToolPermissionBroker:
             elif normalized.startswith("sandbox_"):
                 success = False
             else:
-                path_key = "destination" if normalized == "move_path" else "path"
+                path_key = "destination" if normalized in {"copy_path", "move_path"} else "path"
                 target = self._resolved_argument_path(arguments, path_key)
                 if normalized == "delete_path":
                     success = target is not None and not target.exists()
@@ -7733,7 +8092,7 @@ class _ToolPermissionBroker:
                     verified_paths.append(str(target))
             if success:
                 categories.add("changed_files")
-                if normalized in {"write_file", "make_directory"}:
+                if normalized in {"copy_path", "write_file", "make_directory"}:
                     categories.add("created_outputs")
                 if normalized == "apply_text_patch" and target is not None:
                     new_hash = str(structured.get("new_sha256", "")).strip().lower()
@@ -7825,7 +8184,10 @@ class _ToolPermissionBroker:
 
     @staticmethod
     def _completion_requirements(prompt: str) -> set[str]:
-        requirements: set[str] = set()
+        semantic = _analyze_semantic_intent(prompt)
+        requirements = set(semantic.required_postconditions)
+        if semantic.speech_act != "request":
+            return requirements
         positive = _ToolPermissionBroker._positive_requirement_match
         file_target = (
             r"\b(?:class|code|config|directory|document|feature|file|folder|function|method|module|project|readme|repo|repository|script|source)\b"
@@ -7890,6 +8252,22 @@ class _ToolPermissionBroker:
             if evidence.get("success")
             for category in evidence.get("categories", [])
         }
+        semantic = _analyze_semantic_intent(effective_prompt)
+        if semantic.requests("restart"):
+            stop_index = next(
+                (
+                    index
+                    for index, evidence in enumerate(self.evidence)
+                    if evidence.get("success") and "service_stopped" in evidence.get("categories", [])
+                ),
+                None,
+            )
+            started_after_stop = stop_index is not None and any(
+                evidence.get("success") and "service_started" in evidence.get("categories", [])
+                for evidence in self.evidence[stop_index + 1 :]
+            )
+            if not started_after_stop:
+                verified.discard("service_started")
         return required, required.difference(verified)
 
     def rollback_transaction(self) -> dict[str, list[str]]:
@@ -7958,6 +8336,14 @@ class _ToolPermissionBroker:
                 executable = ""
         if re.search(r"(?:^|\s)(?:rm|rmdir|del|erase|shutdown|reboot|format|sudo|runas)(?:\s|$)|reset\s+--hard|clean\s+-[a-z]*f", command_text, re.IGNORECASE):
             return True
+        if re.search(
+            r"\b(?:pip(?:3)?\s+(?:install|uninstall)|uv\s+(?:add|remove|pip\s+install)|"
+            r"npm\s+(?:add|install|remove|uninstall|update)|pnpm\s+(?:add|install|remove|update)|"
+            r"yarn\s+(?:add|remove|upgrade))\b",
+            command_text,
+            re.IGNORECASE,
+        ):
+            return True
         if re.search(r"[;&|`]|\$\(", command_text):
             return True
         allowed = {
@@ -7980,6 +8366,14 @@ class _ToolPermissionBroker:
     def authorize(self, name: str, arguments: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         normalized = name.lower()
         fingerprint = self._fingerprint(normalized, arguments)
+        if self.access_mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN} and normalized not in self._RESTRICTED_MODE_TOOLS:
+            reason = f"{_access_mode_label(self.access_mode)} permits inspection and research but not side effects."
+            self._audit("mode_denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "access_mode_denied", "tool": normalized, "reason": reason}
+        if self.access_mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN} and self._outside_workspace_paths(arguments):
+            reason = "Explicit paths outside the active workspace require Full Access."
+            self._audit("mode_denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "access_mode_denied", "tool": normalized, "reason": reason}
         if fingerprint in self.approved_once:
             self.approved_once.remove(fingerprint)
             self.pending.pop(fingerprint, None)
@@ -7987,12 +8381,30 @@ class _ToolPermissionBroker:
             self._emit(f"Approved tool action {fingerprint[:10]} is executing once.")
             return True, None
 
-        prompt = self.current_prompt.lower()
-        edit_requested = bool(re.search(r"\b(?:add|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|replace|update|write)\b", prompt))
-        execution_requested = bool(re.search(r"\b(?:build|call|compile|execute|invoke|launch|lint|run|serve|start|test|verify)\b", prompt))
-        install_requested = bool(re.search(r"\b(?:install|upgrade|dependency|dependencies|package|requirements)\b", prompt))
+        semantic = _analyze_semantic_intent(self.current_prompt)
+        edit_requested = semantic.requests("copy", "create", "delete", "edit", "move")
+        execution_requested = semantic.requests(
+            "execute",
+            "clone_repository",
+            "mcp_call",
+                    "mcp_discover",
+                    "open_browser",
+                    "open_project",
+                    "restart",
+                    "start",
+                    "stop",
+                    "verify",
+                    "install",
+                    "uninstall",
+                    "upgrade",
+        )
+        install_requested = semantic.requests("install", "upgrade")
         if normalized in self._MUTATION_TOOLS and not edit_requested:
             reason = "The current user prompt did not authorize workspace modification."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+        if normalized in {"cancel_background_job", "stop_project_mcp_server"} and semantic.execution_scope != "managed_service":
+            reason = "Foreground cancellation does not authorize stopping a managed service or background job."
             self._audit("denied", normalized, arguments, fingerprint, reason)
             return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
         if normalized in self._EXECUTION_TOOLS and not execution_requested:
@@ -8037,12 +8449,15 @@ class _ToolPermissionBroker:
                 }
 
         outside_paths = self._outside_workspace_paths(arguments)
+        if self.access_mode == ACCESS_MODE_FULL:
+            self._audit("allowed_full_access", normalized, arguments, fingerprint)
+            return True, None
         requires_approval = normalized in self._ALWAYS_APPROVAL or bool(outside_paths)
         if normalized == "write_file":
             with suppress(Exception):
                 target = self.base.resolve_workspace_path(self.workspace, str(arguments.get("path", "")), allow_missing=True, allow_external=True)
                 requires_approval = requires_approval or target.exists()
-        if normalized in {"move_path", "sandbox_move_path"} and bool(arguments.get("overwrite")):
+        if normalized in {"copy_path", "move_path", "sandbox_move_path"} and bool(arguments.get("overwrite")):
             requires_approval = True
         requires_approval = requires_approval or self._requires_command_approval(normalized, arguments)
         if not requires_approval:
@@ -8119,7 +8534,12 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         structured_output=True,
     )
     def read_file_snapshot(path: str, start_line: int = 1, end_line: int = 4000) -> dict[str, Any]:
-        target = base.resolve_workspace_path(workspace, path, allow_missing=False, allow_external=False)
+        target = base.resolve_workspace_path(
+            workspace,
+            path,
+            allow_missing=False,
+            allow_external=_full_access_enabled(),
+        )
         if not target.is_file():
             raise ValueError(f"Not a file: {path}")
         data = target.read_bytes()
@@ -8144,7 +8564,12 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         structured_output=True,
     )
     def apply_text_patch(path: str, expected_sha256: str, replacements: list[_TextReplacement]) -> dict[str, Any]:
-        target = base.resolve_workspace_path(workspace, path, allow_missing=False, allow_external=False)
+        target = base.resolve_workspace_path(
+            workspace,
+            path,
+            allow_missing=False,
+            allow_external=_full_access_enabled(),
+        )
         if not target.is_file():
             raise ValueError(f"Not a file: {path}")
         if not re.fullmatch(r"[a-fA-F0-9]{64}", expected_sha256):
@@ -8208,8 +8633,18 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         cwd: str = ".",
         timeout_seconds: int = 300,
     ) -> dict[str, Any]:
-        target = base.resolve_workspace_path(workspace, path, allow_missing=False, allow_external=False)
-        target_cwd = base.resolve_workspace_path(workspace, cwd, allow_missing=False, allow_external=False)
+        target = base.resolve_workspace_path(
+            workspace,
+            path,
+            allow_missing=False,
+            allow_external=_full_access_enabled(),
+        )
+        target_cwd = base.resolve_workspace_path(
+            workspace,
+            cwd,
+            allow_missing=False,
+            allow_external=_full_access_enabled(),
+        )
         if not target.is_file():
             raise ValueError(f"Not a file: {path}")
         args = [str(item) for item in (arguments or [])]
@@ -8263,12 +8698,161 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
 
 
 def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
+    global _build_local_mcp_server
+
     base = app.base
+    original_local_mcp_server_builder = _build_local_mcp_server
     original_build_model_tools = base.build_model_tools
     original_chat = base.LlamaCppClient.chat
     original_host = base.MCPHost
     original_runner = base.AgentRunner
     original_gui = base.QubitzGUI
+
+    def build_semantic_mcp_server(
+        tool_base: Any,
+        workspace: Path,
+        runtime_workspace: Path,
+        launch_script: Path,
+    ) -> Any:
+        server = original_local_mcp_server_builder(tool_base, workspace, runtime_workspace, launch_script)
+
+        @server.tool(
+            description="Run one bounded Windows cmd.exe command in the requested local directory.",
+            annotations=_tool_annotations(tool_base, "run_cmd_command"),
+            structured_output=True,
+        )
+        def run_cmd_command(command: str, cwd: str = ".", timeout_seconds: int = 120) -> dict[str, Any]:
+            cmd = shutil.which("cmd.exe")
+            if cmd is None:
+                raise RuntimeError("cmd.exe is unavailable in this runtime.")
+            target_cwd = tool_base.resolve_workspace_path(
+                workspace,
+                cwd,
+                allow_missing=False,
+                allow_external=_full_access_enabled(),
+            )
+            bounded_timeout = max(1, min(int(timeout_seconds), 1800))
+            in_wsl_session = bool(callable(getattr(tool_base, "in_wsl", None)) and tool_base.in_wsl())
+            command_text = command
+            launch_command = [cmd, "/d", "/s", "/c"]
+            process_cwd = target_cwd
+            if in_wsl_session:
+                windows_cwd = tool_base.wsl_path_to_windows_path(target_cwd)
+                command_text = f'cd /d "{windows_cwd}" && {command}'
+                process_cwd = workspace
+                if Path("/init").is_file():
+                    launch_command.insert(0, "/init")
+            completed = subprocess.run(
+                [*launch_command, command_text],
+                cwd=process_cwd,
+                capture_output=True,
+                timeout=bounded_timeout,
+                check=False,
+            )
+            return {
+                "command": command,
+                "cwd": str(target_cwd),
+                "return_code": completed.returncode,
+                "stdout": _shorten(_decode_subprocess_output(completed.stdout), 12000),
+                "stderr": _shorten(_decode_subprocess_output(completed.stderr), 12000),
+            }
+
+        @server.tool(
+            description="Fetch bounded text content directly from an HTTP or HTTPS URL using the local network.",
+            annotations=_tool_annotations(tool_base, "fetch_url"),
+            structured_output=True,
+        )
+        def fetch_url(url: str, timeout_seconds: int = 30, max_bytes: int = 1000000) -> dict[str, Any]:
+            import urllib.request
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit(url.strip())
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("fetch_url requires an absolute HTTP or HTTPS URL.")
+            bounded_timeout = max(1, min(int(timeout_seconds), 120))
+            bounded_bytes = max(1, min(int(max_bytes), 2000000))
+            request = urllib.request.Request(
+                url.strip(),
+                headers={"User-Agent": "Qubitz-Local-Agent/1.0"},
+            )
+            with urllib.request.urlopen(request, timeout=bounded_timeout) as response:
+                payload = response.read(bounded_bytes + 1)
+                truncated = len(payload) > bounded_bytes
+                payload = payload[:bounded_bytes]
+                charset = response.headers.get_content_charset() or "utf-8"
+                return {
+                    "requested_url": url.strip(),
+                    "final_url": response.geturl(),
+                    "status": int(getattr(response, "status", 200) or 200),
+                    "content_type": response.headers.get_content_type(),
+                    "body": payload.decode(charset, errors="replace"),
+                    "bytes_read": len(payload),
+                    "truncated": truncated,
+                }
+
+        @server.tool(
+            description=(
+                "Copy one workspace file or directory to a distinct workspace path. "
+                "Directory destinations must not already exist; file overwrite must be explicit."
+            ),
+            annotations=_tool_annotations(tool_base, "copy_path"),
+            structured_output=True,
+        )
+        def copy_path(source: str, destination: str, overwrite: bool = False) -> dict[str, Any]:
+            source_path = tool_base.resolve_workspace_path(
+                workspace,
+                source,
+                allow_missing=False,
+                allow_external=_full_access_enabled(),
+            )
+            destination_path = tool_base.resolve_workspace_path(
+                workspace,
+                destination,
+                allow_missing=True,
+                allow_external=_full_access_enabled(),
+            )
+            if source_path == destination_path:
+                raise ValueError("Source and destination must be different paths.")
+            if source_path.is_dir():
+                try:
+                    destination_path.relative_to(source_path)
+                except ValueError:
+                    pass
+                else:
+                    raise ValueError("A directory cannot be copied into itself.")
+                if destination_path.exists():
+                    raise FileExistsError(
+                        "Directory copy destinations must not already exist; choose a new destination."
+                    )
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(source_path, destination_path)
+                copied_directory = True
+            elif source_path.is_file():
+                if destination_path.exists() and not overwrite:
+                    raise FileExistsError(f"Destination already exists: {destination}")
+                if destination_path.exists() and not destination_path.is_file():
+                    raise ValueError("A file cannot overwrite a directory.")
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = destination_path.with_name(
+                    f".{destination_path.name}.qubitz-copy-{os.getpid()}-{threading.get_ident()}.tmp"
+                )
+                try:
+                    shutil.copy2(source_path, temporary)
+                    os.replace(temporary, destination_path)
+                finally:
+                    with suppress(FileNotFoundError):
+                        temporary.unlink()
+                copied_directory = False
+            else:
+                raise ValueError(f"Unsupported source path: {source}")
+            return {
+                "source": tool_base.relative_path(source_path, workspace),
+                "destination": tool_base.relative_path(destination_path, workspace),
+                "copied_directory": copied_directory,
+                "overwrite": bool(overwrite),
+            }
+
+        return server
 
     def build_model_tools(tools: Sequence[Any]) -> list[dict[str, Any]]:
         definitions = original_build_model_tools(tools)
@@ -8355,6 +8939,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
     class HardenedAgentRunner(original_runner):
         def run_sync(self, prompt: str, callback: Any = None) -> str:
+            self.set_access_mode(getattr(self.config, "access_mode", self.access_mode))
             started_at = base.time.perf_counter()
             answer = super().run_sync(prompt, callback)
             elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
@@ -8368,6 +8953,69 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 self.workspace,
                 getattr(self, "runtime_workspace", self.workspace),
             )
+            self.set_access_mode(getattr(config, "access_mode", DEFAULT_ACCESS_MODE))
+
+        def set_access_mode(self, value: Any) -> None:
+            self.access_mode = _normalize_access_mode(value)
+            setattr(self.config, "access_mode", self.access_mode)
+            os.environ[ACCESS_MODE_ENV_NAME] = self.access_mode
+            broker = getattr(self, "_tool_permission_broker", None)
+            if broker is not None:
+                broker.set_access_mode(self.access_mode)
+
+        def _runtime_fact_block(self, prompt: str) -> str:
+            block = super()._runtime_fact_block(prompt)
+            mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            if mode == ACCESS_MODE_FULL:
+                access_fact = (
+                    "- Access mode: Full Access; Qubitz per-action approvals are disabled, and explicit external "
+                    "paths, HTTP/HTTPS access, local shell commands, PowerShell, and cmd.exe are available when "
+                    "the runtime provides them and the task requires them."
+                )
+            elif mode == ACCESS_MODE_PLAN:
+                access_fact = "- Access mode: Plan Mode; inspect and research, but do not perform side effects."
+            else:
+                access_fact = "- Access mode: Read-only; read and inspect, but do not perform side effects."
+            return f"{block}\n{access_fact}"
+
+        def _select_task_guidance(self, prompt: str) -> str:
+            guidance = super()._select_task_guidance(prompt)
+            mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            if mode == ACCESS_MODE_PLAN:
+                return f"{guidance}\n- Produce a concise executable plan only; do not modify files, run projects, install packages, or create external side effects."
+            if mode == ACCESS_MODE_READ_ONLY:
+                return f"{guidance}\n- Read and inspect only; do not modify files, run projects, install packages, or create external side effects."
+            return guidance
+
+        def _selected_route_name(self, prompt: str) -> str:
+            selected = super()._selected_route_name(prompt)
+            mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN} and selected == "direct_existing_entrypoint":
+                return "retrieval_plus_model"
+            return selected
+
+        def _decide_route(self, prompt: str) -> Any:
+            decision = super()._decide_route(prompt)
+            mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN} and decision.selected_route == "direct_existing_entrypoint":
+                return base.replace(
+                    decision,
+                    selected_route="retrieval_plus_model",
+                    reason=f"{_access_mode_label(mode)} disables direct entrypoint execution.",
+                    fallback_routes=["read_only_workspace", "retrieval_plus_model"],
+                )
+            return decision
+
+        async def _run_async(self, prompt: str, callback: Any = None) -> str:
+            mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN} and _prompt_requests_project_launch(base, prompt):
+                prefix = (
+                    "Plan the following request without executing it:"
+                    if mode == ACCESS_MODE_PLAN
+                    else "Answer the following request using read-only inspection without executing it:"
+                )
+                prompt = f"{prefix}\n\n{prompt}"
+            return await super()._run_async(prompt, callback)
 
         @staticmethod
         def _tool_description(tool: Any) -> str:
@@ -8378,11 +9026,35 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         def _filter_tools_by_intent(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
             lowered = prompt.lower()
+            mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN}:
+                return [
+                    tool
+                    for tool in tools
+                    if self._tool_name(tool) in _ToolPermissionBroker._RESTRICTED_MODE_TOOLS
+                ]
             tokens = set(re.findall(r"[a-z0-9_]+", lowered))
-            read_intent = bool(re.search(r"\b(?:analy[sz]e|compare|explain|find|inspect|list|read|review|search|show|summarize|view)\b", lowered))
-            edit_intent = bool(re.search(r"\b(?:add|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|replace|update|write)\b", lowered))
-            execute_intent = bool(re.search(r"\b(?:build|compile|execute|launch|lint|run|serve|start|test|verify)\b", lowered))
-            install_intent = bool(re.search(r"\b(?:install|upgrade|dependency|dependencies|package|requirements)\b", lowered))
+            semantic = _analyze_semantic_intent(prompt)
+            read_intent = semantic.requests("fetch_url", "read") or bool(
+                re.search(r"\b(?:analy[sz]e|compare|explain|find|search|summarize)\b", lowered)
+            )
+            edit_intent = semantic.requests("copy", "create", "delete", "edit", "move")
+            execute_intent = semantic.requests(
+                "execute",
+                "clone_repository",
+                "mcp_call",
+                    "mcp_discover",
+                    "open_browser",
+                    "open_project",
+                    "restart",
+                    "start",
+                    "stop",
+                    "verify",
+                    "install",
+                    "uninstall",
+                    "upgrade",
+            )
+            install_intent = semantic.requests("install", "uninstall", "upgrade")
             mcp_intent = bool(re.search(r"\b(?:mcp|model context protocol)\b", lowered))
             skill_intent = bool(re.search(r"\bskills?\b", lowered))
             memory_intent = bool(re.search(r"\b(?:memory|recall|remember)\b", lowered))
@@ -8457,6 +9129,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 "read_file_snapshot": 100,
                 "apply_text_patch": 99,
                 "run_existing_entrypoint": 98,
+                "fetch_url": 97,
+                "run_cmd_command": 96,
                 "read_file": 90,
                 "search_text": 89,
                 "list_files": 88,
@@ -8604,6 +9278,42 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
     status_pattern = re.compile(r"^\s*(?:status|task status|what are you doing|are you running)[?!.]?\s*$", re.IGNORECASE)
 
     class HardenedGUI(original_gui):
+        def __init__(self, config: Any) -> None:
+            if not hasattr(config, "access_mode"):
+                setattr(config, "access_mode", DEFAULT_ACCESS_MODE)
+            super().__init__(config)
+            self.access_mode_var = self.tk.StringVar(
+                master=self.root,
+                value=_access_mode_label(getattr(config, "access_mode", DEFAULT_ACCESS_MODE)),
+            )
+            access_bar = self.ttk.Frame(self.prompt_box.master.master)
+            access_bar.pack(fill="x", pady=(8, 0))
+            self.ttk.Label(access_bar, text="Access").pack(side="left")
+            self.access_mode_entry = self.ttk.Combobox(
+                access_bar,
+                textvariable=self.access_mode_var,
+                values=ACCESS_MODE_VALUES,
+                state="readonly",
+                width=14,
+            )
+            self.access_mode_entry.pack(side="left", padx=(6, 0))
+            self.access_mode_entry.bind("<<ComboboxSelected>>", self._apply_access_mode)
+            self._apply_access_mode()
+
+        def _apply_access_mode(self, _event: Any = None) -> None:
+            mode = _normalize_access_mode(self.access_mode_var.get())
+            setattr(self.config, "access_mode", mode)
+            self.agent.set_access_mode(mode)
+
+        def _sync_runtime_settings(self) -> None:
+            super()._sync_runtime_settings()
+            self._apply_access_mode()
+
+        def _set_busy(self, value: bool) -> None:
+            super()._set_busy(value)
+            if hasattr(self, "access_mode_entry"):
+                self.access_mode_entry.configure(state="disabled" if value else "readonly")
+
         def _finalize_elapsed_message(self, message: str) -> str:
             started_at = getattr(self, "_qubitz_prompt_started_at", base.time.perf_counter())
             elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
@@ -8698,6 +9408,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 self._qubitz_prompt_timer_armed = True
             super().send_prompt()
 
+    _build_local_mcp_server = build_semantic_mcp_server
     base.build_model_tools = build_model_tools
     base.LlamaCppClient.chat = one_tool_chat
     base.MCPHost = HardenedMCPHost
