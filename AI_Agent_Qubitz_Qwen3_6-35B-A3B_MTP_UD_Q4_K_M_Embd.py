@@ -4795,6 +4795,13 @@ _EMBEDDED_BASE_SOURCE = 'from __future__ import annotations\n\nimport argparse\n
 
 
 _EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    "DEFAULT_NUM_CTX = 202752\n",
+    "DEFAULT_NUM_CTX = 262144\n",
+    1,
+)
+
+
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
     "        import torch\n"
     "        import torch.nn.functional as torch_f\n"
     "        from transformers import AutoModel, AutoTokenizer\n",
