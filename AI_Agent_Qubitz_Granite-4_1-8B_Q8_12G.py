@@ -3818,7 +3818,21 @@ def _should_use_windows_shell(base: Any, command: str) -> bool:
     return False
 
 
-def _run_shell_command(base: Any, workspace: Path, command: str, timeout_seconds: int) -> dict[str, Any]:
+class _CommandResult(dict[str, Any]):
+    __slots__ = ("stdout_full", "stderr_full")
+
+    def __init__(self, payload: dict[str, Any], *, stdout_full: str, stderr_full: str) -> None:
+        super().__init__(payload)
+        self.stdout_full = stdout_full
+        self.stderr_full = stderr_full
+
+
+def _run_shell_command(
+    base: Any,
+    workspace: Path,
+    command: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
     if _should_use_windows_shell(base, command):
         workspace_windows = _workspace_windows_path(base, workspace)
         script_body = _canonicalize_workspace_script(base, workspace, _extract_powershell_script(command))
@@ -3843,15 +3857,27 @@ def _run_shell_command(base: Any, workspace: Path, command: str, timeout_seconds
             timeout=max(1, timeout_seconds),
             check=False,
         )
-    return {
-        "command": command,
-        "returncode": completed.returncode,
-        "stdout": _shorten(_decode_subprocess_output(completed.stdout), 12000),
-        "stderr": _shorten(_decode_subprocess_output(completed.stderr), 12000),
-    }
+    stdout_full = _decode_subprocess_output(completed.stdout)
+    stderr_full = _decode_subprocess_output(completed.stderr)
+    result = _CommandResult(
+        {
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout": _shorten(stdout_full, 12000),
+            "stderr": _shorten(stderr_full, 12000),
+        },
+        stdout_full=stdout_full,
+        stderr_full=stderr_full,
+    )
+    return result
 
 
-def _run_powershell_command(base: Any, workspace: Path, command: str, timeout_seconds: int) -> dict[str, Any]:
+def _run_powershell_command(
+    base: Any,
+    workspace: Path,
+    command: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
     powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or shutil.which("pwsh")
     if powershell is None:
         raise RuntimeError("PowerShell was not found on this system.")
@@ -3872,12 +3898,19 @@ def _run_powershell_command(base: Any, workspace: Path, command: str, timeout_se
         timeout=max(1, timeout_seconds),
         check=False,
     )
-    return {
-        "command": command,
-        "return_code": completed.returncode,
-        "stdout": _shorten(_decode_subprocess_output(completed.stdout), 12000),
-        "stderr": _shorten(_decode_subprocess_output(completed.stderr), 12000),
-    }
+    stdout_full = _decode_subprocess_output(completed.stdout)
+    stderr_full = _decode_subprocess_output(completed.stderr)
+    result = _CommandResult(
+        {
+            "command": command,
+            "return_code": completed.returncode,
+            "stdout": _shorten(stdout_full, 12000),
+            "stderr": _shorten(stderr_full, 12000),
+        },
+        stdout_full=stdout_full,
+        stderr_full=stderr_full,
+    )
+    return result
 
 
 def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path, launch_script: Path) -> Any:
@@ -6025,7 +6058,9 @@ class LocalOnlyApp:
                         if browser_helper_path is not None:
                             browser_helper_text = browser_helper_path.read_text(encoding="utf-8", errors="ignore")
                 browser_urls = _extract_start_process_urls(browser_helper_text)
-                rows = _extract_structured_result_rows(f"{result.get('stderr', '')}\n{result.get('stdout', '')}")
+                stderr_for_checks = str(getattr(result, "stderr_full", result.get("stderr", "")) or "")
+                stdout_for_checks = str(getattr(result, "stdout_full", result.get("stdout", "")) or "")
+                rows = _extract_structured_result_rows(f"{stderr_for_checks}\n{stdout_for_checks}")
                 valid_browser_urls = _validated_external_urls(browser_urls, DIRECT_SCRIPT_COMPLETION_MAX_URLS)
                 direct_rows = rows or [{"url": url} for url in valid_browser_urls]
                 target_count = expected_count or len(direct_rows)
@@ -6915,12 +6950,17 @@ class LocalOnlyApp:
                     width=8,
                 )
                 self.thinking_effort_combo.pack(fill="x", pady=(4, 0))
+                self.thinking_effort_combo.bind("<<ComboboxSelected>>", self._apply_thinking_effort)
+                self.transcript.configure(exportselection=False)
+                self.prompt_box.configure(exportselection=False)
                 self.transcript.bind("<Control-c>", self._handle_copy_shortcut)
                 self.transcript.bind("<Control-C>", self._handle_copy_shortcut)
                 self.transcript.bind("<Control-a>", self._handle_transcript_select_all)
                 self.transcript.bind("<Control-A>", self._handle_transcript_select_all)
                 self.prompt_box.bind("<Control-c>", self._handle_copy_shortcut)
                 self.prompt_box.bind("<Control-C>", self._handle_copy_shortcut)
+                self.root.bind_all("<Control-c>", self._handle_copy_shortcut, add="+")
+                self.root.bind_all("<Control-C>", self._handle_copy_shortcut, add="+")
                 self.prompt_box.bind("<Up>", self._handle_history_up)
                 self._ensure_transcript_tags()
                 self._append_transcript(
@@ -6943,6 +6983,42 @@ class LocalOnlyApp:
                 self.transcript.tag_add("sel", "1.0", "end-1c")
                 self.transcript.mark_set("insert", "1.0")
                 return "break"
+
+            def _handle_copy_shortcut(self, event: Any) -> str | None:
+                def _selected_text(widget: Any) -> str:
+                    try:
+                        ranges = widget.tag_ranges("sel")
+                        if ranges:
+                            return widget.get(ranges[0], ranges[-1])
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(widget, "selection_present") and not widget.selection_present():
+                            return ""
+                        return widget.selection_get()
+                    except Exception:
+                        return ""
+
+                candidates: list[Any] = []
+                event_widget = getattr(event, "widget", None)
+                if event_widget is not None:
+                    candidates.append(event_widget)
+                with suppress(Exception):
+                    focused = self.root.focus_get()
+                    if focused is not None and focused not in candidates:
+                        candidates.append(focused)
+                for widget in (self.transcript, self.prompt_box):
+                    if widget not in candidates:
+                        candidates.append(widget)
+                for widget in candidates:
+                    selected_text = _selected_text(widget)
+                    if not selected_text:
+                        continue
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(selected_text)
+                    self.root.update_idletasks()
+                    return "break"
+                return None
 
             def _start_prompt(self, prompt: str, *, queued: bool = False) -> None:
                 if queued:
@@ -7095,10 +7171,15 @@ class LocalOnlyApp:
                 self.prompt_box.mark_set("insert", "end-1c")
                 return "break"
 
+            def _apply_thinking_effort(self, _event: Any = None) -> None:
+                effort = _normalize_thinking_effort(self.thinking_effort_var.get())
+                setattr(self.config, "thinking_effort", effort)
+                setattr(self.agent.config, "thinking_effort", effort)
+
             def _set_busy(self, value: bool) -> None:
                 super()._set_busy(value)
                 if hasattr(self, "thinking_effort_combo"):
-                    self.thinking_effort_combo.configure(state="disabled" if value else "readonly")
+                    self.thinking_effort_combo.configure(state="readonly")
 
             def _sync_runtime_settings(self) -> None:
                 super()._sync_runtime_settings()
@@ -7112,9 +7193,7 @@ class LocalOnlyApp:
                     self.config.num_predict = clamped_num_predict
                     self.agent.config.num_predict = clamped_num_predict
                     self.num_predict_var.set(str(clamped_num_predict))
-                effort = _normalize_thinking_effort(self.thinking_effort_var.get())
-                setattr(self.config, "thinking_effort", effort)
-                setattr(self.agent.config, "thinking_effort", effort)
+                self._apply_thinking_effort()
 
             def _change_workspace(self) -> None:
                 super()._change_workspace()
