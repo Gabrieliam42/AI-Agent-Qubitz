@@ -48,9 +48,9 @@ It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted work
 - `AI_Agent_Qubitz_Devstral-Small-2_Embd.py` - 24 GB class embedding-enabled Devstral Small 2 variant also with `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Gemma-4-31B-It_Qat_Embd.py` - 24 GB class embedding-enabled Gemma 4 31B IT QAT variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16_Embd.py` - 24 GB class embedding-enabled GPT-OSS 20B F16 variant using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Ornith-1.0-35B_Embd.py` - 24 GB class embedding-enabled Ornith-1.0-35B variant using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Ornith-1.0-35B_Embd.py` - 24 GB class embedding-enabled Ornith-1.0-35B MoE variant using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Qwen3_6-27B_UD_Q4_K_XL_Embd.py` - 24 GB class embedding-enabled Qwen 3.6 27B Dense variant using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Qwen3_6-35B-A3B_MTP_UD_Q4_K_M_Embd.py` - 24 GB class embedding-enabled Qwen 3.6 35B A3B MOE MTP variant using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Qwen3_6-35B-A3B_MTP_UD_Q4_K_M_Embd.py` - 24 GB class embedding-enabled Qwen 3.6 35B A3B MoE MTP variant using `BAAI/bge-code-v1`
 
 ## Runtime behavior
 
