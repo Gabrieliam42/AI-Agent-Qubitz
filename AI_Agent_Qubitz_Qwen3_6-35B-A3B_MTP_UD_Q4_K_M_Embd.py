@@ -552,6 +552,8 @@ def _analyze_semantic_intent(prompt: str) -> SemanticIntent:
 DIRECT_RESULT_MISSING_URL = "(no URL)"
 SCRIPT_PREFLIGHT_MAX_CONTEXT_CHARS = 12000
 SCRIPT_PREFLIGHT_BROWSER_GLOB_PATTERNS = ("open*.ps1", "open*.bat", "open*.cmd")
+SCRIPT_PREFLIGHT_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024
+SCRIPT_PREFLIGHT_ARTIFACT_MAX_FILES = 32
 START_PROCESS_URL_PATTERN = re.compile(
     r"Start-Process\s+(?:-FilePath\s+)?(?P<quote>['\"])(?P<target>.*?)(?P=quote)",
     re.IGNORECASE,
@@ -611,7 +613,15 @@ def _shorten(text: str, limit: int = 1600) -> str:
 
 
 def _workspace_relative_command_path(base: Any, workspace: Path, target: Path) -> str:
-    relative = str(base.relative_path(target, workspace)).replace("/", "\\")
+    resolved_workspace = workspace.resolve()
+    resolved_target = target.resolve()
+    try:
+        relative_target = resolved_target.relative_to(resolved_workspace)
+    except ValueError:
+        if callable(getattr(base, "in_wsl", None)) and base.in_wsl() and resolved_target.suffix.lower() == ".exe":
+            return _workspace_windows_path(base, resolved_target)
+        return str(resolved_target)
+    relative = str(relative_target).replace("/", "\\")
     if not relative.startswith(".") and not re.match(r"^[A-Za-z]:[\\/]", relative):
         relative = f".\\{relative}"
     return relative
@@ -998,6 +1008,43 @@ def _collect_browser_helper_candidates(workspace: Path) -> list[Path]:
     return sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
 
 
+def _workspace_text_artifact_state(base: Any, workspace: Path) -> dict[str, tuple[int, int]]:
+    state: dict[str, tuple[int, int]] = {}
+    excluded_dirs = set(getattr(base, "EXCLUDED_DIRS", set()))
+    for candidate in base.iter_workspace_files(workspace, excluded_dirs):
+        if base.is_sensitive_path_name(candidate):
+            continue
+        with suppress(OSError):
+            stat = candidate.stat()
+            state[str(candidate.resolve())] = (stat.st_mtime_ns, stat.st_size)
+    return state
+
+
+def _changed_text_artifacts(
+    base: Any,
+    workspace: Path,
+    before: dict[str, tuple[int, int]],
+) -> list[tuple[Path, str]]:
+    changed: list[tuple[int, Path, str]] = []
+    text_suffixes = set(getattr(base, "TEXT_SUFFIXES", set())) | {".log", ".out"}
+    excluded_dirs = set(getattr(base, "EXCLUDED_DIRS", set()))
+    for candidate in base.iter_workspace_files(workspace, excluded_dirs):
+        if base.is_sensitive_path_name(candidate):
+            continue
+        with suppress(OSError):
+            stat = candidate.stat()
+            key = str(candidate.resolve())
+            current = (stat.st_mtime_ns, stat.st_size)
+            if current == before.get(key):
+                continue
+            text = ""
+            if candidate.suffix.lower() in text_suffixes and stat.st_size <= SCRIPT_PREFLIGHT_ARTIFACT_MAX_BYTES:
+                text = candidate.read_text(encoding="utf-8", errors="ignore")
+            changed.append((stat.st_mtime_ns, candidate.resolve(), text))
+    changed.sort(key=lambda item: item[0], reverse=True)
+    return [(path, text) for _, path, text in changed[:SCRIPT_PREFLIGHT_ARTIFACT_MAX_FILES]]
+
+
 def _extract_start_process_urls(script_text: str) -> list[str]:
     urls: list[str] = []
     for match in START_PROCESS_URL_PATTERN.finditer(script_text):
@@ -1043,19 +1090,29 @@ def _validated_external_urls(values: Sequence[Any], limit: int) -> list[str]:
     return urls
 
 
+def _extract_external_urls(text: str, limit: int = SCRIPT_PREFLIGHT_MAX_URLS) -> list[str]:
+    candidates = re.findall(r"https?://[^\s'\"<>()[\]{}|]+", text, flags=re.IGNORECASE)
+    return _validated_external_urls([value.rstrip(".,;:!?") for value in candidates], limit)
+
+
 def _run_inline_browser_open(
     base: Any,
     workspace: Path,
     urls: Sequence[str],
     timeout_seconds: int,
 ) -> dict[str, Any]:
+    validated_urls = _validated_external_urls(urls, SCRIPT_PREFLIGHT_MAX_URLS)
     commands = [
         f"Start-Process {_powershell_single_quote(url)}"
-        for url in _validated_external_urls(urls, SCRIPT_PREFLIGHT_MAX_URLS)
+        for url in validated_urls
     ]
     if not commands:
         return {"return_code": 1, "stderr": "No URLs were available for browser opening."}
-    return _run_powershell_command(base, workspace, "; ".join(commands), timeout_seconds)
+    result = _run_powershell_command(base, workspace, "; ".join(commands), timeout_seconds)
+    if int(result.get("return_code", result.get("returncode", 0))) == 0:
+        result["opened_urls"] = validated_urls
+        result["opened_count"] = len(validated_urls)
+    return result
 
 
 def _canonical_result_field(name: str) -> str | None:
@@ -1234,6 +1291,57 @@ def _expected_result_count(prompt: str) -> int | None:
     if match is None:
         return None
     return int(match.group(1))
+
+
+def _requested_count_postcondition(prompt: str) -> tuple[str, int] | None:
+    expected = _expected_result_count(prompt)
+    if expected is None or expected <= 0:
+        return None
+    lowered = prompt.lower()
+    if _prompt_requests_browser_open(prompt) and re.search(r"\b(?:urls?|links?|tabs?)\b", lowered):
+        return "opened_urls", expected
+    if re.search(
+        rf"\b{expected}\s+(?:new\s+)?(?:artifacts?|documents?|files?|folders?|outputs?|reports?)\b",
+        lowered,
+    ):
+        return "created_outputs", expected
+    return "result_count", expected
+
+
+def _structured_evidence_count(value: Any) -> int:
+    counts: list[int] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in {"count", "opened_count", "result_count", "total", "total_count"}:
+                with suppress(TypeError, ValueError):
+                    counts.append(max(0, int(item)))
+            elif normalized in {
+                "artifacts",
+                "data",
+                "entries",
+                "files",
+                "items",
+                "opened_urls",
+                "outputs",
+                "records",
+                "results",
+                "rows",
+                "urls",
+            } and isinstance(item, (list, tuple, set)):
+                counts.append(len(item))
+            counts.append(_structured_evidence_count(item))
+    elif isinstance(value, (list, tuple, set)):
+        counts.append(len(value))
+        counts.extend(_structured_evidence_count(item) for item in value)
+    return max(counts, default=0)
+
+
+def _structured_evidence_urls(value: Any) -> list[str]:
+    with suppress(TypeError, ValueError):
+        rendered = json.dumps(value, ensure_ascii=False, default=str)
+        return _extract_external_urls(rendered)
+    return []
 
 
 def _format_direct_result_answer(
@@ -3639,42 +3747,109 @@ class _CommandResult(dict[str, Any]):
         self.stderr_full = stderr_full
 
 
+def _terminate_windows_process_token(token: str) -> None:
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
+    if powershell is None or not token:
+        return
+    escaped = token.replace("'", "''")
+    script = (
+        f"$needle = '{escaped}'; "
+        "$matches = Get-CimInstance Win32_Process | Where-Object { "
+        "$_.ProcessId -ne $PID -and $_.CommandLine -and "
+        "$_.CommandLine.IndexOf($needle, [StringComparison]::Ordinal) -ge 0 }; "
+        "$matches | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>$null | Out-Null }"
+    )
+    command = [powershell, "-NoProfile", "-Command", script]
+    if os.name != "nt" and Path("/init").is_file() and powershell.lower().endswith(".exe"):
+        command.insert(0, "/init")
+    with suppress(Exception):
+        subprocess.run(command, capture_output=True, timeout=15, check=False)
+
+
+def _terminate_owned_process(process: subprocess.Popen[bytes], windows_token: str = "") -> None:
+    if windows_token:
+        _terminate_windows_process_token(windows_token)
+    if process.poll() is not None:
+        return
+    with suppress(Exception):
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        else:
+            os.killpg(os.getpgid(process.pid), 15)
+    with suppress(Exception):
+        process.wait(timeout=3)
+    if process.poll() is None:
+        with suppress(Exception):
+            process.kill()
+
+
+def _run_owned_process(
+    command: Sequence[str] | str,
+    *,
+    cwd: Path,
+    timeout_seconds: int,
+    cancel_event: threading.Event | None = None,
+    shell: bool = False,
+    windows_token: str = "",
+) -> tuple[int, bytes, bytes]:
+    popen_kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "shell": shell,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(command, **popen_kwargs)
+    deadline = time.monotonic() + max(1, timeout_seconds)
+    while True:
+        try:
+            stdout, stderr = process.communicate(timeout=0.2)
+            return int(process.returncode or 0), stdout or b"", stderr or b""
+        except subprocess.TimeoutExpired:
+            if cancel_event is not None and cancel_event.is_set():
+                _terminate_owned_process(process, windows_token)
+                with suppress(Exception):
+                    process.communicate(timeout=2)
+                raise InterruptedError("Command cancelled by the active Qubitz request.")
+            if time.monotonic() >= deadline:
+                _terminate_owned_process(process, windows_token)
+                raise subprocess.TimeoutExpired(command, timeout_seconds)
+
+
 def _run_shell_command(
     base: Any,
     workspace: Path,
     command: str,
     timeout_seconds: int,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     if _should_use_windows_shell(base, command):
-        workspace_windows = _workspace_windows_path(base, workspace)
-        script_body = _canonicalize_workspace_script(base, workspace, _extract_powershell_script(command))
-        script_lines = [
-            "$ProgressPreference = 'SilentlyContinue'",
-            f"Set-Location -LiteralPath {_powershell_single_quote(workspace_windows)}",
-            script_body,
-        ]
-        completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", "; ".join(line for line in script_lines if line)],
-            capture_output=True,
-            timeout=max(1, timeout_seconds),
-            check=False,
-        )
+        result = _run_powershell_command(base, workspace, command, timeout_seconds, cancel_event=cancel_event)
+        result["returncode"] = int(result.get("return_code", 0))
+        return result
     else:
         command = _canonicalize_workspace_command(workspace, command)
-        completed = subprocess.run(
+        return_code, stdout_data, stderr_data = _run_owned_process(
             command,
             cwd=workspace,
-            capture_output=True,
+            timeout_seconds=timeout_seconds,
+            cancel_event=cancel_event,
             shell=True,
-            timeout=max(1, timeout_seconds),
-            check=False,
         )
-    stdout_full = _decode_subprocess_output(completed.stdout)
-    stderr_full = _decode_subprocess_output(completed.stderr)
+    stdout_full = _decode_subprocess_output(stdout_data)
+    stderr_full = _decode_subprocess_output(stderr_data)
     result = _CommandResult(
         {
             "command": command,
-            "returncode": completed.returncode,
+            "returncode": return_code,
             "stdout": _shorten(stdout_full, 12000),
             "stderr": _shorten(stderr_full, 12000),
         },
@@ -3689,6 +3864,7 @@ def _run_powershell_command(
     workspace: Path,
     command: str,
     timeout_seconds: int,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or shutil.which("pwsh")
     if powershell is None:
@@ -3699,23 +3875,26 @@ def _run_powershell_command(
         launch_command.insert(0, "/init")
     workspace_windows = _workspace_windows_path(base, workspace) if use_windows_paths else str(workspace)
     script_body = _canonicalize_workspace_script(base, workspace, _extract_powershell_script(command))
+    windows_token = f"QUBITZ_TASK_{uuid.uuid4().hex}"
     script_lines = [
+        f"$null = '{windows_token}'",
         "$ProgressPreference = 'SilentlyContinue'",
         f"Set-Location -LiteralPath {_powershell_single_quote(workspace_windows)}",
         script_body,
     ]
-    completed = subprocess.run(
+    return_code, stdout_data, stderr_data = _run_owned_process(
         [*launch_command, "-NoProfile", "-Command", "; ".join(line for line in script_lines if line)],
-        capture_output=True,
-        timeout=max(1, timeout_seconds),
-        check=False,
+        cwd=workspace,
+        timeout_seconds=timeout_seconds,
+        cancel_event=cancel_event,
+        windows_token=windows_token if use_windows_paths or os.name == "nt" else "",
     )
-    stdout_full = _decode_subprocess_output(completed.stdout)
-    stderr_full = _decode_subprocess_output(completed.stderr)
+    stdout_full = _decode_subprocess_output(stdout_data)
+    stderr_full = _decode_subprocess_output(stderr_data)
     result = _CommandResult(
         {
             "command": command,
-            "return_code": completed.returncode,
+            "return_code": return_code,
             "stdout": _shorten(stdout_full, 12000),
             "stderr": _shorten(stderr_full, 12000),
         },
@@ -4941,9 +5120,35 @@ def _patch_harness_loader(base: Any) -> None:
         normalized = name.strip().lower()
         if normalized.startswith("tmp_smoke_results_"):
             return True
+        if re.fullmatch(
+            r"\.?(?:venv|env)(?:(?:[._-][a-z0-9][a-z0-9._-]*)|(?:[0-9][a-z0-9._-]*))?",
+            normalized,
+            re.IGNORECASE,
+        ):
+            return True
         return original_is_excluded_dir_name(name, configured)
 
+    def _is_python_environment_root(path: Path) -> bool:
+        return bool(
+            (path / "pyvenv.cfg").is_file()
+            or (path / "Scripts" / "python.exe").is_file()
+            or (path / "bin" / "python").is_file()
+        )
+
+    def _iter_workspace_files(workspace: Path, configured: set[str]) -> Any:
+        for root, dirnames, filenames in os.walk(workspace, topdown=True):
+            root_path = Path(root)
+            dirnames[:] = [
+                dirname
+                for dirname in dirnames
+                if not _is_excluded_dir_name(dirname, configured)
+                and not _is_python_environment_root(root_path / dirname)
+            ]
+            for filename in filenames:
+                yield root_path / filename
+
     base.is_excluded_dir_name = _is_excluded_dir_name
+    base.iter_workspace_files = _iter_workspace_files
     base.load_harness_text = _load_harness_text
 
 
@@ -5757,6 +5962,7 @@ class LocalOnlyApp:
                     str(candidate.resolve()): candidate.stat().st_mtime
                     for candidate in _collect_browser_helper_candidates(self.workspace)
                 }
+                before_artifacts = _workspace_text_artifact_state(base, self.workspace)
                 try:
                     entrypoint_kind = str(entrypoint.get("kind", ""))
                     if entrypoint_kind == "file":
@@ -5780,16 +5986,22 @@ class LocalOnlyApp:
                                     f"& {_powershell_single_quote(_workspace_relative_command_path(base, self.workspace, interpreter_path))} "
                                     f"{_powershell_single_quote(_workspace_relative_command_path(base, self.workspace, script_path))}"
                                 )
-                                result = _run_powershell_command(base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS)
+                                result = _run_powershell_command(
+                                    base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS, cancel_event=self._cancel_event
+                                )
                                 runner_kind = "powershell"
                             else:
                                 relative_text = str(base.relative_path(script_path, self.workspace))
                                 command = f"{_shell_quote_path(interpreter_path)} {_shell_quote_path(relative_text)}"
-                                result = _run_shell_command(base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS)
+                                result = _run_shell_command(
+                                    base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS, cancel_event=self._cancel_event
+                                )
                                 runner_kind = "shell"
                         elif suffix == ".ps1":
                             command = f"& {_powershell_single_quote(_workspace_relative_command_path(base, self.workspace, script_path))}"
-                            result = _run_powershell_command(base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS)
+                            result = _run_powershell_command(
+                                base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS, cancel_event=self._cancel_event
+                            )
                             runner_kind = "powershell"
                         elif suffix == ".sh":
                             relative_text = str(base.relative_path(script_path, self.workspace))
@@ -5798,11 +6010,15 @@ class LocalOnlyApp:
                                 if shutil.which("bash") is not None or os.name != "nt"
                                 else _shell_quote_path(relative_text)
                             )
-                            result = _run_shell_command(base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS)
+                            result = _run_shell_command(
+                                base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS, cancel_event=self._cancel_event
+                            )
                             runner_kind = "shell"
                         elif suffix in {".bat", ".cmd"}:
                             command = _workspace_relative_command_path(base, self.workspace, script_path)
-                            result = _run_shell_command(base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS)
+                            result = _run_shell_command(
+                                base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS, cancel_event=self._cancel_event
+                            )
                             runner_kind = "shell"
                         else:
                             return ""
@@ -5810,7 +6026,9 @@ class LocalOnlyApp:
                         command = str(entrypoint.get("command", "")).strip()
                         if not command:
                             return ""
-                        result = _run_shell_command(base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS)
+                        result = _run_shell_command(
+                            base, self.workspace, command, SCRIPT_PREFLIGHT_TIMEOUT_SECONDS, cancel_event=self._cancel_event
+                        )
                         runner_kind = "shell"
                     else:
                         return ""
@@ -5846,21 +6064,38 @@ class LocalOnlyApp:
                 if browser_helper_path is not None and not browser_helper_text:
                     with suppress(Exception):
                         browser_helper_text = browser_helper_path.read_text(encoding="utf-8", errors="ignore")
+                changed_artifacts = _changed_text_artifacts(base, self.workspace, before_artifacts)
                 requested_browser_open = _prompt_requests_browser_open(prompt)
                 browser_urls = _extract_start_process_urls(browser_helper_text)
-                self._existing_script_browser_urls = browser_urls
                 browser_result: dict[str, Any] | None = None
-                result_rows = _extract_structured_result_rows(f"{stderr_text}\n{stdout_text}")
+                evidence_texts = [stderr_text, stdout_text, browser_helper_text]
+                evidence_texts.extend(text for _, text in changed_artifacts)
+                result_rows: list[dict[str, Any]] = []
+                seen_rows: set[str] = set()
+                for evidence_text in evidence_texts:
+                    for row in _extract_structured_result_rows(evidence_text):
+                        normalized_row = _normalize_result_row(dict(row))
+                        key = json.dumps(normalized_row, ensure_ascii=True, sort_keys=True, default=str)
+                        if key not in seen_rows:
+                            seen_rows.add(key)
+                            result_rows.append(normalized_row)
+                output_urls = _validated_external_urls(
+                    [
+                        *browser_urls,
+                        *(url for evidence_text in evidence_texts for url in _extract_external_urls(evidence_text)),
+                    ],
+                    SCRIPT_PREFLIGHT_MAX_URLS,
+                )
+                self._existing_script_browser_urls = output_urls
                 structured_rows: list[dict[str, Any]] = []
                 for index, row in enumerate(result_rows):
                     enriched = _normalize_result_row(dict(row))
-                    if index < len(browser_urls) and _is_external_http_url(browser_urls[index]):
-                        enriched["url"] = browser_urls[index]
+                    if index < len(output_urls) and _is_external_http_url(output_urls[index]):
+                        enriched["url"] = output_urls[index]
                     structured_rows.append(enriched)
-                valid_browser_urls = _validated_external_urls(browser_urls, SCRIPT_PREFLIGHT_MAX_URLS)
                 direct_rows = structured_rows or [
                     {"url": url}
-                    for url in valid_browser_urls
+                    for url in output_urls
                 ]
                 self._existing_script_preflight_succeeded = return_code == 0
                 expected_count = _expected_result_count(prompt)
@@ -5872,8 +6107,17 @@ class LocalOnlyApp:
                     [row.get("url", "") for row in selected_rows],
                     target_count,
                 )
+                reported_opened_urls = _reported_entrypoint_browser_urls(
+                    entrypoint,
+                    stdout_text,
+                    browser_helper_text,
+                    output_urls,
+                    requested_browser_open=requested_browser_open,
+                    return_code=return_code,
+                )
                 if (
                     requested_browser_open
+                    and not reported_opened_urls
                     and len(selected_urls) >= target_count
                     and (
                         self._wsl_windows_interop_available()
@@ -5886,9 +6130,34 @@ class LocalOnlyApp:
                         selected_urls,
                         SCRIPT_PREFLIGHT_TIMEOUT_SECONDS,
                     )
-                browser_open_ran = browser_result is not None and int(
+                inline_browser_open_ran = browser_result is not None and int(
                     browser_result.get("return_code", browser_result.get("returncode", 0))
                 ) == 0
+                opened_urls = reported_opened_urls or (selected_urls if inline_browser_open_ran else [])
+                browser_open_ran = bool(opened_urls)
+                broker = getattr(_TOOL_CALL_CONTEXT, "broker", None)
+                if broker is not None and hasattr(broker, "evidence"):
+                    broker.provenance_urls.update(url.casefold() for url in output_urls if _is_external_http_url(url))
+                    categories = ["result_count"] if return_code == 0 and direct_rows else []
+                    count_requirement = _requested_count_postcondition(prompt)
+                    if return_code == 0 and changed_artifacts and count_requirement and count_requirement[0] == "created_outputs":
+                        categories.append("created_outputs")
+                    if browser_open_ran:
+                        categories.append("opened_urls")
+                    broker.evidence.append(
+                        {
+                            "turn_id": broker.turn_id,
+                            "tool": "wrapper_direct_existing_entrypoint",
+                            "success": return_code == 0,
+                            "categories": categories,
+                            "paths": [str(path) for path, _ in changed_artifacts],
+                            "status": "completed" if return_code == 0 else "failed",
+                            "return_code": return_code,
+                            "result_count": len(direct_rows),
+                            "opened_count": len(opened_urls),
+                            "urls": opened_urls,
+                        }
+                    )
                 if (
                     return_code == 0
                     and target_count > 0
@@ -5909,7 +6178,7 @@ class LocalOnlyApp:
                         (
                             "Wrapper direct path completed the existing-script task without entering the model loop. "
                             f"Rows: {target_count}. Browser step: "
-                            f"{'inline Start-Process with validated URLs' if browser_open_ran else 'none'}."
+                            f"{'verified entrypoint-reported opens' if reported_opened_urls else 'inline Start-Process with validated URLs' if inline_browser_open_ran else 'none'}."
                         ),
                     )
                 self._emit(
@@ -5917,18 +6186,31 @@ class LocalOnlyApp:
                     "status",
                     (
                         f"Wrapper direct path: {entrypoint_label} exited {return_code} via {runner_kind}; "
-                        f"captured {len(direct_rows) or len(result_rows)} row(s) and {len(browser_urls)} external URL(s)."
+                        f"captured {len(direct_rows) or len(result_rows)} row(s) and {len(output_urls)} distinct external URL(s)."
                     ),
                 )
+                verified_count = len(selected_urls) if requires_url else len(direct_rows)
+                missing_count = max(0, target_count - verified_count)
                 context_parts = [
                     "Wrapper preflight direct existing-entrypoint execution already ran before the model loop.",
                     f"Entrypoint: {entrypoint_label}",
                     f"Launch path: {runner_kind}",
                     f"Exit code: {return_code}",
+                    f"Requested result count: {target_count}",
+                    f"Verified direct result count: {verified_count}",
+                    f"Missing result count: {missing_count}",
                 ]
                 if browser_result is not None:
                     browser_exit = int(browser_result.get("return_code", browser_result.get("returncode", 0)))
                     context_parts.append(f"Browser-opening helper exit code: {browser_exit}")
+                if reported_opened_urls:
+                    context_parts.append(
+                        f"Entrypoint-reported browser opens verified conservatively: {len(reported_opened_urls)}."
+                    )
+                    remaining_urls = [url for url in output_urls if url not in set(reported_opened_urls)]
+                    if remaining_urls:
+                        context_parts.append("URLs not covered by the entrypoint's reported browser-open count:")
+                        context_parts.append("\n".join(remaining_urls[:SCRIPT_PREFLIGHT_MAX_URLS]))
                 if structured_rows:
                     context_parts.append(
                         "Structured rows extracted from the script output and the generated browser helper. "
@@ -5937,9 +6219,9 @@ class LocalOnlyApp:
                     context_parts.append(
                         "\n".join(json.dumps(row, ensure_ascii=True) for row in structured_rows[:SCRIPT_PREFLIGHT_MAX_URLS])
                     )
-                elif browser_urls:
+                elif output_urls:
                     context_parts.append("External URLs extracted from the generated browser helper, in order:")
-                    context_parts.append("\n".join(browser_urls[:SCRIPT_PREFLIGHT_MAX_URLS]))
+                    context_parts.append("\n".join(output_urls[:SCRIPT_PREFLIGHT_MAX_URLS]))
                 if stdout_text:
                     context_parts.append(
                         "Script stdout excerpt:\n"
@@ -5955,10 +6237,20 @@ class LocalOnlyApp:
                         "Generated browser-opening helper excerpt:\n"
                         + _shorten(browser_helper_text, SCRIPT_PREFLIGHT_MAX_CONTEXT_CHARS)
                     )
+                for artifact_path, artifact_text in changed_artifacts[:4]:
+                    artifact_label = base.relative_path(artifact_path, self.workspace)
+                    context_parts.append(
+                        (
+                            f"Changed output artifact {artifact_label} excerpt:\n"
+                            + _shorten(artifact_text, SCRIPT_PREFLIGHT_MAX_CONTEXT_CHARS // 4)
+                        )
+                        if artifact_text
+                        else f"Changed non-text or oversized output artifact: {artifact_label}"
+                    )
                 context_parts.append(
-                    "Use these exact preflight results. Prefer direct external URLs from wrapper-captured results or "
-                    "the generated browser helper over secondary navigation links. Do not rerun the same existing script unless the wrapper "
-                    "preflight failed or the prompt explicitly requires a second run."
+                    "Continue only the missing postconditions from these exact verified preflight results. Preserve valid existing results, "
+                    "avoid broad repository retrieval, and do not rerun the same entrypoint unless new evidence shows that a rerun can "
+                    "produce the missing result. Do not claim completion until every requested quantity and side effect is verified."
                 )
                 return _shorten(
                     "\n\n".join(part for part in context_parts if part).strip(),
@@ -6540,6 +6832,15 @@ class LocalOnlyApp:
                             f"{user_prompt.rstrip()}\n\n"
                             "Wrapper preflight execution context:\n"
                             f"{self._existing_script_preflight_context}"
+                        )
+                        original_format_context = self.retriever.format_context
+                        self._should_skip_repo_retrieval = lambda _prompt: True
+                        self.memory.build_context = lambda _prompt: ""
+                        self.retriever.format_context = lambda _prompt: self._existing_script_preflight_context
+                        self._emit(
+                            callback,
+                            "status",
+                            "Wrapper focused continuation: preserving verified entrypoint results and skipping broad retrieval while completing only missing postconditions.",
                         )
                     self._tool_definitions_cache = None
                     self._tool_count_cache = 0
@@ -7720,6 +8021,45 @@ class _TextReplacement(TypedDict):
     new_text: str
 
 
+def _reported_entrypoint_browser_urls(
+    entrypoint: dict[str, Any],
+    stdout_text: str,
+    browser_helper_text: str,
+    output_urls: Sequence[str],
+    *,
+    requested_browser_open: bool,
+    return_code: int,
+) -> list[str]:
+    if not requested_browser_open or return_code != 0 or not output_urls:
+        return []
+    source_parts = [browser_helper_text]
+    raw_path = entrypoint.get("path")
+    if raw_path:
+        with suppress(OSError, UnicodeDecodeError):
+            path = Path(raw_path)
+            if path.is_file() and path.stat().st_size <= 2_000_000:
+                source_parts.append(path.read_text(encoding="utf-8", errors="ignore"))
+    source_text = "\n".join(part for part in source_parts if part)
+    if not re.search(
+        r"\b(?:Start-Process|webbrowser\.(?:open|open_new|open_new_tab)|os\.startfile)\b"
+        r"|\bsubprocess\.(?:call|Popen|run)\b.{0,240}\b(?:firefox|chrome|msedge|browser)\b",
+        source_text,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        return []
+    matches = list(
+        re.finditer(
+            r"\b(?:successfully\s+)?opened\s+(\d+)\s+(?:valid\s+)?(?:news\s+)?(?:urls?|links?|tabs?)\b",
+            stdout_text,
+            re.IGNORECASE,
+        )
+    )
+    if not matches:
+        return []
+    opened_count = int(matches[-1].group(1))
+    if opened_count <= 0 or opened_count > len(output_urls):
+        return []
+    return list(output_urls[:opened_count])
 class _ToolPermissionBroker:
     _READ_TOOLS = {
         "fetch_url",
@@ -7769,6 +8109,7 @@ class _ToolPermissionBroker:
     _EXECUTION_TOOLS = {
         "cancel_background_job",
         "call_project_mcp_tool",
+        "open_urls_in_browser",
         "run_existing_entrypoint",
         "run_command",
         "run_cmd_command",
@@ -7807,6 +8148,12 @@ class _ToolPermissionBroker:
         self.schema_repairs: list[dict[str, Any]] = []
         self.approval_context_prompt = ""
         self.required_postconditions: set[str] = set()
+        self.focused_missing_postconditions: set[str] = set()
+        self.turn_id = ""
+        self.provenance_urls: set[str] = set()
+        self.invalid_call_counts: dict[str, int] = {}
+        self.invalid_stop_requested = False
+        self.stop_callback: Callable[[], None] | None = None
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_snapshot_hashes: dict[str, str] = {}
         self.transaction_changed_hashes: dict[str, str] = {}
@@ -7821,6 +8168,7 @@ class _ToolPermissionBroker:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def begin_turn(self, prompt: str, callback: Callable[[str, str], None] | None) -> None:
+        self.turn_id = uuid.uuid4().hex
         self.current_prompt = prompt
         self.callback = callback
         self.approved_once.clear()
@@ -7828,6 +8176,10 @@ class _ToolPermissionBroker:
         self.schema_repairs.clear()
         self.approval_context_prompt = ""
         self.required_postconditions = self._completion_requirements(prompt)
+        self.focused_missing_postconditions.clear()
+        self.provenance_urls = {url.casefold() for url in _extract_external_urls(prompt)}
+        self.invalid_call_counts.clear()
+        self.invalid_stop_requested = False
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -7852,6 +8204,11 @@ class _ToolPermissionBroker:
         self.schema_repairs.clear()
         self.approval_context_prompt = ""
         self.required_postconditions.clear()
+        self.focused_missing_postconditions.clear()
+        self.turn_id = ""
+        self.provenance_urls.clear()
+        self.invalid_call_counts.clear()
+        self.invalid_stop_requested = False
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -7887,6 +8244,50 @@ class _ToolPermissionBroker:
         fingerprint = self._fingerprint(name.lower(), repaired if isinstance(repaired, dict) else {})
         self._audit("schema_repaired", name.lower(), repaired if isinstance(repaired, dict) else {}, fingerprint, "; ".join(changes))
         self._emit(f"Corrected one malformed {name} tool call using its declared schema.")
+
+    @staticmethod
+    def _invalid_call_key(name: str, arguments: dict[str, Any], reason: str) -> str:
+        normalized_arguments = dict(arguments)
+        for key, value in list(normalized_arguments.items()):
+            if key.lower() in {"url", "uri"} and not _is_external_http_url(value):
+                normalized_arguments[key] = "<invalid-url>"
+            elif key.lower() in {"urls", "uris"} and isinstance(value, list):
+                normalized_arguments[key] = [
+                    str(item) if _is_external_http_url(item) else "<invalid-url>" for item in value
+                ]
+        normalized_reason = re.sub(r"\d+", "#", reason.strip().lower())
+        encoded = json.dumps(
+            {"tool": name.lower(), "arguments": normalized_arguments, "reason": normalized_reason},
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def register_invalid_call(self, name: str, arguments: dict[str, Any], reason: str) -> int:
+        key = self._invalid_call_key(name, arguments, reason)
+        count = self.invalid_call_counts.get(key, 0) + 1
+        self.invalid_call_counts[key] = count
+        if count > 1:
+            self._emit(
+                f"Blocked repeated equivalent invalid {name} call after one correction attempt; "
+                "use materially corrected arguments or report the unresolved postcondition."
+            )
+            if not self.invalid_stop_requested and self.stop_callback is not None:
+                self.invalid_stop_requested = True
+                self.stop_callback()
+        return count
+
+    @staticmethod
+    def semantic_argument_error(name: str, arguments: dict[str, Any]) -> str:
+        normalized = name.lower()
+        if normalized == "fetch_url" and not _is_external_http_url(arguments.get("url")):
+            return "fetch_url requires one concrete absolute HTTP or HTTPS URL."
+        if normalized == "open_urls_in_browser":
+            values = arguments.get("urls")
+            if not isinstance(values, list) or not _validated_external_urls(values, SCRIPT_PREFLIGHT_MAX_URLS):
+                return "open_urls_in_browser requires at least one concrete absolute HTTP or HTTPS URL."
+        return ""
 
     @staticmethod
     def _structured_result(result: Any) -> dict[str, Any]:
@@ -7993,6 +8394,27 @@ class _ToolPermissionBroker:
         command_text = " ".join(str(item) for item in command_value) if isinstance(command_value, list) else str(command_value)
         if not command_text:
             command_text = json.dumps(arguments, ensure_ascii=True, sort_keys=True, default=str)
+        raw_evidence_urls = _validated_external_urls(
+            [*_structured_evidence_urls(structured), *_extract_external_urls(command_text)],
+            SCRIPT_PREFLIGHT_MAX_URLS,
+        )
+        browser_action = normalized == "open_urls_in_browser" or bool(
+            raw_evidence_urls
+            and re.search(r"\b(?:start-process|webbrowser|firefox|chrome|edge|open)\b", command_text, re.IGNORECASE)
+        )
+        if browser_action:
+            evidence_urls = [url for url in raw_evidence_urls if url.casefold() in self.provenance_urls]
+        else:
+            evidence_urls = raw_evidence_urls
+            if success:
+                self.provenance_urls.update(url.casefold() for url in evidence_urls)
+        result_count = _structured_evidence_count(structured)
+        if browser_action:
+            result_count = len(evidence_urls)
+        if not result_count and evidence_urls:
+            result_count = len(evidence_urls)
+        if success and result_count > 0:
+            categories.add("result_count")
         if success and normalized in self._EXECUTION_TOOLS:
             if re.search(r"\b(?:pytest|unittest|ruff|lint|test|check)\b", command_text, re.IGNORECASE):
                 categories.add("tests")
@@ -8008,20 +8430,27 @@ class _ToolPermissionBroker:
                     categories.add("mcp_ready")
         if success and normalized == "call_project_mcp_tool" and structured.get("result") is not None:
             categories.add("mcp_tool_called")
-        if success and (
-            re.search(r"(?:open|browser|url|link|tab|firefox|chrome|edge)", normalized, re.IGNORECASE)
-            or re.search(r"\b(?:open|browser|url|link|tab|firefox|chrome|edge)\b", command_text, re.IGNORECASE)
-            or any(key in structured for key in ("opened_urls", "opened_count", "browser"))
-        ):
+        explicit_browser_evidence = bool(
+            any(key in structured for key in ("opened_urls", "opened_count", "browser"))
+            or (
+                evidence_urls
+                and re.search(r"\b(?:start-process|webbrowser|firefox|chrome|edge|open)\b", command_text, re.IGNORECASE)
+            )
+        )
+        if success and explicit_browser_evidence and evidence_urls:
             categories.add("opened_urls")
 
         evidence = {
+            "turn_id": self.turn_id,
             "tool": normalized,
             "success": success,
             "categories": sorted(categories),
             "paths": verified_paths,
             "status": status,
             "return_code": return_code,
+            "result_count": result_count,
+            "opened_count": len(evidence_urls) if browser_action and success else 0,
+            "urls": evidence_urls,
         }
         self.evidence.append(evidence)
         fingerprint = self._fingerprint(normalized, arguments)
@@ -8131,35 +8560,201 @@ class _ToolPermissionBroker:
             r"\b(?:mcp\s+)?tools?\b|\b[a-z][a-z0-9_]{2,}\b",
         ):
             requirements.add("mcp_tool_called")
+        count_requirement = _requested_count_postcondition(prompt)
+        if count_requirement is not None:
+            requirements.add(count_requirement[0])
         return requirements
+
+    def _current_turn_evidence(self) -> list[dict[str, Any]]:
+        return [evidence for evidence in self.evidence if evidence.get("turn_id") == self.turn_id]
 
     def completion_report(self, prompt: str) -> tuple[set[str], set[str]]:
         effective_prompt = f"{self.approval_context_prompt}\n{prompt}" if self.approval_context_prompt else prompt
         required = self._completion_requirements(effective_prompt)
+        evidence_items = self._current_turn_evidence()
         verified = {
             category
-            for evidence in self.evidence
+            for evidence in evidence_items
             if evidence.get("success")
             for category in evidence.get("categories", [])
         }
+        count_requirement = _requested_count_postcondition(effective_prompt)
+        if count_requirement is not None:
+            category, expected_count = count_requirement
+            if category == "opened_urls":
+                unique_urls = {
+                    str(url).strip().casefold()
+                    for evidence in evidence_items
+                    if evidence.get("success") and "opened_urls" in evidence.get("categories", [])
+                    for url in evidence.get("urls", [])
+                    if _is_external_http_url(url)
+                }
+                observed_count = max(
+                    len(unique_urls),
+                    max(
+                        (
+                            int(evidence.get("opened_count") or 0)
+                            for evidence in evidence_items
+                            if evidence.get("success") and "opened_urls" in evidence.get("categories", [])
+                        ),
+                        default=0,
+                    ),
+                )
+            elif category == "created_outputs":
+                observed_count = len(
+                    {
+                        path
+                        for evidence in evidence_items
+                        if evidence.get("success") and "created_outputs" in evidence.get("categories", [])
+                        for path in evidence.get("paths", [])
+                    }
+                )
+            else:
+                observed_count = max(
+                    (
+                        int(evidence.get("result_count") or 0)
+                        for evidence in evidence_items
+                        if evidence.get("success") and "result_count" in evidence.get("categories", [])
+                    ),
+                    default=0,
+                )
+            if observed_count < expected_count:
+                verified.discard(category)
         semantic = _analyze_semantic_intent(effective_prompt)
         if semantic.requests("restart"):
             stop_index = next(
                 (
                     index
-                    for index, evidence in enumerate(self.evidence)
+                    for index, evidence in enumerate(evidence_items)
                     if evidence.get("success") and "service_stopped" in evidence.get("categories", [])
                 ),
                 None,
             )
             started_after_stop = stop_index is not None and any(
                 evidence.get("success") and "service_started" in evidence.get("categories", [])
-                for evidence in self.evidence[stop_index + 1 :]
+                for evidence in evidence_items[stop_index + 1 :]
             )
             if not started_after_stop:
                 verified.discard("service_started")
         return required, required.difference(verified)
 
+    def update_focused_postconditions(self, prompt: str) -> set[str]:
+        required, missing = self.completion_report(prompt)
+        observed = {
+            category
+            for evidence in self._current_turn_evidence()
+            if evidence.get("success")
+            for category in evidence.get("categories", [])
+        }
+        self.focused_missing_postconditions = set(missing) if missing and observed.intersection(required) else set()
+        return set(self.focused_missing_postconditions)
+
+    def focused_evidence_context(self, prompt: str) -> str:
+        missing = self.update_focused_postconditions(prompt)
+        if not missing:
+            return ""
+        urls = {
+            str(url).strip()
+            for evidence in self.evidence
+            if evidence.get("success")
+            for url in evidence.get("urls", [])
+            if _is_external_http_url(url)
+        }
+        result_count = max(
+            (int(evidence.get("result_count") or 0) for evidence in self.evidence if evidence.get("success")),
+            default=0,
+        )
+        lines = [
+            "Wrapper structured preflight evidence is available.",
+            f"Missing postconditions: {', '.join(sorted(missing))}.",
+            f"Verified result count: {result_count}.",
+        ]
+        if urls:
+            lines.append("Verified external URLs from prior steps:")
+            lines.extend(sorted(urls)[:SCRIPT_PREFLIGHT_MAX_URLS])
+        return "\n".join(lines)
+
+    def completion_evidence_summary(self, prompt: str) -> str:
+        required, missing = self.completion_report(prompt)
+        verified = sorted(required.difference(missing))
+        parts = [item.replace("_", " ") for item in verified]
+        count_requirement = _requested_count_postcondition(prompt)
+        if count_requirement is not None:
+            category, expected = count_requirement
+            observed = 0
+            if category == "opened_urls":
+                urls = {
+                    str(url).strip().casefold()
+                    for evidence in self.evidence
+                    if evidence.get("success")
+                    for url in evidence.get("urls", [])
+                    if _is_external_http_url(url)
+                }
+                observed = max(
+                    len(urls),
+                    max(
+                        (int(evidence.get("opened_count") or 0) for evidence in self.evidence if evidence.get("success")),
+                        default=0,
+                    ),
+                )
+            elif category == "created_outputs":
+                observed = len(
+                    {
+                        path
+                        for evidence in self.evidence
+                        if evidence.get("success")
+                        for path in evidence.get("paths", [])
+                    }
+                )
+            else:
+                observed = max(
+                    (int(evidence.get("result_count") or 0) for evidence in self.evidence if evidence.get("success")),
+                    default=0,
+                )
+            parts.append(f"{category.replace('_', ' ')} {observed}/{expected}")
+        return "; ".join(dict.fromkeys(parts)) or "the requested postconditions"
+
+    def partial_progress_answer(self, prompt: str) -> str:
+        _required, missing = self.completion_report(prompt)
+        if not self.evidence or not missing:
+            return ""
+        opened_urls = {
+            str(url).strip()
+            for evidence in self.evidence
+            if evidence.get("success") and "opened_urls" in evidence.get("categories", [])
+            for url in evidence.get("urls", [])
+            if _is_external_http_url(url)
+        }
+        opened_count = max(
+            len(opened_urls),
+            max((int(evidence.get("opened_count") or 0) for evidence in self.evidence if evidence.get("success")), default=0),
+        )
+        result_count = max(
+            (int(evidence.get("result_count") or 0) for evidence in self.evidence if evidence.get("success")),
+            default=0,
+        )
+        verified_paths = {
+            str(path)
+            for evidence in self.evidence
+            if evidence.get("success")
+            for path in evidence.get("paths", [])
+            if str(path).strip()
+        }
+        progress: list[str] = []
+        if opened_count:
+            progress.append(f"opened URLs: {opened_count}")
+        if result_count:
+            progress.append(f"verified results: {result_count}")
+        if verified_paths:
+            progress.append(f"verified paths: {len(verified_paths)}")
+        if not progress:
+            return ""
+        missing_text = ", ".join(sorted(item.replace("_", " ") for item in missing))
+        return (
+            "The task was cancelled after preserving verified partial progress.\n\n"
+            f"Verified before cancellation: {'; '.join(progress)}.\n\n"
+            f"[Completion status: partial] Unverified postconditions: {missing_text}."
+        )
     def rollback_transaction(self) -> dict[str, list[str]]:
         restored: list[str] = []
         skipped: list[str] = []
@@ -8208,6 +8803,99 @@ class _ToolPermissionBroker:
                 continue
         return outside
 
+    @staticmethod
+    def _command_text(name: str, arguments: dict[str, Any]) -> str:
+        if name not in {"run_command", "run_project_command", "run_powershell_command"}:
+            return ""
+        value = arguments.get("command", "")
+        return " ".join(str(item) for item in value) if isinstance(value, list) else str(value)
+
+    @staticmethod
+    def _command_side_effects(command: str) -> set[str]:
+        effects: set[str] = set()
+        if not command.strip():
+            return effects
+        if re.search(
+            r"\b(?:pip(?:3)?\s+(?:install|uninstall)|uv\s+(?:add|remove|pip\s+(?:install|uninstall))|"
+            r"npm\s+(?:add|install|remove|uninstall|update)|pnpm\s+(?:add|install|remove|update)|"
+            r"yarn\s+(?:add|remove|upgrade))\b",
+            command,
+            re.IGNORECASE,
+        ):
+            effects.add("install")
+        if re.search(
+            r"\b(?:Remove-Item|del|erase|rm|rmdir|unlink)\b|\.unlink\s*\(|shutil\.rmtree\s*\(",
+            command,
+            re.IGNORECASE,
+        ):
+            effects.update({"delete", "mutate"})
+        if re.search(
+            r"\b(?:Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|Rename-Item|"
+            r"mkdir|touch|cp|mv|sed\s+-i|git\s+(?:apply|checkout|clean|commit|merge|mv|rebase|reset|restore))\b"
+            r"|(?:Path\([^\n]+\)|[A-Za-z_][A-Za-z0-9_.]*)\.(?:write_text|write_bytes|rename|replace)\s*\("
+            r"|open\s*\([^\n]+,[^\n]*['\"](?:a|w|x)[bt+]*['\"]"
+            r"|(?:echo|printf|type)\b[^\r\n]*\s>{1,2}\s*[^\s&]",
+            command,
+            re.IGNORECASE,
+        ):
+            effects.add("mutate")
+        return effects
+
+    def repair_command_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        command = self._command_text(name, arguments)
+        if not command:
+            return arguments
+        repaired = command.strip()
+        changes: list[str] = []
+        nested = re.fullmatch(r'\s*&\s+"(&\s+.+)"\s*', repaired, re.DOTALL)
+        if name == "run_powershell_command" and nested:
+            repaired = nested.group(1).strip()
+            changes.append("removed a duplicated quoted PowerShell call operator")
+        corrected_wsl_mirror = re.sub(
+            r"(?i)\b[A-Z]:[\\/]+mnt[\\/]+([a-z])[\\/]+",
+            lambda match: f"{match.group(1).upper()}:\\",
+            repaired,
+        )
+        if corrected_wsl_mirror != repaired:
+            repaired = corrected_wsl_mirror
+            changes.append("translated an invalid C:\\mnt\\<drive> Windows path to its real drive path")
+        browser_parts = [part.strip() for part in re.split(r"\s*&&\s*", repaired) if part.strip()]
+        browser_matches = [
+            re.fullmatch(
+                r"(?:start(?:-process)?\s+)?(?:firefox(?:\.exe)?|chrome(?:\.exe)?|msedge(?:\.exe)?|edge(?:\.exe)?)\s+['\"]?(https?://[^'\"\s]+)['\"]?",
+                part,
+                re.IGNORECASE,
+            )
+            for part in browser_parts
+        ]
+        if len(browser_parts) > 1 and all(browser_matches):
+            urls = [match.group(1) for match in browser_matches if match is not None]
+            quoted = ", ".join(_powershell_single_quote(url) for url in urls)
+            repaired = f"$urls = @({quoted}); foreach ($url in $urls) {{ Start-Process $url }}"
+            changes.append("normalized a browser command chain for PowerShell")
+        direct_script = re.fullmatch(r"\s*&?\s*['\"]?([^'\"\r\n]+\.py)['\"]?(\s+.*)?", repaired)
+        if direct_script:
+            candidate_text = direct_script.group(1).strip()
+            candidate = Path(candidate_text)
+            if not candidate.is_absolute():
+                candidate = (self.workspace / candidate).resolve()
+            if candidate.is_file():
+                python_path = _preferred_project_python(self.workspace)
+                if python_path is not None:
+                    rest = direct_script.group(2) or ""
+                    if name == "run_powershell_command":
+                        repaired = f"& {_powershell_single_quote(str(python_path))} {_powershell_single_quote(str(candidate))}{rest}"
+                    else:
+                        repaired = f"{_shell_quote_path(python_path)} {_shell_quote_path(str(candidate))}{rest}"
+                    changes.append("prefixed a direct Python script with the workspace interpreter")
+        if not changes or repaired == command:
+            return arguments
+        updated = dict(arguments)
+        updated["command"] = repaired
+        fingerprint = self._fingerprint(name.lower(), updated)
+        self._audit("command_repaired", name.lower(), updated, fingerprint, "; ".join(changes))
+        self._emit(f"Corrected one malformed {name} command deterministically: {'; '.join(changes)}.")
+        return updated
     def _requires_command_approval(self, name: str, arguments: dict[str, Any]) -> bool:
         if name == "run_powershell_command":
             return True
@@ -8288,7 +8976,20 @@ class _ToolPermissionBroker:
                     "uninstall",
                     "upgrade",
         )
-        install_requested = semantic.requests("install", "upgrade")
+        install_requested = semantic.requests("install", "uninstall", "upgrade")
+        command_effects = self._command_side_effects(self._command_text(normalized, arguments))
+        if "install" in command_effects and not install_requested:
+            reason = "The command contains a dependency operation that the current user prompt did not request."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+        if "delete" in command_effects and not semantic.requests("delete"):
+            reason = "The command contains deletion that the current user prompt did not authorize."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+        if "mutate" in command_effects and not edit_requested:
+            reason = "The command contains filesystem or repository mutation that the current user prompt did not authorize."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
         if normalized in self._MUTATION_TOOLS and not edit_requested:
             reason = "The current user prompt did not authorize workspace modification."
             self._audit("denied", normalized, arguments, fingerprint, reason)
@@ -8682,6 +9383,115 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         @server.tool(
             description=(
+                "Open validated absolute HTTP or HTTPS URLs as browser tabs using deterministic local wrapper logic. "
+                "Use browser='default', 'firefox', 'chrome', or 'edge'."
+            ),
+            annotations=_tool_annotations(tool_base, "open_urls_in_browser"),
+            structured_output=True,
+        )
+        def open_urls_in_browser(
+            urls: list[str],
+            browser: str = "default",
+            max_urls: int = SCRIPT_PREFLIGHT_MAX_URLS,
+        ) -> dict[str, Any]:
+            browser_name = str(browser or "default").strip().lower()
+            aliases = {
+                "default": "default",
+                "system": "default",
+                "firefox": "firefox",
+                "chrome": "chrome",
+                "google-chrome": "chrome",
+                "edge": "edge",
+                "msedge": "edge",
+            }
+            if browser_name not in aliases:
+                raise ValueError("browser must be default, firefox, chrome, or edge.")
+            browser_name = aliases[browser_name]
+            bounded_limit = max(1, min(int(max_urls), SCRIPT_PREFLIGHT_MAX_URLS))
+            validated_urls = _validated_external_urls(urls, bounded_limit)
+            if not validated_urls:
+                raise ValueError("No valid absolute HTTP or HTTPS URLs were provided.")
+
+            windows_browser_names = {
+                "firefox": ("firefox.exe", "firefox"),
+                "chrome": ("chrome.exe", "chrome"),
+                "edge": ("msedge.exe", "msedge"),
+            }
+            windows_browser_paths = {
+                "firefox": (
+                    "$env:ProgramFiles\\Mozilla Firefox\\firefox.exe",
+                    "${env:ProgramFiles(x86)}\\Mozilla Firefox\\firefox.exe",
+                    "$env:LOCALAPPDATA\\Mozilla Firefox\\firefox.exe",
+                ),
+                "chrome": (
+                    "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe",
+                    "${env:ProgramFiles(x86)}\\Google\\Chrome\\Application\\chrome.exe",
+                    "$env:LOCALAPPDATA\\Google\\Chrome\\Application\\chrome.exe",
+                ),
+                "edge": (
+                    "$env:ProgramFiles\\Microsoft\\Edge\\Application\\msedge.exe",
+                    "${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application\\msedge.exe",
+                    "$env:LOCALAPPDATA\\Microsoft\\Edge\\Application\\msedge.exe",
+                ),
+            }
+            powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
+            if os.name == "nt" or (callable(getattr(tool_base, "in_wsl", None)) and tool_base.in_wsl() and powershell):
+                if browser_name == "default":
+                    script = "; ".join(
+                        f"Start-Process {_powershell_single_quote(url)}" for url in validated_urls
+                    )
+                else:
+                    candidates = windows_browser_names[browser_name]
+                    candidate_array = ", ".join(_powershell_single_quote(item) for item in candidates)
+                    executable_name = candidates[0]
+                    app_path_keys = (
+                        f"HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable_name}",
+                        f"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable_name}",
+                    )
+                    app_path_array = ", ".join(_powershell_single_quote(item) for item in app_path_keys)
+                    standard_path_array = ", ".join(f'"{item}"' for item in windows_browser_paths[browser_name])
+                    url_array = ", ".join(_powershell_single_quote(url) for url in validated_urls)
+                    script = (
+                        f"$browserCommand = @({candidate_array}) | ForEach-Object {{ Get-Command $_ -ErrorAction SilentlyContinue }} "
+                        "| Select-Object -First 1; $browserPath = if ($browserCommand) { $browserCommand.Source } else { $null }; "
+                        f"if (-not $browserPath) {{ $browserPath = @({app_path_array}) | ForEach-Object {{ "
+                        "$item = Get-ItemProperty -LiteralPath $_ -ErrorAction SilentlyContinue; "
+                        "if ($item) { $item.'(default)' } } | Where-Object { $_ -and (Test-Path -LiteralPath $_) } "
+                        "| Select-Object -First 1 }; "
+                        f"if (-not $browserPath) {{ $browserPath = @({standard_path_array}) "
+                        "| Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }; "
+                        f"if (-not $browserPath) {{ throw '{browser_name} browser executable was not found.' }}; "
+                        f"Start-Process -FilePath $browserPath -ArgumentList @({url_array})"
+                    )
+                result = _run_powershell_command(tool_base, workspace, script, 120)
+                return_code = int(result.get("return_code", result.get("returncode", 1)))
+                if return_code != 0:
+                    raise RuntimeError(str(result.get("stderr") or result.get("stdout") or "Browser launch failed."))
+            else:
+                linux_candidates = {
+                    "default": ("xdg-open",),
+                    "firefox": ("firefox",),
+                    "chrome": ("google-chrome", "chromium", "chromium-browser"),
+                    "edge": ("microsoft-edge", "microsoft-edge-stable"),
+                }
+                executable = next((shutil.which(name) for name in linux_candidates[browser_name] if shutil.which(name)), None)
+                if executable is None:
+                    raise RuntimeError(f"No local {browser_name} browser launcher was found.")
+                if browser_name == "default":
+                    for url in validated_urls:
+                        subprocess.Popen([executable, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.Popen([executable, *validated_urls], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            return {
+                "status": "opened",
+                "browser": browser_name,
+                "opened_urls": validated_urls,
+                "opened_count": len(validated_urls),
+            }
+
+        @server.tool(
+            description=(
                 "Copy one workspace file or directory to a distinct workspace path. "
                 "Directory destinations must not already exist; file overwrite must be explicit."
             ),
@@ -8797,16 +9607,45 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             broker.record_schema_repair(name, arguments, repaired_arguments, repairs)
                         arguments = repaired_arguments
                     else:
+                        error_list = (repaired_errors or argument_errors)[:12]
+                        invalid_count = (
+                            broker.register_invalid_call(name, arguments, "; ".join(error_list))
+                            if broker is not None
+                            else 1
+                        )
                         payload = {
-                            "status": "invalid_arguments",
+                            "status": "repeated_invalid_arguments" if invalid_count > 1 else "invalid_arguments",
                             "tool": name,
-                            "errors": (repaired_errors or argument_errors)[:12],
+                            "errors": error_list,
                             "repair_attempted": True,
                         }
+                        if invalid_count > 1:
+                            payload["instruction"] = (
+                                "Do not repeat this equivalent call. Use materially corrected arguments or report the blocker."
+                            )
                         if repairs:
                             payload["repairs"] = repairs[:12]
                         return self._error_result(payload)
             if broker is not None:
+                arguments = broker.repair_command_arguments(name, arguments)
+                semantic_error = broker.semantic_argument_error(name, arguments)
+                if semantic_error:
+                    invalid_count = broker.register_invalid_call(name, arguments, semantic_error)
+                    invalid_result = self._error_result(
+                        {
+                            "status": "repeated_invalid_arguments" if invalid_count > 1 else "invalid_arguments",
+                            "tool": name,
+                            "errors": [semantic_error],
+                            "repair_attempted": True,
+                            "instruction": (
+                                "Use materially corrected concrete arguments."
+                                if invalid_count == 1
+                                else "Do not repeat this equivalent call; report the unresolved postcondition."
+                            ),
+                        }
+                    )
+                    broker.record_result(name, arguments, invalid_result)
+                    return invalid_result
                 allowed, error_payload = broker.authorize(name, arguments)
                 if not allowed:
                     assert error_payload is not None
@@ -8828,6 +9667,15 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             return result
 
     class HardenedAgentRunner(original_runner):
+        def request_cancel(self) -> None:
+            prompt = self._tool_permission_broker.current_prompt
+            partial_answer = self._tool_permission_broker.partial_progress_answer(prompt) if prompt else ""
+            self._cancel_partial_answer = partial_answer or (
+                "The task was cancelled before any requested result was verified.\n\n"
+                "[Completion status: cancelled]"
+            )
+            super().request_cancel()
+
         def run_sync(self, prompt: str, callback: Any = None) -> str:
             self.set_access_mode(getattr(self.config, "access_mode", self.access_mode))
             started_at = base.time.perf_counter()
@@ -8843,6 +9691,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 self.workspace,
                 getattr(self, "runtime_workspace", self.workspace),
             )
+            self._tool_permission_broker.stop_callback = self.request_cancel
             self.set_access_mode(getattr(config, "access_mode", DEFAULT_ACCESS_MODE))
 
         def set_access_mode(self, value: Any) -> None:
@@ -8852,6 +9701,15 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             broker = getattr(self, "_tool_permission_broker", None)
             if broker is not None:
                 broker.set_access_mode(self.access_mode)
+
+        def _run_existing_script_preflight(self, prompt: str, callback: Any = None) -> str:
+            context = super()._run_existing_script_preflight(prompt, callback)
+            broker = self._tool_permission_broker
+            focused = broker.update_focused_postconditions(prompt)
+            self._focused_missing_postconditions = frozenset(focused)
+            if focused and not context:
+                context = broker.focused_evidence_context(prompt)
+            return context
 
         def _runtime_fact_block(self, prompt: str) -> str:
             block = super()._runtime_fact_block(prompt)
@@ -8911,6 +9769,30 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     for tool in tools
                     if self._tool_name(tool) in _ToolPermissionBroker._RESTRICTED_MODE_TOOLS
                 ]
+            focused_postconditions = set(getattr(self, "_focused_missing_postconditions", frozenset()))
+            if not focused_postconditions:
+                focused_postconditions = self._tool_permission_broker.update_focused_postconditions(
+                    self._tool_permission_broker.current_prompt or prompt
+                )
+                self._focused_missing_postconditions = frozenset(focused_postconditions)
+            if focused_postconditions:
+                focused_names = {"read_file", "search_text", "list_files", "search_tools"}
+                focused_tool_map = {
+                    "opened_urls": {"open_urls_in_browser", "fetch_url"},
+                    "result_count": {"fetch_url", "run_existing_entrypoint"},
+                    "created_outputs": {"apply_text_patch", "copy_path", "run_existing_entrypoint", "write_file"},
+                    "changed_files": {"apply_text_patch", "read_file_snapshot", "run_existing_entrypoint"},
+                    "tests": {"run_existing_entrypoint", "run_command", "run_project_command", "run_powershell_command"},
+                    "service_started": {"run_existing_entrypoint", "start_project_mcp_server"},
+                    "service_stopped": {"cancel_background_job", "stop_project_mcp_server"},
+                    "mcp_ready": {"list_project_mcp_tools", "start_project_mcp_server"},
+                    "mcp_tool_called": {"call_project_mcp_tool", "list_project_mcp_tools"},
+                }
+                for postcondition in focused_postconditions:
+                    focused_names.update(focused_tool_map.get(postcondition, set()))
+                focused_tools = [tool for tool in tools if self._tool_name(tool) in focused_names]
+                if focused_tools:
+                    return focused_tools
             tokens = set(re.findall(r"[a-z0-9_]+", lowered))
             semantic = _analyze_semantic_intent(prompt)
             read_intent = semantic.requests("fetch_url", "read") or bool(
@@ -9008,6 +9890,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 "apply_text_patch": 99,
                 "run_existing_entrypoint": 98,
                 "fetch_url": 97,
+                "open_urls_in_browser": 97,
                 "run_cmd_command": 96,
                 "read_file": 90,
                 "search_text": 89,
@@ -9101,12 +9984,32 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 selected = [tool for tool in tools if self._tool_name(tool) == "search_tools"][:1]
             return selected
 
+        def _prioritize_tools_for_prompt(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
+            focused = set(getattr(self, "_focused_missing_postconditions", frozenset()))
+            if not focused:
+                focused = self._tool_permission_broker.update_focused_postconditions(
+                    self._tool_permission_broker.current_prompt or prompt
+                )
+                self._focused_missing_postconditions = frozenset(focused)
+            if focused:
+                return self._filter_tools_by_intent(prompt, tools)
+            return super()._prioritize_tools_for_prompt(prompt, tools)
+
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
+            self._cancel_partial_answer = ""
+            self._focused_missing_postconditions = frozenset()
             self._tool_permission_broker.begin_turn(prompt, callback)
             previous = getattr(_TOOL_CALL_CONTEXT, "broker", None)
             _TOOL_CALL_CONTEXT.broker = self._tool_permission_broker
             try:
-                answer = await super()._run_async(prompt, callback)
+                try:
+                    answer = await super()._run_async(prompt, callback)
+                except Exception:
+                    if self._cancel_partial_answer:
+                        return self._cancel_partial_answer
+                    raise
+                if self._cancel_partial_answer:
+                    return self._cancel_partial_answer
                 required, missing = self._tool_permission_broker.completion_report(prompt)
                 rollback = {"restored": [], "skipped": []}
                 if missing.intersection({"changed_files", "tests"}) and self._tool_permission_broker.transaction_changed_hashes:
@@ -9125,13 +10028,49 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         rollback_text = f" Transaction rollback restored {len(rollback['restored'])} file(s)."
                     if rollback["skipped"]:
                         rollback_text += f" Rollback skipped {len(rollback['skipped'])} concurrently changed or unavailable file(s)."
+                    rendered = re.sub(
+                        r"\n\n\[Completion status: (?:partial|verified|full)\].*\Z",
+                        "",
+                        str(answer).rstrip(),
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+                    evidence_summary = self._tool_permission_broker.completion_evidence_summary(prompt)
                     return (
-                        f"{str(answer).rstrip()}\n\n[Completion status: partial] "
+                        f"{rendered}\n\nVerified current-turn evidence: {evidence_summary}.\n\n"
+                        f"[Completion status: partial] "
                         f"Unverified postconditions: {missing_text}.{rollback_text}"
                     )
                 if required and callback is not None:
                     callback("status", "Completion verification passed for the requested postconditions.")
-                return answer
+                rendered_answer = str(answer).rstrip()
+                conflict = bool(
+                    re.search(
+                        r"\[Completion status:\s*partial\]|\bunverified postconditions?\b",
+                        rendered_answer,
+                        re.IGNORECASE,
+                    )
+                )
+                count_requirement = _requested_count_postcondition(prompt)
+                if count_requirement is not None:
+                    _category, expected_count = count_requirement
+                    for match in re.finditer(r"\b(\d+)\s*(?:/|of)\s*(\d+)\b", rendered_answer, re.IGNORECASE):
+                        observed_text, expected_text = match.groups()
+                        if int(expected_text) == expected_count and int(observed_text) < expected_count:
+                            conflict = True
+                            break
+                if required and conflict:
+                    rendered_answer = re.sub(
+                        r"\n\n\[Completion status: (?:partial|verified|full)\].*\Z",
+                        "",
+                        rendered_answer,
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+                    summary = self._tool_permission_broker.completion_evidence_summary(prompt)
+                    rendered_answer = (
+                        f"{rendered_answer}\n\n[Completion evidence correction] Structured runtime evidence verified: "
+                        f"{summary}. This supersedes any contradictory completion wording above."
+                    )
+                return rendered_answer
             finally:
                 self._tool_permission_broker.end_turn()
                 _TOOL_CALL_CONTEXT.broker = previous
