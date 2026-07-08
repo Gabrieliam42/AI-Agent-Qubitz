@@ -37,21 +37,13 @@ It is intended to run primarily under WSL2/Linux, and to work in WSL-hosted work
 Key Features
 
 Local-First Architecture:
- Unlike typical AI agents that may depend on cloud infrastructure, 
-Qubitz operates entirely in local environments, ensuring best data 
-privacy and reduced latency.
+ Unlike typical AI agents that may depend on cloud infrastructure, Qubitz operates entirely in local environments, ensuring best data privacy and reduced latency.
 Harness and Wrapper Control:
- The architecture utilizes a unique harness that manages routing, 
-workspace handling, and tool orchestration, allowing smaller models to 
-focus on language and reasoning.
+ The architecture utilizes a unique harness that manages routing, workspace handling, and tool orchestration, allowing smaller models to focus on language and reasoning.
 Multiple Model Variants:
- Qubitz supports various local models, enabling users to compare 
-performance and capabilities among different configurations ranging from
- 8B to 35B.
+ Qubitz supports various local models, enabling users to compare performance and capabilities among different configurations ranging from 8B to 35B.
 Direct Execution Capability:
- It allows for executing existing scripts and commands across different 
-environments such as Windows and WSL2 with enhanced control over task 
-routing and execution logic.
+ It allows for executing existing scripts and commands across different environments such as Windows and WSL2 with enhanced control over task routing and execution logic.
 GUI, CLI, and MCP Integration: Users can interact through a graphical interface or command line, further simplifying the engagement with AI-driven tasks.
 
 
