@@ -5,6 +5,7 @@ from __future__ import annotations
 # corresponding base app so it can run independently.
 
 import ast
+import asyncio
 import difflib
 import hashlib
 import json
@@ -327,7 +328,7 @@ class SemanticIntent:
 _SEMANTIC_ACTION_PATTERN = re.compile(
     r"\b(?P<verb>look\s+at|shut\s+down|"
     r"read|show|view|inspect|examine|review|display|print|open|"
-    r"edit|modify|change|update|fix|refactor|rewrite|implement|patch|"
+    r"edit|modify|change|replace|update|fix|refactor|rewrite|implement|patch|"
     r"create|generate|export|save|write|add|remove|delete|erase|"
     r"copy|duplicate|clone|move|rename|"
     r"run|execute|start|launch|serve|stop|shutdown|terminate|kill|restart|"
@@ -454,7 +455,7 @@ def _analyze_semantic_intent(prompt: str) -> SemanticIntent:
                     actions.add("start")
                 else:
                     actions.add("read")
-            elif verb in {"edit", "modify", "change", "fix", "refactor", "rewrite", "implement", "patch"}:
+            elif verb in {"edit", "modify", "change", "replace", "fix", "refactor", "rewrite", "implement", "patch"}:
                 actions.add("edit")
             elif verb == "update":
                 actions.add("upgrade" if "package" in objects and "file" not in objects else "edit")
@@ -3714,7 +3715,7 @@ def _canonicalize_workspace_script(base: Any, workspace: Path, script: str) -> s
     return script
 
 
-def _should_use_windows_shell(base: Any, command: str) -> bool:
+def _should_use_windows_shell(base: Any, workspace: Path, command: str) -> bool:
     if not callable(getattr(base, "in_wsl", None)) or not base.in_wsl():
         return False
     if shutil.which("powershell.exe") is None:
@@ -3727,7 +3728,7 @@ def _should_use_windows_shell(base: Any, command: str) -> bool:
         return True
     if any(token in lower for token in (".ps1", ".bat", ".cmd")):
         return True
-    if re.search(r"(^|[\s;&|])\.[\\/]", stripped):
+    if _is_windows_backed_workspace(workspace) and re.search(r"(^|[\s;&|])\.[\\/]", stripped):
         return True
     pattern = getattr(base, "WINDOWS_DRIVE_PATH_PATTERN", None)
     if pattern is not None and pattern.match(stripped):
@@ -3831,7 +3832,7 @@ def _run_shell_command(
     timeout_seconds: int,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
-    if _should_use_windows_shell(base, command):
+    if _should_use_windows_shell(base, workspace, command):
         result = _run_powershell_command(base, workspace, command, timeout_seconds, cancel_event=cancel_event)
         result["returncode"] = int(result.get("return_code", 0))
         return result
@@ -5432,11 +5433,20 @@ class LocalOnlyApp:
                     return False
                 if re.search(r"\b(?:do not|without)\s+(?:run|execute|launch|start|invoke)\b", lowered):
                     return False
+                semantic = _analyze_semantic_intent(cleaned)
+                if semantic.requests("mcp_call", "mcp_discover"):
+                    return False
                 if _prompt_has_explicit_entrypoint_command(cleaned):
                     return True
+                edit_match = base.EDIT_INTENT_PATTERN.search(cleaned)
+                execution_match = re.search(r"\b(run|execute|launch|start|invoke|test|use)\b", lowered)
+                if edit_match is not None and (
+                    execution_match is None or edit_match.start() < execution_match.start()
+                ):
+                    return False
                 if any(hint in lowered for hint in FOREGROUND_EXISTING_SCRIPT_HINTS):
                     return True
-                if re.search(r"\b(run|execute|launch|start|invoke|test|use)\b", lowered):
+                if execution_match is not None:
                     return True
                 return (
                     str(entrypoint.get("origin", "") or "") == "implicit_discovery"
@@ -6489,15 +6499,23 @@ class LocalOnlyApp:
                 if selected_route != "direct_existing_entrypoint":
                     return self._filter_tools_by_intent(prompt, tools)
                 preflight_ready = bool(self._existing_script_preflight_context)
-                interop_available = self._wsl_windows_interop_available()
-                interop_unavailable = self._wsl_windows_interop_unavailable()
+                capabilities = self._runtime_capabilities()
+                in_wsl = bool(capabilities.get("in_wsl"))
+                interop_unavailable = bool(in_wsl and not capabilities.get("windows_interop_available"))
+                powershell_available_for_workspace = bool(
+                    not in_wsl
+                    or (
+                        capabilities.get("workspace_is_windows_backed")
+                        and capabilities.get("windows_interop_available")
+                    )
+                )
                 primary_names = {
                     "read_file",
                     "list_files",
                     "search_text",
                     "run_project_command",
                 }
-                if interop_available or not (callable(getattr(base, "in_wsl", None)) and base.in_wsl()):
+                if powershell_available_for_workspace:
                     primary_names.add("run_powershell_command")
                 fallback_names = {
                     "start_project_mcp_server",
@@ -6526,15 +6544,17 @@ class LocalOnlyApp:
                         continue
                     if preflight_ready and name in {"run_project_command", "start_project_mcp_server", "list_project_mcp_tools"}:
                         continue
-                    if interop_unavailable and (
-                        name in {
-                            "run_powershell_command",
+                    if (
+                        not powershell_available_for_workspace
+                        and (name == "run_powershell_command" or name.startswith("sandbox_run_powershell"))
+                    ) or (
+                        interop_unavailable
+                        and name in {
                             "start_project_mcp_server",
                             "list_project_mcp_tools",
                             "stop_project_mcp_server",
                             "read_project_mcp_server_log",
                         }
-                        or name.startswith("sandbox_run_powershell")
                     ):
                         continue
                     if name in primary_names:
@@ -8014,6 +8034,12 @@ class _TextReplacement(TypedDict):
     new_text: str
 
 
+class _FileTextPatch(TypedDict):
+    path: str
+    expected_sha256: str
+    replacements: list[_TextReplacement]
+
+
 def _reported_entrypoint_browser_urls(
     entrypoint: dict[str, Any],
     stdout_text: str,
@@ -8084,6 +8110,7 @@ class _ToolPermissionBroker:
     }
     _RESTRICTED_MODE_TOOLS = _READ_TOOLS - {"list_project_mcp_tools"}
     _MUTATION_TOOLS = {
+        "apply_text_patches",
         "apply_text_patch",
         "copy_path",
         "write_file",
@@ -8342,7 +8369,28 @@ class _ToolPermissionBroker:
                         self.transaction_snapshot_hashes[key] = snapshot_hash
 
         if normalized in self._MUTATION_TOOLS and success:
-            if normalized == "sandbox_apply_back":
+            target: Path | None = None
+            if normalized == "apply_text_patches":
+                files = structured.get("files")
+                success = isinstance(files, list) and len(files) >= 2
+                for item in files if isinstance(files, list) else []:
+                    if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                        success = False
+                        continue
+                    item_target = self._resolved_argument_path({"path": item["path"]}, "path")
+                    new_hash = str(item.get("new_sha256", "")).strip().lower()
+                    item_verified = bool(
+                        item_target is not None
+                        and item_target.is_file()
+                        and re.fullmatch(r"[a-f0-9]{64}", new_hash)
+                        and hashlib.sha256(item_target.read_bytes()).hexdigest() == new_hash
+                    )
+                    success = success and item_verified
+                    if item_verified and item_target is not None:
+                        verified_paths.append(str(item_target))
+                        if str(item_target) in self.transaction_originals:
+                            self.transaction_changed_hashes[str(item_target)] = new_hash
+            elif normalized == "sandbox_apply_back":
                 applied = structured.get("applied")
                 success = isinstance(applied, list) and bool(applied)
                 for item in applied if isinstance(applied, list) else []:
@@ -8409,7 +8457,11 @@ class _ToolPermissionBroker:
         if success and result_count > 0:
             categories.add("result_count")
         if success and normalized in self._EXECUTION_TOOLS:
-            if re.search(r"\b(?:pytest|unittest|ruff|lint|test|check)\b", command_text, re.IGNORECASE):
+            if structured.get("test_runner") or re.search(
+                r"\b(?:pytest|unittest|ruff|lint|test|check)\b",
+                command_text,
+                re.IGNORECASE,
+            ):
                 categories.add("tests")
             if normalized == "start_project_mcp_server" and status in {"ready", "running", "started"}:
                 categories.add("service_started")
@@ -8804,10 +8856,54 @@ class _ToolPermissionBroker:
         return " ".join(str(item) for item in value) if isinstance(value, list) else str(value)
 
     @staticmethod
+    def _has_shell_file_redirection(command: str) -> bool:
+        quote = ""
+        escaped = False
+        index = 0
+        while index < len(command):
+            character = command[index]
+            if escaped:
+                escaped = False
+                index += 1
+                continue
+            if quote:
+                if character == "\\" and quote == '"':
+                    escaped = True
+                elif character == quote:
+                    quote = ""
+                index += 1
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                index += 1
+                continue
+            if character != ">" or (index > 0 and command[index - 1] in {">", "="}):
+                index += 1
+                continue
+            cursor = index + 1
+            if cursor < len(command) and command[cursor] == ">":
+                cursor += 1
+            while cursor < len(command) and command[cursor].isspace():
+                cursor += 1
+            if cursor >= len(command) or command[cursor] == "&":
+                index = cursor + 1
+                continue
+            end = cursor
+            while end < len(command) and command[end] not in " \t\r\n;&|":
+                end += 1
+            target = command[cursor:end].strip("'\"").casefold()
+            if target and target not in {"/dev/null", "nul", "$null"}:
+                return True
+            index = max(end, cursor + 1)
+        return False
+
+    @staticmethod
     def _command_side_effects(command: str) -> set[str]:
         effects: set[str] = set()
         if not command.strip():
             return effects
+        if _ToolPermissionBroker._has_shell_file_redirection(command):
+            effects.add("mutate")
         if re.search(
             r"\b(?:pip(?:3)?\s+(?:install|uninstall)|uv\s+(?:add|remove|pip\s+(?:install|uninstall))|"
             r"npm\s+(?:add|install|remove|uninstall|update)|pnpm\s+(?:add|install|remove|update)|"
@@ -8827,7 +8923,8 @@ class _ToolPermissionBroker:
             r"mkdir|touch|cp|mv|sed\s+-i|git\s+(?:apply|checkout|clean|commit|merge|mv|rebase|reset|restore))\b"
             r"|(?:Path\([^\n]+\)|[A-Za-z_][A-Za-z0-9_.]*)\.(?:write_text|write_bytes|rename|replace)\s*\("
             r"|open\s*\([^\n]+,[^\n]*['\"](?:a|w|x)[bt+]*['\"]"
-            r"|(?:echo|printf|type)\b[^\r\n]*\s>{1,2}\s*[^\s&]",
+            r"|(?:cat|echo|printf|type)\b[\s\S]*?\s>{1,2}\s*[^\s&]"
+            r"|\|\s*tee(?:\s+-[A-Za-z]+)*\s+[^\s-]",
             command,
             re.IGNORECASE,
         ):
@@ -8953,6 +9050,16 @@ class _ToolPermissionBroker:
             return True, None
 
         semantic = _analyze_semantic_intent(self.current_prompt)
+        if normalized in {"run_cmd_command", "run_powershell_command", "sandbox_run_powershell"}:
+            capabilities = _workspace_runtime_capabilities(self.base, self.workspace)
+            if capabilities.get("in_wsl") and not capabilities.get("workspace_is_windows_backed"):
+                shell_name = "Windows cmd" if normalized == "run_cmd_command" else "PowerShell"
+                reason = (
+                    f"{shell_name} is not a valid execution environment for this WSL-native workspace. "
+                    "Use run_command, run_project_command, or the workspace's WSL Python interpreter."
+                )
+                self._audit("environment_denied", normalized, arguments, fingerprint, reason)
+                return False, {"status": "environment_mismatch", "tool": normalized, "reason": reason}
         edit_requested = semantic.requests("copy", "create", "delete", "edit", "move")
         execution_requested = semantic.requests(
             "execute",
@@ -8971,6 +9078,22 @@ class _ToolPermissionBroker:
         )
         install_requested = semantic.requests("install", "uninstall", "upgrade")
         command_effects = self._command_side_effects(self._command_text(normalized, arguments))
+        if "mutate" in command_effects and normalized in {
+            "run_command",
+            "run_project_command",
+            "run_powershell_command",
+            "run_cmd_command",
+        }:
+            reason = (
+                "Direct file mutation through command tools bypasses transactional edit verification. "
+                "Use read_file_snapshot and apply_text_patch for existing text files, or a dedicated file tool."
+            )
+            self._audit("transaction_required", normalized, arguments, fingerprint, reason)
+            return False, {
+                "status": "transaction_required",
+                "tool": normalized,
+                "reason": reason,
+            }
         if "install" in command_effects and not install_requested:
             reason = "The command contains a dependency operation that the current user prompt did not request."
             self._audit("denied", normalized, arguments, fingerprint, reason)
@@ -9019,6 +9142,37 @@ class _ToolPermissionBroker:
                     "reason": reason,
                     "instruction": "Call read_file_snapshot for this path, then apply_text_patch with its returned SHA-256.",
                 }
+        if normalized == "apply_text_patches":
+            patches = arguments.get("patches")
+            if not isinstance(patches, list) or not 2 <= len(patches) <= 16:
+                reason = "apply_text_patches requires 2-16 file patches."
+                self._audit("invalid", normalized, arguments, fingerprint, reason)
+                return False, {"status": "invalid", "tool": normalized, "reason": reason, "file_unchanged": True}
+            seen_targets: set[str] = set()
+            for index, patch in enumerate(patches, start=1):
+                if not isinstance(patch, dict):
+                    reason = f"Patch {index} must be an object."
+                    self._audit("invalid", normalized, arguments, fingerprint, reason)
+                    return False, {"status": "invalid", "tool": normalized, "reason": reason, "file_unchanged": True}
+                patch_target = self._resolved_argument_path(patch, "path")
+                expected_hash = str(patch.get("expected_sha256", "")).strip().lower()
+                target_key = str(patch_target) if patch_target is not None else ""
+                recorded_hash = self.transaction_snapshot_hashes.get(target_key)
+                if not target_key or target_key in seen_targets or recorded_hash is None or expected_hash != recorded_hash:
+                    reason = (
+                        f"Patch {index} requires a unique successful current-turn read_file_snapshot "
+                        "and its exact SHA-256."
+                    )
+                    self._audit("transaction_required", normalized, arguments, fingerprint, reason)
+                    return False, {
+                        "status": "transaction_required",
+                        "tool": normalized,
+                        "reason": reason,
+                        "file_unchanged": True,
+                        "path": str(patch.get("path", "")),
+                        "current_snapshot_sha256": recorded_hash,
+                    }
+                seen_targets.add(target_key)
         if normalized == "apply_text_patch":
             expected_hash = str(arguments.get("expected_sha256", "")).strip().lower()
             recorded_hash = self.transaction_snapshot_hashes.get(str(target)) if target is not None else None
@@ -9029,7 +9183,12 @@ class _ToolPermissionBroker:
                     "status": "transaction_required",
                     "tool": normalized,
                     "reason": reason,
-                    "instruction": "Read the file with read_file_snapshot and retry once with the exact returned SHA-256.",
+                    "file_unchanged": True,
+                    "current_snapshot_sha256": recorded_hash,
+                    "instruction": (
+                        "The rejected call made no file change. Retry once with current_snapshot_sha256 "
+                        "as expected_sha256."
+                    ),
                 }
 
         outside_paths = self._outside_workspace_paths(arguments)
@@ -9207,7 +9366,131 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         }
 
     @server.tool(
-        description="Run one validated existing workspace entrypoint directly without a shell.",
+        description=(
+            "Atomically apply exact-text replacements to 2-16 previously snapshotted workspace files. "
+            "Every patch is validated before any file is changed, and originals are restored if application fails."
+        ),
+        annotations=annotations("apply_text_patches"),
+        structured_output=True,
+    )
+    def apply_text_patches(patches: list[_FileTextPatch]) -> dict[str, Any]:
+        if not 2 <= len(patches) <= 16:
+            raise ValueError("Provide 2-16 file patches.")
+        prepared: list[dict[str, Any]] = []
+        seen: set[Path] = set()
+        for patch_index, patch in enumerate(patches, start=1):
+            if set(patch) != {"path", "expected_sha256", "replacements"}:
+                raise ValueError(f"Patch {patch_index} must contain only path, expected_sha256, and replacements.")
+            target = base.resolve_workspace_path(
+                workspace,
+                str(patch["path"]),
+                allow_missing=False,
+                allow_external=_full_access_enabled(),
+            )
+            if target in seen:
+                raise ValueError(f"Patch {patch_index} repeats target {patch['path']}.")
+            seen.add(target)
+            if not target.is_file():
+                raise ValueError(f"Not a file: {patch['path']}")
+            expected_hash = str(patch["expected_sha256"])
+            if not re.fullmatch(r"[a-fA-F0-9]{64}", expected_hash):
+                raise ValueError(f"Patch {patch_index} expected_sha256 must contain exactly 64 hexadecimal characters.")
+            replacements = patch["replacements"]
+            if not 1 <= len(replacements) <= TRANSACTIONAL_PATCH_MAX_REPLACEMENTS:
+                raise ValueError(
+                    f"Patch {patch_index} must provide 1-{TRANSACTIONAL_PATCH_MAX_REPLACEMENTS} replacements."
+                )
+            original_bytes = target.read_bytes()
+            if len(original_bytes) > TRANSACTIONAL_PATCH_MAX_BYTES:
+                raise ValueError(
+                    f"File exceeds the {TRANSACTIONAL_PATCH_MAX_BYTES}-byte transactional edit limit: {patch['path']}"
+                )
+            original_hash = hashlib.sha256(original_bytes).hexdigest()
+            if original_hash.lower() != expected_hash.lower():
+                raise ValueError(
+                    f"Stale file snapshot for {patch['path']}: expected {expected_hash}, found {original_hash}."
+                )
+            original = original_bytes.decode("utf-8")
+            updated = original
+            for replacement_index, replacement in enumerate(replacements, start=1):
+                if set(replacement) != {"old_text", "new_text"}:
+                    raise ValueError(
+                        f"Patch {patch_index} replacement {replacement_index} must contain only old_text and new_text."
+                    )
+                old_text = str(replacement["old_text"])
+                new_text = str(replacement["new_text"])
+                if not old_text:
+                    raise ValueError(f"Patch {patch_index} replacement {replacement_index} old_text cannot be empty.")
+                occurrences = updated.count(old_text)
+                if occurrences != 1:
+                    raise ValueError(
+                        f"Patch {patch_index} replacement {replacement_index} expected one exact match, "
+                        f"found {occurrences}."
+                    )
+                updated = updated.replace(old_text, new_text, 1)
+            updated_bytes = updated.encode("utf-8")
+            diff = "".join(
+                difflib.unified_diff(
+                    original.splitlines(keepends=True),
+                    updated.splitlines(keepends=True),
+                    fromfile=f"a/{base.relative_path(target, workspace)}",
+                    tofile=f"b/{base.relative_path(target, workspace)}",
+                )
+            )
+            prepared.append(
+                {
+                    "target": target,
+                    "original_bytes": original_bytes,
+                    "mode": target.stat().st_mode,
+                    "updated_bytes": updated_bytes,
+                    "result": {
+                        "path": base.relative_path(target, workspace),
+                        "old_sha256": original_hash,
+                        "new_sha256": hashlib.sha256(updated_bytes).hexdigest(),
+                        "replacement_count": len(replacements),
+                        "bytes_written": len(updated_bytes),
+                        "diff": _shorten(diff, LOCAL_ONLY_MAX_DIFF_CHARS),
+                    },
+                }
+            )
+        applied: list[dict[str, Any]] = []
+        try:
+            for index, item in enumerate(prepared, start=1):
+                target = item["target"]
+                temporary = target.with_name(
+                    f".{target.name}.qubitz-multi-{os.getpid()}-{threading.get_ident()}-{index}.tmp"
+                )
+                try:
+                    temporary.write_bytes(item["updated_bytes"])
+                    with suppress(OSError):
+                        temporary.chmod(item["mode"])
+                    os.replace(temporary, target)
+                finally:
+                    with suppress(FileNotFoundError):
+                        temporary.unlink()
+                applied.append(item)
+        except Exception:
+            for index, item in enumerate(reversed(applied), start=1):
+                target = item["target"]
+                temporary = target.with_name(
+                    f".{target.name}.qubitz-multi-rollback-{os.getpid()}-{threading.get_ident()}-{index}.tmp"
+                )
+                try:
+                    temporary.write_bytes(item["original_bytes"])
+                    with suppress(OSError):
+                        temporary.chmod(item["mode"])
+                    os.replace(temporary, target)
+                finally:
+                    with suppress(FileNotFoundError):
+                        temporary.unlink()
+            raise
+        return {"file_count": len(prepared), "files": [item["result"] for item in prepared]}
+
+    @server.tool(
+        description=(
+            "Run one validated existing workspace entrypoint without a shell. "
+            "Python test files are executed through pytest so test functions actually run."
+        ),
         annotations=annotations("run_existing_entrypoint"),
         structured_output=True,
     )
@@ -9217,9 +9500,32 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         cwd: str = ".",
         timeout_seconds: int = 300,
     ) -> dict[str, Any]:
+        requested_path = path.strip()
+        command_path_tokens = re.findall(r"(?:^|\s)[\"']?([^\"'\s]+\.py)[\"']?(?=\s|$)", requested_path)
+        if command_path_tokens:
+            requested_path = command_path_tokens[-1]
+        try:
+            base.resolve_workspace_path(
+                workspace,
+                requested_path,
+                allow_missing=False,
+                allow_external=_full_access_enabled(),
+            )
+        except Exception:
+            basename = Path(requested_path.replace("\\", "/")).name
+            matches = [
+                item
+                for item in workspace.rglob(basename)
+                if item.is_file() and not any(part in {".git", ".venv", "__pycache__"} for part in item.parts)
+            ]
+            if requested_path.lower() in {"pytest", "python -m pytest", "python3 -m pytest"}:
+                matches = sorted({*workspace.rglob("test_*.py"), *workspace.rglob("*_test.py")})
+            if len(matches) != 1:
+                raise
+            requested_path = str(matches[0])
         target = base.resolve_workspace_path(
             workspace,
-            path,
+            requested_path,
             allow_missing=False,
             allow_external=_full_access_enabled(),
         )
@@ -9230,9 +9536,10 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             allow_external=_full_access_enabled(),
         )
         if not target.is_file():
-            raise ValueError(f"Not a file: {path}")
+            raise ValueError(f"Not a file: {requested_path}")
         args = [str(item) for item in (arguments or [])]
         suffix = target.suffix.lower()
+        test_runner = ""
         if suffix == ".py":
             python_path = _preferred_project_python(workspace)
             if python_path is None:
@@ -9240,7 +9547,18 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             script_path = str(target)
             if base.in_wsl() and python_path.suffix.lower() == ".exe":
                 script_path = base.wsl_path_to_windows_path(target)
-            command = [str(python_path), script_path, *args]
+            is_python_test = (
+                target.name.startswith("test_")
+                or target.name.endswith("_test.py")
+                or target.parent.name.lower() in {"test", "tests"}
+            )
+            if is_python_test:
+                test_runner = "pytest"
+            command = (
+                [str(python_path), "-m", "pytest", script_path, *args]
+                if is_python_test
+                else [str(python_path), script_path, *args]
+            )
         elif suffix == ".sh":
             bash = shutil.which("bash")
             if bash is None:
@@ -9273,6 +9591,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             "path": base.relative_path(target, workspace),
             "cwd": base.relative_path(target_cwd, workspace),
             "command": command,
+            "test_runner": test_runner,
             "returncode": completed.returncode,
             "stdout": _shorten(_decode_subprocess_output(completed.stdout), 12000),
             "stderr": _shorten(_decode_subprocess_output(completed.stderr), 12000),
@@ -9685,7 +10004,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 getattr(self, "runtime_workspace", self.workspace),
             )
             self._tool_permission_broker.stop_callback = self.request_cancel
-            self.set_access_mode(getattr(config, "access_mode", DEFAULT_ACCESS_MODE))
+            initial_access_mode = getattr(
+                config,
+                "access_mode",
+                os.environ.get(ACCESS_MODE_ENV_NAME, DEFAULT_ACCESS_MODE),
+            )
+            self.set_access_mode(initial_access_mode)
 
         def set_access_mode(self, value: Any) -> None:
             self.access_mode = _normalize_access_mode(value)
@@ -9756,12 +10080,34 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
         def _filter_tools_by_intent(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
             lowered = prompt.lower()
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            capabilities = self._runtime_capabilities()
+            if capabilities.get("in_wsl") and not capabilities.get("workspace_is_windows_backed"):
+                tools = [
+                    tool
+                    for tool in tools
+                    if self._tool_name(tool)
+                    not in {"run_cmd_command", "run_powershell_command", "sandbox_run_powershell"}
+                ]
+            explicit_tool_selection = False
+            only_clause = re.search(
+                r"\buse\s+([a-z][a-z0-9_]*(?:\s*(?:,|and)\s*[a-z][a-z0-9_]*)*)\s+only\b",
+                lowered,
+            )
+            if only_clause is not None:
+                requested_tool_names = set(re.findall(r"[a-z][a-z0-9_]*", only_clause.group(1)))
+                available_tool_names = {self._tool_name(tool) for tool in tools}
+                requested_tool_names.intersection_update(available_tool_names)
+                if requested_tool_names:
+                    tools = [tool for tool in tools if self._tool_name(tool) in requested_tool_names]
+                    explicit_tool_selection = True
             if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN}:
                 return [
                     tool
                     for tool in tools
                     if self._tool_name(tool) in _ToolPermissionBroker._RESTRICTED_MODE_TOOLS
                 ]
+            if explicit_tool_selection:
+                return list(tools)
             focused_postconditions = set(getattr(self, "_focused_missing_postconditions", frozenset()))
             if not focused_postconditions:
                 focused_postconditions = self._tool_permission_broker.update_focused_postconditions(
@@ -9773,9 +10119,20 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 focused_tool_map = {
                     "opened_urls": {"open_urls_in_browser", "fetch_url"},
                     "result_count": {"fetch_url", "run_existing_entrypoint"},
-                    "created_outputs": {"apply_text_patch", "copy_path", "run_existing_entrypoint", "write_file"},
-                    "changed_files": {"apply_text_patch", "read_file_snapshot", "run_existing_entrypoint"},
-                    "tests": {"run_existing_entrypoint", "run_command", "run_project_command", "run_powershell_command"},
+                    "created_outputs": {
+                        "apply_text_patch",
+                        "apply_text_patches",
+                        "copy_path",
+                        "run_existing_entrypoint",
+                        "write_file",
+                    },
+                    "changed_files": {
+                        "apply_text_patch",
+                        "apply_text_patches",
+                        "read_file_snapshot",
+                        "run_existing_entrypoint",
+                    },
+                    "tests": {"run_existing_entrypoint"},
                     "service_started": {"run_existing_entrypoint", "start_project_mcp_server"},
                     "service_stopped": {"cancel_background_job", "stop_project_mcp_server"},
                     "mcp_ready": {"list_project_mcp_tools", "start_project_mcp_server"},
@@ -9783,6 +10140,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 }
                 for postcondition in focused_postconditions:
                     focused_names.update(focused_tool_map.get(postcondition, set()))
+                if focused_postconditions == {"tests"}:
+                    focused_names.update({"run_command", "run_project_command", "run_powershell_command"})
                 focused_tools = [tool for tool in tools if self._tool_name(tool) in focused_names]
                 if focused_tools:
                     return focused_tools
@@ -9879,6 +10238,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 category_boosts["read"] = 70
 
             preferred_order = {
+                "apply_text_patches": 101,
                 "read_file_snapshot": 100,
                 "apply_text_patch": 99,
                 "run_existing_entrypoint": 98,
@@ -9901,6 +10261,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 if tool_category not in allowed_categories:
                     continue
                 if tool_category == "edit" and not edit_intent:
+                    continue
+                if edit_intent and name in {
+                    "run_command",
+                    "run_project_command",
+                    "run_powershell_command",
+                    "run_cmd_command",
+                }:
                     continue
                 if name in {"delete_path", "sandbox_delete_path", "sandbox_destroy"} and not destructive_intent:
                     continue
@@ -9928,6 +10295,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             elif edit_intent:
                 pinned_names = [
                     "read_file_snapshot",
+                    "apply_text_patches",
                     "search_text",
                     "apply_text_patch",
                     "list_files",
@@ -9994,14 +10362,28 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._tool_permission_broker.begin_turn(prompt, callback)
             previous = getattr(_TOOL_CALL_CONTEXT, "broker", None)
             _TOOL_CALL_CONTEXT.broker = self._tool_permission_broker
+
+            def rollback_interrupted_transaction(reason: str) -> dict[str, list[str]]:
+                if not self._tool_permission_broker.transaction_changed_hashes:
+                    return {"restored": [], "skipped": []}
+                rollback = self._tool_permission_broker.rollback_transaction()
+                if rollback["restored"] and callback is not None:
+                    callback(
+                        "status",
+                        f"Transactional rollback restored {len(rollback['restored'])} file(s) after {reason}.",
+                    )
+                return rollback
+
             try:
                 try:
                     answer = await super()._run_async(prompt, callback)
-                except Exception:
+                except (Exception, asyncio.CancelledError):
+                    rollback_interrupted_transaction("an interrupted request")
                     if self._cancel_partial_answer:
                         return self._cancel_partial_answer
                     raise
                 if self._cancel_partial_answer:
+                    rollback_interrupted_transaction("request cancellation")
                     return self._cancel_partial_answer
                 required, missing = self._tool_permission_broker.completion_report(prompt)
                 rollback = {"restored": [], "skipped": []}
@@ -10074,7 +10456,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 f"{prompt}\n\n"
                 "Runtime tool contract:\n"
                 "- The visible tools are a bounded task-relevant subset; use search_tools only when a required capability is missing.\n"
-                "- Existing UTF-8 files within the transaction limit must use read_file_snapshot then apply_text_patch; direct overwrite tools are rejected.\n"
+                "- Existing UTF-8 files within the transaction limit must use read_file_snapshot then apply_text_patch; use apply_text_patches after snapshotting every target in a multi-file edit. Direct overwrite tools are rejected.\n"
                 "- Required tests or checks must pass after edits. If final verification is incomplete, transactional edits are rolled back when the file has not changed concurrently.\n"
                 "- For MCP work: establish readiness, list tools, invoke the intended tool when requested, verify its result, and stop managed servers started for the task.\n"
                 "- Execute state-changing tools sequentially. Approval-required results mean the action did not run; ask for the exact approval id.\n"
@@ -10090,7 +10472,11 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
     class HardenedGUI(original_gui):
         def __init__(self, config: Any) -> None:
             if not hasattr(config, "access_mode"):
-                setattr(config, "access_mode", DEFAULT_ACCESS_MODE)
+                setattr(
+                    config,
+                    "access_mode",
+                    os.environ.get(ACCESS_MODE_ENV_NAME, DEFAULT_ACCESS_MODE),
+                )
             super().__init__(config)
             self.access_mode_var = self.tk.StringVar(
                 master=self.root,
