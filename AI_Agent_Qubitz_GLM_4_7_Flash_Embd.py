@@ -3801,6 +3801,12 @@ def _should_use_windows_shell(base: Any, workspace: Path, command: str) -> bool:
     if not stripped:
         return False
     lower = stripped.lower()
+    first_token = stripped.split(maxsplit=1)[0].strip("'\"")
+    first_token_posix = first_token.replace("\\", "/")
+    if re.match(r"^\./[^;&|]*?/bin/python(?:3(?:\.\d+)?)?$", first_token_posix, flags=re.IGNORECASE):
+        candidate = (workspace / first_token_posix).resolve()
+        if candidate.is_file() and candidate.suffix.lower() != ".exe":
+            return False
     if lower.startswith(("powershell ", "powershell.exe ", "pwsh ", "pwsh.exe ")):
         return True
     if any(token in lower for token in (".ps1", ".bat", ".cmd")):
@@ -3810,7 +3816,6 @@ def _should_use_windows_shell(base: Any, workspace: Path, command: str) -> bool:
     pattern = getattr(base, "WINDOWS_DRIVE_PATH_PATTERN", None)
     if pattern is not None and pattern.match(stripped):
         return True
-    first_token = stripped.split(maxsplit=1)[0]
     if "\\" in first_token and first_token.lower().endswith((".exe", ".cmd", ".bat")):
         return True
     return False
@@ -8392,6 +8397,7 @@ class _ToolPermissionBroker:
         self.approval_context_prompt = ""
         self.required_postconditions: set[str] = set()
         self.focused_missing_postconditions: set[str] = set()
+        self.transaction_recovery_required = False
         self.turn_id = ""
         self.provenance_urls: set[str] = set()
         self.invalid_call_counts: dict[str, int] = {}
@@ -8420,6 +8426,7 @@ class _ToolPermissionBroker:
         self.approval_context_prompt = ""
         self.required_postconditions = self._completion_requirements(prompt)
         self.focused_missing_postconditions.clear()
+        self.transaction_recovery_required = False
         self.provenance_urls = {url.casefold() for url in _extract_external_urls(prompt)}
         self.invalid_call_counts.clear()
         self.invalid_stop_requested = False
@@ -8448,6 +8455,7 @@ class _ToolPermissionBroker:
         self.approval_context_prompt = ""
         self.required_postconditions.clear()
         self.focused_missing_postconditions.clear()
+        self.transaction_recovery_required = False
         self.turn_id = ""
         self.provenance_urls.clear()
         self.invalid_call_counts.clear()
@@ -8646,6 +8654,7 @@ class _ToolPermissionBroker:
                 if success and target is not None:
                     verified_paths.append(str(target))
             if success:
+                self.transaction_recovery_required = False
                 categories.add("changed_files")
                 if normalized in {"copy_path", "write_file", "make_directory"}:
                     categories.add("created_outputs")
@@ -8917,6 +8926,10 @@ class _ToolPermissionBroker:
         self.focused_missing_postconditions = set(missing) if missing and observed.intersection(required) else set()
         return set(self.focused_missing_postconditions)
 
+    def mark_transaction_recovery_required(self) -> None:
+        self.transaction_recovery_required = True
+        self.focused_missing_postconditions.add("changed_files")
+
     def focused_evidence_context(self, prompt: str) -> str:
         missing = self.update_focused_postconditions(prompt)
         if not missing:
@@ -9122,11 +9135,26 @@ class _ToolPermissionBroker:
         return False
 
     @staticmethod
+    def _contains_nested_mutation_command(command: str) -> bool:
+        mutation_words = (
+            r"sed\s*['\"]?\s*,\s*['\"]-i|sed\s+-i|"
+            r"perl\s+-pi|"
+            r"(?:subprocess\.(?:run|call|Popen)|os\.system)\s*\([^)]*"
+            r"(?:sed\s*['\"]?\s*,\s*['\"]-i|sed\s+-i|perl\s+-pi|"
+            r"python(?:3)?\s+-c\s+[^)]*(?:write_text|write_bytes|open\s*\([^)]*['\"](?:a|w|x)[bt+]*['\"]))|"
+            r"(?:Start-Process|&)\s+(?:sed|perl|python|python3)\b[\s\S]{0,400}"
+            r"(?:-i\b|-pi\b|write_text|write_bytes|open\s*\([^)]*['\"](?:a|w|x)[bt+]*['\"])"
+        )
+        return re.search(mutation_words, command, re.IGNORECASE) is not None
+
+    @staticmethod
     def _command_side_effects(command: str) -> set[str]:
         effects: set[str] = set()
         if not command.strip():
             return effects
         if _ToolPermissionBroker._has_shell_file_redirection(command):
+            effects.add("mutate")
+        if _ToolPermissionBroker._contains_nested_mutation_command(command):
             effects.add("mutate")
         if re.search(
             r"\b(?:pip(?:3)?\s+(?:install|uninstall)|uv\s+(?:add|remove|pip\s+(?:install|uninstall))|"
@@ -9313,6 +9341,7 @@ class _ToolPermissionBroker:
                 "Direct file mutation through command tools bypasses transactional edit verification. "
                 "Use read_file_snapshot and apply_text_patch for existing text files, or a dedicated file tool."
             )
+            self.mark_transaction_recovery_required()
             self._audit("transaction_required", normalized, arguments, fingerprint, reason)
             return False, {
                 "status": "transaction_required",
@@ -9360,6 +9389,7 @@ class _ToolPermissionBroker:
                     "Existing UTF-8 files within the transactional size limit must be read with "
                     "read_file_snapshot and changed with apply_text_patch."
                 )
+                self.mark_transaction_recovery_required()
                 self._audit("transaction_required", normalized, arguments, fingerprint, reason)
                 return False, {
                     "status": "transaction_required",
@@ -9388,6 +9418,7 @@ class _ToolPermissionBroker:
                         f"Patch {index} requires a unique successful current-turn read_file_snapshot "
                         "and its exact SHA-256."
                     )
+                    self.mark_transaction_recovery_required()
                     self._audit("transaction_required", normalized, arguments, fingerprint, reason)
                     return False, {
                         "status": "transaction_required",
@@ -9403,6 +9434,7 @@ class _ToolPermissionBroker:
             recorded_hash = self.transaction_snapshot_hashes.get(str(target)) if target is not None else None
             if recorded_hash is None or expected_hash != recorded_hash:
                 reason = "apply_text_patch requires a successful current-turn read_file_snapshot for the same path and SHA-256."
+                self.mark_transaction_recovery_required()
                 self._audit("transaction_required", normalized, arguments, fingerprint, reason)
                 return False, {
                     "status": "transaction_required",
@@ -10351,8 +10383,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     self._tool_permission_broker.current_prompt or prompt
                 )
                 self._focused_missing_postconditions = frozenset(focused_postconditions)
+            transaction_recovery = bool(getattr(self._tool_permission_broker, "transaction_recovery_required", False))
+            if transaction_recovery:
+                focused_postconditions.add("changed_files")
+                self._focused_missing_postconditions = frozenset(focused_postconditions)
             if focused_postconditions:
-                focused_names = {"read_file", "search_text", "list_files", "search_tools"}
+                focused_names = {"read_file", "read_file_snapshot", "search_text", "list_files"}
+                if not transaction_recovery:
+                    focused_names.add("search_tools")
                 focused_tool_map = {
                     "opened_urls": {"open_urls_in_browser", "fetch_url"},
                     "result_count": {"fetch_url", "run_existing_entrypoint"},
@@ -10377,7 +10415,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 }
                 for postcondition in focused_postconditions:
                     focused_names.update(focused_tool_map.get(postcondition, set()))
-                if focused_postconditions == {"tests"}:
+                if transaction_recovery:
+                    focused_names.update({"read_file_snapshot", "apply_text_patch", "apply_text_patches", "read_file", "search_text", "list_files"})
+                    focused_names.difference_update(
+                        {"run_command", "run_project_command", "run_powershell_command", "run_cmd_command", "run_existing_entrypoint"}
+                    )
+                elif focused_postconditions == {"tests"}:
                     focused_names.update({"run_command", "run_project_command", "run_powershell_command"})
                 focused_tools = [tool for tool in tools if self._tool_name(tool) in focused_names]
                 if focused_tools:
