@@ -1,6 +1,6 @@
 # Qubitz
 
-Are you exhausted of testing small local AI agents that ignore instructions, misuse tools, or wander off task?
+Are you exhausted of testing relatively small LLMs with AI agents that often ignore instructions, misuse tools, or wander off task?
 
 Qubitz is a local-first AI agent with a specialized harness that aims to make 7B–35B MCP/tool-capable LLMs more predictable and useful. It keeps routing, workspace handling, retrieval, and tool orchestration under wrapper control, so smaller models are not left to decide everything on their own.
 
@@ -60,15 +60,15 @@ Its strong focus on routing and task execution creates a more seamless interacti
 
 ## Variant scripts
 
-- `AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py` - 12GB VRAM GPU  Qwen 3.5 9B Q8 using embedding model: `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Granite-4_1-8B_Q8_12G.py` - 12GB VRAM GPU  Granite 4.1 8B Q8 also with `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_GLM_4_7_Flash.py` - 24 GB class  GLM 4.7 Flash also using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Devstral-Small-2.py` - 24 GB class  Devstral Small 2 also with `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Gemma-4-31B-It_Qat.py` - 24 GB class  Gemma 4 31B IT QAT using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Qwen3.5_9B_Q8_12G.py` - 12GB VRAM GPU  Qwen 3.5 9B Q8 using embedding model: `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Granite-4.1-8B_Q8_12G.py` - 12GB VRAM GPU  Granite 4.1 8B Q8 also with `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB class  GLM 4.7 Flash Q4 also using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB class  Devstral Small 2 Q4 also with `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py` - 24 GB class  Gemma 4 31B IT QAT Q4 using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB class  GPT-OSS 20B F16 using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Ornith-1.0-35B.py` - 24 GB class  Ornith-1.0-35B MoE using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Qwen3_6-27B_Q4_K_XL.py` - 24 GB class  Qwen 3.6 27B Dense with `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Qwen3_6-35B-A3B_MTP_Q4_K_M.py` - 24 GB class  Qwen 3.6 35B A3B MoE MTP with `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Ornith-1.0-35B-Q4.py` - 24 GB class  Ornith-1.0-35B MoE Q4 using `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Qwen3.6-27B_Q4.py` - 24 GB class  Qwen 3.6 27B Q4 Dense with `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Qwen3.6-35B-A3B_MTP_Q4.py` - 24 GB class  Qwen 3.6 35B A3B MoE MTP Q4 with `BAAI/bge-code-v1`
 
 ## Runtime behavior
 
@@ -109,14 +109,14 @@ wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash.py
 CLI examples:
 
 ```powershell
-wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli
-wsl .venv/bin/python AI_Agent_Qubitz_Qwen3_5_9B_Q8_12G.py --cli --prompt "What does this project do?"
+wsl .venv/bin/python AI_Agent_Qubitz_Qwen3.5_9B_Q8_12G.py --cli
+wsl .venv/bin/python AI_Agent_Qubitz_Qwen3.5_9B_Q8_12G.py --cli --prompt "What does this project do?"
 ```
 
 MCP server example:
 
 ```powershell
-wsl .venv/bin/python AI_Agent_Qubitz_GLM_4_7_Flash.py --serve-mcp
+wsl .venv/bin/python AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py --serve-mcp
 ```
 
 If you already have a compatible `llama.cpp` server or GGUF path, point a variant at it with `--server-url`, `--llama-server`, and `--model-path`.
