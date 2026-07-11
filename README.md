@@ -67,8 +67,8 @@ Its strong focus on routing and task execution creates a more seamless interacti
 - `AI_Agent_Qubitz_Gemma-4-31B-It_Qat.py` - 24 GB class  Gemma 4 31B IT QAT using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB class  GPT-OSS 20B F16 using `BAAI/bge-code-v1`
 - `AI_Agent_Qubitz_Ornith-1.0-35B.py` - 24 GB class  Ornith-1.0-35B MoE using `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Qwen3_6-27B_UD_Q4_K_XL.py` - 24 GB class  Qwen 3.6 27B Dense with `BAAI/bge-code-v1`
-- `AI_Agent_Qubitz_Qwen3_6-35B-A3B_MTP_UD_Q4_K_M.py` - 24 GB class  Qwen 3.6 35B A3B MoE MTP with `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Qwen3_6-27B_Q4_K_XL.py` - 24 GB class  Qwen 3.6 27B Dense with `BAAI/bge-code-v1`
+- `AI_Agent_Qubitz_Qwen3_6-35B-A3B_MTP_Q4_K_M.py` - 24 GB class  Qwen 3.6 35B A3B MoE MTP with `BAAI/bge-code-v1`
 
 ## Runtime behavior
 
