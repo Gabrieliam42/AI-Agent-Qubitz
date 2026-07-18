@@ -26,6 +26,7 @@ import uuid
 import types
 import webbrowser
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence, TypedDict
@@ -5510,6 +5511,482 @@ def _patch_streaming_chat(base: Any) -> None:
     base.set_qubitz_reasoning_mode = _set_reasoning_mode
 
 
+class WorkspaceDiscoveryMemory:
+    """Local evidence-backed project discoveries with lazy cache invalidation."""
+
+    _SCHEMA_VERSION = 1
+    _MAX_RECORDS = 256
+    _MAX_CONTEXT_RECORDS = 6
+    _MAX_CONTEXT_CHARS = 1400
+    _MAX_VALUE_CHARS = 800
+    _HASH_LIMIT_BYTES = 4 * 1024 * 1024
+    _CONFIG_NAMES = (
+        "AGENTS.md",
+        "CMakeLists.txt",
+        "Cargo.toml",
+        "Dockerfile",
+        "Makefile",
+        "compose.yml",
+        "docker-compose.yml",
+        "go.mod",
+        "package.json",
+        "pom.xml",
+        "pyproject.toml",
+        "requirements.txt",
+        "setup.cfg",
+        "setup.py",
+    )
+    _MCP_CONFIG_NAMES = (".mcp.json", "mcp.json", "mcp_servers.json")
+    _PYTHON_CANDIDATES = (
+        ".venv/bin/python",
+        ".venv_linux/bin/python",
+        ".venv_wsl/bin/python",
+        "venv/bin/python",
+        ".venv312/Scripts/python.exe",
+        ".venv313/Scripts/python.exe",
+        ".venv/Scripts/python.exe",
+        ".venv_win/Scripts/python.exe",
+        "venv/Scripts/python.exe",
+    )
+    _STOPWORDS = {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "for",
+        "from",
+        "in",
+        "it",
+        "of",
+        "on",
+        "project",
+        "repo",
+        "repository",
+        "the",
+        "this",
+        "to",
+        "use",
+        "workspace",
+    }
+    _SENSITIVE_VALUE_PATTERN = re.compile(
+        r"\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|authorization)\b\s*[:=]",
+        re.IGNORECASE,
+    )
+
+    def __init__(self, workspace: Path, runtime_workspace: Path) -> None:
+        self.workspace = workspace.resolve()
+        self.runtime_workspace = runtime_workspace.resolve()
+        self.workspace_id = self._canonical_workspace_id(self.workspace)
+        workspace_hash = hashlib.sha256(self.workspace_id.encode("utf-8")).hexdigest()[:24]
+        self.path = self.runtime_workspace / ".cache" / "workspace_discoveries" / f"{workspace_hash}.json"
+        self._records: dict[str, dict[str, Any]] = {}
+        self._loaded = False
+        self._bootstrapped = False
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _canonical_workspace_id(path: Path) -> str:
+        rendered = path.resolve().as_posix()
+        wsl_match = re.match(r"^/mnt/([A-Za-z])/(.*)$", rendered)
+        if wsl_match:
+            return f"{wsl_match.group(1).lower()}:/{wsl_match.group(2)}".casefold()
+        return rendered.casefold() if os.name == "nt" else rendered
+
+    @staticmethod
+    def _timestamp() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    @classmethod
+    def _safe_text(cls, value: Any, limit: int | None = None) -> str:
+        rendered = re.sub(r"\s+", " ", str(value or "")).strip()
+        if cls._SENSITIVE_VALUE_PATTERN.search(rendered):
+            return ""
+        maximum = limit or cls._MAX_VALUE_CHARS
+        return rendered if len(rendered) <= maximum else rendered[: maximum - 3].rstrip() + "..."
+
+    @staticmethod
+    def _is_sensitive_path(path: Path) -> bool:
+        lowered = path.name.casefold()
+        return (
+            lowered == ".env"
+            or lowered.startswith(".env.")
+            or path.suffix.casefold() in {".key", ".p12", ".pem", ".pfx"}
+        )
+
+    def _workspace_path(self, value: Any) -> Path | None:
+        if value is None or not str(value).strip():
+            return None
+        candidate = Path(str(value)).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.workspace / candidate
+        with suppress(OSError, RuntimeError, ValueError):
+            resolved = candidate.resolve()
+            resolved.relative_to(self.workspace)
+            if not self._is_sensitive_path(resolved):
+                return resolved
+        return None
+
+    def _fingerprint(self, path: Path) -> dict[str, Any] | None:
+        with suppress(OSError):
+            stat = path.stat()
+            fingerprint: dict[str, Any] = {
+                "path": path.relative_to(self.workspace).as_posix(),
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+                "is_dir": path.is_dir(),
+            }
+            if path.is_file() and stat.st_size <= self._HASH_LIMIT_BYTES:
+                fingerprint["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            return fingerprint
+        return None
+
+    def _load(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        if not self.path.is_file():
+            return
+        with suppress(OSError, json.JSONDecodeError, TypeError, ValueError):
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if (
+                isinstance(payload, dict)
+                and payload.get("schema_version") == self._SCHEMA_VERSION
+                and payload.get("workspace_id") == self.workspace_id
+                and isinstance(payload.get("records"), dict)
+            ):
+                self._records = {
+                    str(key): value
+                    for key, value in payload["records"].items()
+                    if isinstance(value, dict)
+                }
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": self._SCHEMA_VERSION,
+            "workspace_id": self.workspace_id,
+            "workspace": self.workspace.as_posix(),
+            "updated_at": self._timestamp(),
+            "records": self._records,
+        }
+        temporary = self.path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, self.path)
+
+    def _prune(self) -> None:
+        if len(self._records) <= self._MAX_RECORDS:
+            return
+        ordered = sorted(
+            self._records.items(),
+            key=lambda item: (
+                item[1].get("state") != "stale",
+                str(item[1].get("last_verified", "")),
+            ),
+        )
+        for key, _record in ordered[: len(self._records) - self._MAX_RECORDS]:
+            self._records.pop(key, None)
+
+    def _upsert(
+        self,
+        kind: str,
+        key: str,
+        value: Any,
+        *,
+        evidence_path: Any = None,
+        state: str = "verified",
+        source: str = "wrapper",
+        tags: Sequence[str] = (),
+        save: bool = True,
+    ) -> bool:
+        rendered_key = self._safe_text(key, 240)
+        rendered_value = self._safe_text(value)
+        if not rendered_key or not rendered_value:
+            return False
+        path = self._workspace_path(evidence_path)
+        fingerprint = self._fingerprint(path) if path is not None else None
+        record_id = hashlib.sha256(f"{kind}\0{rendered_key}".encode("utf-8")).hexdigest()[:32]
+        previous = self._records.get(record_id, {})
+        now = self._timestamp()
+        rendered_tags = sorted(
+            {
+                *[str(tag) for tag in previous.get("tags", [])],
+                *[self._safe_text(tag, 80) for tag in tags if self._safe_text(tag, 80)],
+            }
+        )
+        last_verified = now
+        if state == "configured" and previous.get("evidence") == fingerprint:
+            last_verified = str(previous.get("last_verified", now))
+            if previous.get("state") == "verified":
+                state = "verified"
+                source = str(previous.get("source", source))
+                rendered_value = str(previous.get("value", rendered_value))
+        record = {
+            "kind": kind,
+            "key": rendered_key,
+            "value": rendered_value,
+            "state": state,
+            "source": source,
+            "tags": rendered_tags,
+            "evidence": fingerprint,
+            "first_seen": previous.get("first_seen", now),
+            "last_verified": last_verified,
+        }
+        if record == previous:
+            return False
+        self._records[record_id] = record
+        self._prune()
+        if save:
+            self._save()
+        return True
+
+    def _refresh(self) -> None:
+        changed = False
+        current_states: dict[str, tuple[int, int, bool] | None] = {}
+        for record in self._records.values():
+            evidence = record.get("evidence")
+            if not isinstance(evidence, dict) or record.get("state") == "stale":
+                continue
+            evidence_path = str(evidence.get("path", ""))
+            if evidence_path not in current_states:
+                path = self._workspace_path(evidence_path)
+                current_state: tuple[int, int, bool] | None = None
+                if path is not None:
+                    with suppress(OSError):
+                        stat = path.stat()
+                        current_state = (stat.st_mtime_ns, stat.st_size, path.is_dir())
+                current_states[evidence_path] = current_state
+            expected_state = (
+                int(evidence.get("mtime_ns", -1)),
+                int(evidence.get("size", -1)),
+                bool(evidence.get("is_dir", False)),
+            )
+            if current_states[evidence_path] != expected_state:
+                record["state"] = "stale"
+                record["stale_at"] = self._timestamp()
+                changed = True
+        if changed:
+            self._save()
+
+    def _bootstrap(self) -> None:
+        if self._bootstrapped:
+            return
+        self._bootstrapped = True
+        changed = False
+        for name in self._CONFIG_NAMES:
+            path = self.workspace / name
+            if path.is_file():
+                changed |= self._upsert(
+                    "project_config",
+                    name.casefold(),
+                    f"Configured project file: {name}",
+                    evidence_path=path,
+                    state="configured",
+                    source="workspace_scan",
+                    tags=(name, "configuration"),
+                    save=False,
+                )
+        for name in self._MCP_CONFIG_NAMES:
+            path = self.workspace / name
+            if path.is_file():
+                changed |= self._upsert(
+                    "mcp_config",
+                    name.casefold(),
+                    f"Configured MCP file: {name}",
+                    evidence_path=path,
+                    state="configured",
+                    source="workspace_scan",
+                    tags=("mcp", "tools", name),
+                    save=False,
+                )
+        for name in PROJECT_LAUNCH_ROOT_FILENAMES:
+            path = self.workspace / name
+            if path.is_file():
+                changed |= self._upsert(
+                    "entrypoint",
+                    name.casefold(),
+                    f"Existing root entrypoint: {name}",
+                    evidence_path=path,
+                    state="configured",
+                    source="workspace_scan",
+                    tags=("run", "launch", "execute", name),
+                    save=False,
+                )
+        for relative in self._PYTHON_CANDIDATES:
+            path = self.workspace / relative
+            if path.is_file():
+                changed |= self._upsert(
+                    "python_environment",
+                    relative.casefold(),
+                    f"Workspace Python interpreter: {relative}",
+                    evidence_path=path,
+                    state="configured",
+                    source="workspace_scan",
+                    tags=("python", "venv", "environment"),
+                    save=False,
+                )
+        package_path = self.workspace / "package.json"
+        if package_path.is_file():
+            with suppress(OSError, json.JSONDecodeError, TypeError):
+                package_data = json.loads(package_path.read_text(encoding="utf-8"))
+                scripts = package_data.get("scripts", {}) if isinstance(package_data, dict) else {}
+                if isinstance(scripts, dict):
+                    runner = "pnpm" if (self.workspace / "pnpm-lock.yaml").is_file() else "npm"
+                    for script_name in list(scripts)[:12]:
+                        command = f"{runner} run {script_name}"
+                        changed |= self._upsert(
+                            "configured_command",
+                            command.casefold(),
+                            command,
+                            evidence_path=package_path,
+                            state="configured",
+                            source="package.json",
+                            tags=("node", "script", str(script_name)),
+                            save=False,
+                        )
+        if changed:
+            self._save()
+
+    @classmethod
+    def _tokens(cls, text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-z0-9_.:+/-]{2,}", text.casefold())
+            if token not in cls._STOPWORDS
+        }
+
+    def context_for(self, prompt: str) -> str:
+        with self._lock:
+            self._load()
+            self._bootstrap()
+            self._refresh()
+            prompt_tokens = self._tokens(prompt)
+            generic_project_task = bool(re.search(r"\b(?:run|execute|start|launch|use|test|build|fix|edit)\b", prompt, re.IGNORECASE))
+            base_scores = {
+                "test_command": 13,
+                "entrypoint": 11,
+                "python_environment": 10,
+                "mcp_server": 10,
+                "mcp_config": 9,
+                "successful_command": 8,
+                "configured_command": 7,
+                "important_file": 6,
+                "project_config": 5,
+            }
+            ranked: list[tuple[int, str, dict[str, Any]]] = []
+            for record_id, record in self._records.items():
+                if record.get("state") == "stale":
+                    continue
+                haystack = " ".join(
+                    [
+                        str(record.get("kind", "")),
+                        str(record.get("key", "")),
+                        str(record.get("value", "")),
+                        " ".join(str(tag) for tag in record.get("tags", [])),
+                    ]
+                )
+                overlap = len(prompt_tokens.intersection(self._tokens(haystack)))
+                score = base_scores.get(str(record.get("kind", "")), 3) + overlap * 9
+                if generic_project_task and record.get("kind") in {"entrypoint", "python_environment", "configured_command"}:
+                    score += 4
+                if "mcp" in prompt_tokens and str(record.get("kind", "")).startswith("mcp"):
+                    score += 12
+                if re.search(r"\b(?:test|pytest|lint|ruff|check)\b", prompt, re.IGNORECASE) and record.get("kind") == "test_command":
+                    score += 14
+                if score >= 9:
+                    ranked.append((score, record_id, record))
+            ranked.sort(key=lambda item: (-item[0], str(item[2].get("value", ""))))
+            lines = [
+                "Wrapper cache-validated workspace discoveries:",
+                "Use these as task hints. Re-verify commands or outcomes when the current task requires proof.",
+            ]
+            for _score, _record_id, record in ranked[: self._MAX_CONTEXT_RECORDS]:
+                state = str(record.get("state", "verified"))
+                evidence = record.get("evidence")
+                evidence_text = f"; evidence={evidence.get('path')}" if isinstance(evidence, dict) else ""
+                line = f"- [{state}/{record.get('kind')}] {record.get('value')}{evidence_text}"
+                if len("\n".join([*lines, line])) > self._MAX_CONTEXT_CHARS:
+                    break
+                lines.append(line)
+            if len(lines) == 2:
+                return ""
+            return "\n".join(lines)
+
+    def record_entrypoint(self, entrypoint: dict[str, Any], command: str, *, source: str) -> None:
+        with self._lock:
+            self._load()
+            label = self._safe_text(entrypoint.get("label") or entrypoint.get("path") or command, 240)
+            if not label:
+                return
+            evidence_path = entrypoint.get("path")
+            value = f"Previously successful entrypoint {label}: {command}"
+            self._upsert(
+                "entrypoint",
+                label.casefold(),
+                value,
+                evidence_path=evidence_path,
+                state="verified",
+                source=source,
+                tags=("run", "launch", "execute", label),
+            )
+
+    def observe_tool_evidence(self, prompt: str, evidence_items: Sequence[dict[str, Any]]) -> None:
+        with self._lock:
+            self._load()
+            changed = False
+            prompt_tokens = self._tokens(prompt)
+            for evidence in evidence_items:
+                if not isinstance(evidence, dict) or not evidence.get("success"):
+                    continue
+                tool = self._safe_text(evidence.get("tool"), 120)
+                categories = {str(item) for item in evidence.get("categories", [])}
+                command = self._safe_text(evidence.get("command"))
+                evidence_path = evidence.get("evidence_path")
+                if command:
+                    kind = "test_command" if "tests" in categories else "successful_command"
+                    changed |= self._upsert(
+                        kind,
+                        command.casefold(),
+                        f"Previously successful command: {command}",
+                        evidence_path=evidence_path,
+                        state="verified",
+                        source=tool or "tool",
+                        tags=tuple(sorted(prompt_tokens))[:12],
+                        save=False,
+                    )
+                for raw_path in evidence.get("paths", []):
+                    path = self._workspace_path(raw_path)
+                    if path is None:
+                        continue
+                    relative = path.relative_to(self.workspace).as_posix()
+                    changed |= self._upsert(
+                        "important_file",
+                        relative.casefold(),
+                        f"Task-relevant workspace path: {relative}",
+                        evidence_path=path,
+                        state="verified",
+                        source=tool or "tool",
+                        tags=tuple(sorted(prompt_tokens))[:12],
+                        save=False,
+                    )
+                if tool in {"start_project_mcp_server", "list_project_mcp_tools", "call_project_mcp_tool"}:
+                    mcp_target = self._safe_text(evidence.get("mcp_target") or evidence_path or tool, 300)
+                    if mcp_target:
+                        changed |= self._upsert(
+                            "mcp_server",
+                            mcp_target.casefold(),
+                            f"Previously verified MCP path: {mcp_target}",
+                            evidence_path=evidence_path,
+                            state="verified",
+                            source=tool,
+                            tags=("mcp", "tools", "server"),
+                            save=False,
+                        )
+            if changed:
+                self._prune()
+                self._save()
+
+
 class LocalOnlyApp:
     def __init__(self, base_module_name: str, wrapper_script: str, display_name: str) -> None:
         self.base = _load_embedded_base_module()
@@ -6160,6 +6637,8 @@ class LocalOnlyApp:
                     lines.append(f"Initial output:\n```text\n{log_excerpt}\n```")
                 if job_status == "running":
                     lines.append("Use `/jobs` to inspect managed background jobs or `/cancel-job <job_id>` to stop this launch.")
+                if job_status in {"ready", "running", "started"}:
+                    self.discovery_memory.record_entrypoint(plan, display_command, source="project_launch")
                 self._emit(
                     callback,
                     "status",
@@ -6376,7 +6855,7 @@ class LocalOnlyApp:
                 urls_complete = not requires_url or len(completed_urls) >= target_count
                 fields_complete = not requested_fields or _rows_have_required_fields(completed_rows, requested_fields)
                 if not (rows_complete and urls_complete and fields_complete):
-                    broker = getattr(_TOOL_CALL_CONTEXT, "broker", None)
+                    broker = _TOOL_CALL_CONTEXT.get()
                     if broker is not None and hasattr(broker, "evidence"):
                         broker.provenance_urls.update(
                             url.casefold() for url in output_urls if _is_external_http_url(url)
@@ -6448,7 +6927,7 @@ class LocalOnlyApp:
                         DIRECT_SCRIPT_COMPLETION_TIMEOUT_SECONDS,
                     )
                     browser_open_ran = int(browser_result.get("return_code", browser_result.get("returncode", 0))) == 0
-                broker = getattr(_TOOL_CALL_CONTEXT, "broker", None)
+                broker = _TOOL_CALL_CONTEXT.get()
                 if broker is not None and hasattr(broker, "evidence"):
                     categories = ["result_count"]
                     count_requirement = _requested_count_postcondition(prompt)
@@ -6458,6 +6937,7 @@ class LocalOnlyApp:
                         categories.append("opened_urls")
                     broker.evidence.append(
                         {
+                            "turn_id": broker.turn_id,
                             "tool": "wrapper_direct_existing_entrypoint",
                             "success": True,
                             "categories": categories,
@@ -8015,7 +8495,7 @@ TOOL_SEARCH_RESULT_MAX = 8
 TRANSACTIONAL_PATCH_MAX_BYTES = 16 * 1024 * 1024
 TRANSACTIONAL_PATCH_MAX_REPLACEMENTS = 64
 TOOL_AUDIT_FILE_NAME = "tool_audit.jsonl"
-_TOOL_CALL_CONTEXT = threading.local()
+_TOOL_CALL_CONTEXT: ContextVar[Any | None] = ContextVar("qubitz_tool_call_broker", default=None)
 _TOOL_AUDIT_LOCK = threading.Lock()
 
 
@@ -8306,7 +8786,6 @@ class _TextReplacement(TypedDict):
 
 class _FileTextPatch(TypedDict):
     path: str
-    expected_sha256: str
     replacements: list[_TextReplacement]
 
 
@@ -8448,6 +8927,11 @@ class _ToolPermissionBroker:
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_snapshot_hashes: dict[str, str] = {}
         self.transaction_changed_hashes: dict[str, str] = {}
+        self.transaction_explicit_file_targets: set[str] = set()
+        self.transaction_recovery_callback: Callable[[], None] | None = None
+        self.transaction_recovery_interrupt_requested = False
+        self.transaction_nonprogress_calls = 0
+        self.transaction_progress_token = ""
         self.access_mode = DEFAULT_ACCESS_MODE
 
     def set_access_mode(self, value: Any) -> None:
@@ -8475,6 +8959,20 @@ class _ToolPermissionBroker:
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
+        self.transaction_explicit_file_targets.clear()
+        for candidate in self.base.extract_file_tokens(prompt):
+            with suppress(Exception):
+                target = self.base.resolve_workspace_path(
+                    self.workspace,
+                    candidate,
+                    allow_missing=False,
+                    allow_external=False,
+                ).resolve()
+                if target.is_file():
+                    self.transaction_explicit_file_targets.add(str(target))
+        self.transaction_recovery_interrupt_requested = False
+        self.transaction_nonprogress_calls = 0
+        self.transaction_progress_token = ""
         approval_match = re.search(r"\b(?:approve|approved|allow|proceed|confirm)(?:\s+(?:action\s+)?)?([a-f0-9]{8,64})?\b", prompt.lower())
         if approval_match is None:
             return
@@ -8505,6 +9003,10 @@ class _ToolPermissionBroker:
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
+        self.transaction_explicit_file_targets.clear()
+        self.transaction_recovery_interrupt_requested = False
+        self.transaction_nonprogress_calls = 0
+        self.transaction_progress_token = ""
 
     def _emit(self, message: str) -> None:
         if self.callback is not None:
@@ -8571,6 +9073,63 @@ class _ToolPermissionBroker:
                 self.stop_callback()
         return count
 
+    def _transaction_progress_token(self) -> str:
+        verified_categories = sorted(
+            {
+                category
+                for evidence in self._current_turn_evidence()
+                if evidence.get("success")
+                for category in evidence.get("categories", [])
+            }
+        )
+        payload = {
+            "snapshots": sorted(self.transaction_snapshot_hashes.items()),
+            "changes": sorted(self.transaction_changed_hashes.items()),
+            "verified_categories": verified_categories,
+        }
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _track_transaction_recovery_progress(self) -> None:
+        if not self.transaction_recovery_required:
+            self.transaction_nonprogress_calls = 0
+            self.transaction_progress_token = self._transaction_progress_token()
+            return
+        current_token = self._transaction_progress_token()
+        if current_token != self.transaction_progress_token:
+            self.transaction_progress_token = current_token
+            self.transaction_nonprogress_calls = 0
+            return
+        self.transaction_nonprogress_calls += 1
+        if (
+            self.transaction_nonprogress_calls >= 4
+            and not self.transaction_recovery_interrupt_requested
+            and self.transaction_recovery_callback is not None
+        ):
+            self.transaction_recovery_interrupt_requested = True
+            self._emit(
+                "Transactional edit made no verified progress across four tool results; "
+                "switching to a focused snapshot-and-patch continuation."
+            )
+            self.transaction_recovery_callback()
+
+    def transaction_recovery_context(self) -> str:
+        if self.transaction_changed_hashes:
+            return (
+                "Wrapper-owned transactional verification continuation:\n"
+                "The atomic edit is already committed. Do not edit or create files. "
+                "Run only the requested tests or checks with `run_existing_entrypoint`, "
+                "then report the verified result."
+            )
+        return (
+            "Wrapper-owned transactional edit continuation:\n"
+            "For multiple existing text files, call `apply_text_patches` directly with only each path and its "
+            "exact old_text/new_text replacements; the wrapper owns snapshots, hashes, ordering, atomicity, and rollback. "
+            "For one existing text file, use the normal snapshot-bound `apply_text_patch` path. "
+            "Command tools are verification-only during this continuation.\n"
+            "After a successful patch, run only the requested tests or checks and report verified results."
+        )
+
     @staticmethod
     def semantic_argument_error(name: str, arguments: dict[str, Any]) -> str:
         normalized = name.lower()
@@ -8601,6 +9160,16 @@ class _ToolPermissionBroker:
                 allow_external=True,
             ).resolve()
         return None
+
+    def register_transaction_original(self, target: Path, data: bytes, mode: int) -> None:
+        resolved = target.resolve()
+        digest = hashlib.sha256(data).hexdigest()
+        key = str(resolved)
+        self.transaction_originals.setdefault(
+            key,
+            {"data": data, "mode": mode, "sha256": digest},
+        )
+        self.transaction_snapshot_hashes[key] = digest
 
     def record_result(self, name: str, arguments: dict[str, Any], result: Any) -> None:
         normalized = name.lower()
@@ -8640,6 +9209,11 @@ class _ToolPermissionBroker:
                             {"data": current_data, "mode": target.stat().st_mode, "sha256": snapshot_hash},
                         )
                         self.transaction_snapshot_hashes[key] = snapshot_hash
+
+        if normalized in {"read_file", "read_file_snapshot"} and success:
+            target = self._resolved_argument_path(arguments, "path")
+            if target is not None and target.is_file():
+                verified_paths.append(str(target))
 
         if normalized in self._MUTATION_TOOLS and success:
             target: Path | None = None
@@ -8770,10 +9344,23 @@ class _ToolPermissionBroker:
             "result_count": result_count,
             "opened_count": len(evidence_urls) if browser_action and success else 0,
             "urls": evidence_urls,
+            "command": (
+                _shorten(command_text, WorkspaceDiscoveryMemory._MAX_VALUE_CHARS)
+                if normalized in self._EXECUTION_TOOLS
+                else ""
+            ),
+            "evidence_path": str(
+                arguments.get("path")
+                or arguments.get("server_script")
+                or arguments.get("python_path")
+                or ""
+            ),
+            "mcp_target": str(arguments.get("tool_name") or arguments.get("server_script") or ""),
         }
         self.evidence.append(evidence)
         fingerprint = self._fingerprint(normalized, arguments)
         self._audit("completed" if success else "failed", normalized, arguments, fingerprint, status)
+        self._track_transaction_recovery_progress()
 
     @staticmethod
     def _positive_requirement_match(prompt: str, action_pattern: str, target_pattern: str) -> bool:
@@ -9343,6 +9930,52 @@ class _ToolPermissionBroker:
             return True, None
 
         semantic = _analyze_semantic_intent(self.current_prompt)
+        if (
+            normalized == "apply_text_patch"
+            and len(self.transaction_explicit_file_targets) >= 2
+            and not self.transaction_changed_hashes
+        ):
+            reason = (
+                "The user named multiple existing files, so this edit must be one atomic apply_text_patches batch. "
+                "Submit every intended path and its exact replacements together."
+            )
+            self._audit("atomic_batch_required", normalized, arguments, fingerprint, reason)
+            return False, {
+                "status": "atomic_batch_required",
+                "tool": normalized,
+                "reason": reason,
+                "file_unchanged": True,
+            }
+        creation_after_commit = False
+        if "created_outputs" in self.required_postconditions and normalized in {
+            "copy_path",
+            "make_directory",
+            "write_file",
+        }:
+            creation_target = self._resolved_argument_path(
+                arguments,
+                "destination" if normalized == "copy_path" else "path",
+            )
+            creation_after_commit = creation_target is not None and not creation_target.exists()
+        if normalized in self._MUTATION_TOOLS and self.transaction_changed_hashes and not creation_after_commit:
+            reason = (
+                "The wrapper has already committed this turn's atomic existing-file edit batch. "
+                "Run the requested verification now; do not start a second patch transaction."
+            )
+            self.mark_transaction_recovery_required()
+            if (
+                not self.transaction_recovery_interrupt_requested
+                and self.transaction_recovery_callback is not None
+            ):
+                self.transaction_recovery_interrupt_requested = True
+                self.transaction_recovery_callback()
+            self._audit("verification_required", normalized, arguments, fingerprint, reason)
+            return False, {
+                "status": "verification_required",
+                "tool": normalized,
+                "reason": reason,
+                "files_unchanged": True,
+            }
         if normalized in {"run_cmd_command", "run_powershell_command", "sandbox_run_powershell"}:
             capabilities = _workspace_runtime_capabilities(self.base, self.workspace)
             if capabilities.get("in_wsl") and not capabilities.get("workspace_is_windows_backed"):
@@ -9353,7 +9986,9 @@ class _ToolPermissionBroker:
                 )
                 self._audit("environment_denied", normalized, arguments, fingerprint, reason)
                 return False, {"status": "environment_mismatch", "tool": normalized, "reason": reason}
-        edit_requested = semantic.requests("copy", "create", "delete", "edit", "move")
+        edit_requested = "changed_files" in self.required_postconditions or semantic.requests(
+            "copy", "create", "delete", "edit", "move"
+        )
         execution_requested = semantic.requests(
             "execute",
             "clone_repository",
@@ -9450,23 +10085,16 @@ class _ToolPermissionBroker:
                     self._audit("invalid", normalized, arguments, fingerprint, reason)
                     return False, {"status": "invalid", "tool": normalized, "reason": reason, "file_unchanged": True}
                 patch_target = self._resolved_argument_path(patch, "path")
-                expected_hash = str(patch.get("expected_sha256", "")).strip().lower()
                 target_key = str(patch_target) if patch_target is not None else ""
-                recorded_hash = self.transaction_snapshot_hashes.get(target_key)
-                if not target_key or target_key in seen_targets or recorded_hash is None or expected_hash != recorded_hash:
-                    reason = (
-                        f"Patch {index} requires a unique successful current-turn read_file_snapshot "
-                        "and its exact SHA-256."
-                    )
-                    self.mark_transaction_recovery_required()
-                    self._audit("transaction_required", normalized, arguments, fingerprint, reason)
+                if not target_key or target_key in seen_targets:
+                    reason = f"Patch {index} requires a unique valid file path."
+                    self._audit("invalid", normalized, arguments, fingerprint, reason)
                     return False, {
-                        "status": "transaction_required",
+                        "status": "invalid",
                         "tool": normalized,
                         "reason": reason,
                         "file_unchanged": True,
                         "path": str(patch.get("path", "")),
-                        "current_snapshot_sha256": recorded_hash,
                     }
                 seen_targets.add(target_key)
         if normalized == "apply_text_patch":
@@ -9664,8 +10292,8 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
 
     @server.tool(
         description=(
-            "Atomically apply exact-text replacements to 2-16 previously snapshotted workspace files. "
-            "Every patch is validated before any file is changed, and originals are restored if application fails."
+            "Atomically apply exact-text replacements to 2-16 workspace files. Provide only path and replacements; "
+            "the wrapper snapshots, hashes, orders, validates, and restores originals if application fails."
         ),
         annotations=annotations("apply_text_patches"),
         structured_output=True,
@@ -9675,9 +10303,10 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             raise ValueError("Provide 2-16 file patches.")
         prepared: list[dict[str, Any]] = []
         seen: set[Path] = set()
-        for patch_index, patch in enumerate(patches, start=1):
-            if set(patch) != {"path", "expected_sha256", "replacements"}:
-                raise ValueError(f"Patch {patch_index} must contain only path, expected_sha256, and replacements.")
+        ordered_patches = sorted(patches, key=lambda item: str(item.get("path", "")).casefold())
+        for patch_index, patch in enumerate(ordered_patches, start=1):
+            if set(patch) != {"path", "replacements"}:
+                raise ValueError(f"Patch {patch_index} must contain only path and replacements.")
             target = base.resolve_workspace_path(
                 workspace,
                 str(patch["path"]),
@@ -9689,9 +10318,6 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             seen.add(target)
             if not target.is_file():
                 raise ValueError(f"Not a file: {patch['path']}")
-            expected_hash = str(patch["expected_sha256"])
-            if not re.fullmatch(r"[a-fA-F0-9]{64}", expected_hash):
-                raise ValueError(f"Patch {patch_index} expected_sha256 must contain exactly 64 hexadecimal characters.")
             replacements = patch["replacements"]
             if not 1 <= len(replacements) <= TRANSACTIONAL_PATCH_MAX_REPLACEMENTS:
                 raise ValueError(
@@ -9703,10 +10329,6 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                     f"File exceeds the {TRANSACTIONAL_PATCH_MAX_BYTES}-byte transactional edit limit: {patch['path']}"
                 )
             original_hash = hashlib.sha256(original_bytes).hexdigest()
-            if original_hash.lower() != expected_hash.lower():
-                raise ValueError(
-                    f"Stale file snapshot for {patch['path']}: expected {expected_hash}, found {original_hash}."
-                )
             original = original_bytes.decode("utf-8")
             updated = original
             for replacement_index, replacement in enumerate(replacements, start=1):
@@ -9750,6 +10372,11 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                     },
                 }
             )
+        broker = _TOOL_CALL_CONTEXT.get()
+        if broker is not None:
+            for item in prepared:
+                broker.register_transaction_original(item["target"], item["original_bytes"], item["mode"])
+        staged: list[tuple[Path, Path]] = []
         applied: list[dict[str, Any]] = []
         try:
             for index, item in enumerate(prepared, start=1):
@@ -9757,14 +10384,12 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                 temporary = target.with_name(
                     f".{target.name}.qubitz-multi-{os.getpid()}-{threading.get_ident()}-{index}.tmp"
                 )
-                try:
-                    temporary.write_bytes(item["updated_bytes"])
-                    with suppress(OSError):
-                        temporary.chmod(item["mode"])
-                    os.replace(temporary, target)
-                finally:
-                    with suppress(FileNotFoundError):
-                        temporary.unlink()
+                temporary.write_bytes(item["updated_bytes"])
+                with suppress(OSError):
+                    temporary.chmod(item["mode"])
+                staged.append((target, temporary))
+            for item, (target, temporary) in zip(prepared, staged, strict=True):
+                os.replace(temporary, target)
                 applied.append(item)
         except Exception:
             for index, item in enumerate(reversed(applied), start=1):
@@ -9781,12 +10406,16 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                     with suppress(FileNotFoundError):
                         temporary.unlink()
             raise
+        finally:
+            for _, temporary in staged:
+                with suppress(FileNotFoundError):
+                    temporary.unlink()
         return {"file_count": len(prepared), "files": [item["result"] for item in prepared]}
 
     @server.tool(
         description=(
             "Run one validated existing workspace entrypoint without a shell. "
-            "Python test files are executed through pytest so test functions actually run."
+            "Python test files or directories are executed through pytest so test functions actually run."
         ),
         annotations=annotations("run_existing_entrypoint"),
         structured_output=True,
@@ -9832,12 +10461,27 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             allow_missing=False,
             allow_external=_full_access_enabled(),
         )
-        if not target.is_file():
-            raise ValueError(f"Not a file: {requested_path}")
         args = [str(item) for item in (arguments or [])]
         suffix = target.suffix.lower()
         test_runner = ""
-        if suffix == ".py":
+        command: list[str] | None = None
+        if target.is_dir():
+            test_files = sorted({*target.rglob("test_*.py"), *target.rglob("*_test.py")})
+            if not test_files:
+                raise ValueError(f"Not a Python test directory: {requested_path}")
+            python_path = _preferred_project_python(workspace)
+            if python_path is None:
+                raise RuntimeError("No project-local Python interpreter was found for this test directory.")
+            test_path = str(target)
+            if base.in_wsl() and python_path.suffix.lower() == ".exe":
+                test_path = base.wsl_path_to_windows_path(target)
+            test_runner = "pytest"
+            command = [str(python_path), "-m", "pytest", test_path, *args]
+        elif not target.is_file():
+            raise ValueError(f"Not a file or Python test directory: {requested_path}")
+        if command is not None:
+            pass
+        elif suffix == ".py":
             python_path = _preferred_project_python(workspace)
             if python_path is None:
                 raise RuntimeError("No project-local Python interpreter was found for this entrypoint.")
@@ -10205,7 +10849,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
             contract = getattr(self, "_qubitz_tool_contracts", {}).get(name)
-            broker = getattr(_TOOL_CALL_CONTEXT, "broker", None)
+            broker = _TOOL_CALL_CONTEXT.get()
             if contract is not None:
                 strict_schema = _strict_tool_schema(contract.inputSchema)
                 argument_errors = _json_schema_errors(arguments, strict_schema)
@@ -10276,6 +10920,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             return result
 
     class HardenedAgentRunner(original_runner):
+        def _request_transaction_recovery(self) -> None:
+            super().request_cancel()
+
         def request_cancel(self) -> None:
             prompt = self._tool_permission_broker.current_prompt
             partial_answer = self._tool_permission_broker.partial_progress_answer(prompt) if prompt else ""
@@ -10301,6 +10948,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 getattr(self, "runtime_workspace", self.workspace),
             )
             self._tool_permission_broker.stop_callback = self.request_cancel
+            self._tool_permission_broker.transaction_recovery_callback = self._request_transaction_recovery
+            self.discovery_memory = WorkspaceDiscoveryMemory(
+                self.workspace,
+                getattr(self, "runtime_workspace", self.workspace),
+            )
+            self._active_discovery_context = ""
             initial_access_mode = getattr(
                 config,
                 "access_mode",
@@ -10323,6 +10976,25 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._focused_missing_postconditions = frozenset(focused)
             if focused and not context:
                 context = broker.focused_evidence_context(prompt)
+            direct_succeeded = any(
+                evidence.get("tool") == "wrapper_direct_existing_entrypoint" and evidence.get("success")
+                for evidence in broker._current_turn_evidence()
+            )
+            if direct_succeeded:
+                entrypoint = self._resolve_existing_entrypoint_for_prompt(prompt)
+                if isinstance(entrypoint, dict):
+                    command = str(
+                        entrypoint.get("command")
+                        or entrypoint.get("path")
+                        or entrypoint.get("label")
+                        or ""
+                    )
+                    if command:
+                        self.discovery_memory.record_entrypoint(
+                            entrypoint,
+                            command,
+                            source="direct_preflight",
+                        )
             return context
 
         def _runtime_fact_block(self, prompt: str) -> str:
@@ -10405,14 +11077,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 ]
             if explicit_tool_selection:
                 return list(tools)
-            focused_postconditions = set(getattr(self, "_focused_missing_postconditions", frozenset()))
-            if not focused_postconditions:
-                focused_postconditions = self._tool_permission_broker.update_focused_postconditions(
-                    self._tool_permission_broker.current_prompt or prompt
-                )
-                self._focused_missing_postconditions = frozenset(focused_postconditions)
+            focused_postconditions = self._tool_permission_broker.update_focused_postconditions(
+                self._tool_permission_broker.current_prompt or prompt
+            )
+            self._focused_missing_postconditions = frozenset(focused_postconditions)
             transaction_recovery = bool(getattr(self._tool_permission_broker, "transaction_recovery_required", False))
-            if transaction_recovery:
+            if transaction_recovery and not self._tool_permission_broker.transaction_changed_hashes:
                 focused_postconditions.add("changed_files")
                 self._focused_missing_postconditions = frozenset(focused_postconditions)
             if focused_postconditions:
@@ -10443,11 +11113,38 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 }
                 for postcondition in focused_postconditions:
                     focused_names.update(focused_tool_map.get(postcondition, set()))
+                if (
+                    "changed_files" in focused_postconditions
+                    and not self._tool_permission_broker.transaction_changed_hashes
+                ):
+                    focused_names.difference_update(_ToolPermissionBroker._EXECUTION_TOOLS)
                 if transaction_recovery:
-                    focused_names.update({"read_file_snapshot", "apply_text_patch", "apply_text_patches", "read_file", "search_text", "list_files"})
-                    focused_names.difference_update(
-                        {"run_command", "run_project_command", "run_powershell_command", "run_cmd_command", "run_existing_entrypoint"}
-                    )
+                    if self._tool_permission_broker.transaction_changed_hashes:
+                        focused_names.difference_update(_ToolPermissionBroker._MUTATION_TOOLS)
+                        focused_names.difference_update(_ToolPermissionBroker._EXECUTION_TOOLS)
+                        focused_names.update(
+                            {
+                                "read_file",
+                                "read_file_snapshot",
+                                "search_text",
+                                "list_files",
+                                "codeintel_diagnostics",
+                                "run_existing_entrypoint",
+                            }
+                        )
+                    else:
+                        focused_names.update(
+                            {
+                                "read_file_snapshot",
+                                "apply_text_patch",
+                                "apply_text_patches",
+                                "read_file",
+                                "search_text",
+                                "list_files",
+                                "codeintel_diagnostics",
+                            }
+                        )
+                        focused_names.difference_update(_ToolPermissionBroker._EXECUTION_TOOLS)
                 elif focused_postconditions == {"tests"}:
                     focused_names.update({"run_command", "run_project_command", "run_powershell_command"})
                 focused_tools = [tool for tool in tools if self._tool_name(tool) in focused_names]
@@ -10458,7 +11155,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             read_intent = semantic.requests("fetch_url", "read") or bool(
                 re.search(r"\b(?:analy[sz]e|compare|explain|find|search|summarize)\b", lowered)
             )
-            edit_intent = semantic.requests("copy", "create", "delete", "edit", "move")
+            edit_intent = (
+                "changed_files" in self._tool_permission_broker.required_postconditions
+                or semantic.requests("copy", "create", "delete", "edit", "move")
+            )
             execute_intent = semantic.requests(
                 "execute",
                 "clone_repository",
@@ -10646,20 +11346,28 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 if len(selected) >= selected_limit:
                     break
             selected = selected[:selected_limit]
+            if edit_intent and not self._tool_permission_broker.transaction_changed_hashes:
+                selected = [
+                    tool
+                    for tool in selected
+                    if self._tool_name(tool) not in _ToolPermissionBroker._EXECUTION_TOOLS
+                ]
             catalog_tool = next((tool for tool in tools if self._tool_name(tool) == "search_tools"), None)
-            if catalog_tool is not None and all(self._tool_name(tool) != "search_tools" for tool in selected):
+            if (
+                catalog_tool is not None
+                and not (edit_intent and not self._tool_permission_broker.transaction_changed_hashes)
+                and all(self._tool_name(tool) != "search_tools" for tool in selected)
+            ):
                 selected = selected[: max(0, selected_limit - 1)] + [catalog_tool]
             if not selected and tools:
                 selected = [tool for tool in tools if self._tool_name(tool) == "search_tools"][:1]
             return selected
 
         def _prioritize_tools_for_prompt(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
-            focused = set(getattr(self, "_focused_missing_postconditions", frozenset()))
-            if not focused:
-                focused = self._tool_permission_broker.update_focused_postconditions(
-                    self._tool_permission_broker.current_prompt or prompt
-                )
-                self._focused_missing_postconditions = frozenset(focused)
+            focused = self._tool_permission_broker.update_focused_postconditions(
+                self._tool_permission_broker.current_prompt or prompt
+            )
+            self._focused_missing_postconditions = frozenset(focused)
             if focused:
                 return self._filter_tools_by_intent(prompt, tools)
             return super()._prioritize_tools_for_prompt(prompt, tools)
@@ -10667,9 +11375,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
             self._cancel_partial_answer = ""
             self._focused_missing_postconditions = frozenset()
+            self._active_discovery_context = ""
+            with suppress(Exception):
+                if self._selected_route_name(prompt) != "simple_answer":
+                    self._active_discovery_context = self.discovery_memory.context_for(prompt)
             self._tool_permission_broker.begin_turn(prompt, callback)
-            previous = getattr(_TOOL_CALL_CONTEXT, "broker", None)
-            _TOOL_CALL_CONTEXT.broker = self._tool_permission_broker
+            broker_context_token = _TOOL_CALL_CONTEXT.set(self._tool_permission_broker)
 
             def rollback_interrupted_transaction(reason: str) -> dict[str, list[str]]:
                 if not self._tool_permission_broker.transaction_changed_hashes:
@@ -10686,13 +11397,48 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 try:
                     answer = await super()._run_async(prompt, callback)
                 except (Exception, asyncio.CancelledError):
-                    rollback_interrupted_transaction("an interrupted request")
-                    if self._cancel_partial_answer:
-                        return self._cancel_partial_answer
-                    raise
+                    if (
+                        self._tool_permission_broker.transaction_recovery_interrupt_requested
+                        and not self._cancel_partial_answer
+                    ):
+                        answer = ""
+                    else:
+                        rollback_interrupted_transaction("an interrupted request")
+                        if self._cancel_partial_answer:
+                            return self._cancel_partial_answer
+                        raise
                 if self._cancel_partial_answer:
                     rollback_interrupted_transaction("request cancellation")
                     return self._cancel_partial_answer
+                if self._tool_permission_broker.transaction_recovery_required:
+                    recovery_context = self._tool_permission_broker.transaction_recovery_context()
+                    focused = set(self._tool_permission_broker.required_postconditions)
+                    if not self._tool_permission_broker.transaction_changed_hashes:
+                        focused.add("changed_files")
+                    self._focused_missing_postconditions = frozenset(focused)
+                    self._tool_permission_broker.transaction_recovery_interrupt_requested = False
+                    self._tool_permission_broker.transaction_nonprogress_calls = 0
+                    if callback is not None:
+                        callback(
+                            "status",
+                            "Retrying once with wrapper-owned transactional patch tools and preserved snapshots.",
+                        )
+                    try:
+                        answer = await super()._run_async(
+                            f"{prompt.rstrip()}\n\n{recovery_context}",
+                            callback,
+                        )
+                    except (Exception, asyncio.CancelledError):
+                        if (
+                            self._tool_permission_broker.transaction_recovery_interrupt_requested
+                            and not self._cancel_partial_answer
+                        ):
+                            answer = self._tool_permission_broker.partial_progress_answer(prompt)
+                        else:
+                            rollback_interrupted_transaction("an interrupted transactional continuation")
+                            if self._cancel_partial_answer:
+                                return self._cancel_partial_answer
+                            raise
                 required, missing = self._tool_permission_broker.completion_report(prompt)
                 rollback = {"restored": [], "skipped": []}
                 if missing.intersection({"changed_files", "tests"}) and self._tool_permission_broker.transaction_changed_hashes:
@@ -10755,16 +11501,29 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     )
                 return rendered_answer
             finally:
+                with suppress(Exception):
+                    self.discovery_memory.observe_tool_evidence(
+                        prompt,
+                        self._tool_permission_broker._current_turn_evidence(),
+                    )
                 self._tool_permission_broker.end_turn()
-                _TOOL_CALL_CONTEXT.broker = previous
+                self._active_discovery_context = ""
+                _TOOL_CALL_CONTEXT.reset(broker_context_token)
 
         def _system_prompt(self, *args: Any, **kwargs: Any) -> str:
             prompt = super()._system_prompt(*args, **kwargs)
+            discovery_context = getattr(self, "_active_discovery_context", "")
+            discovery_section = (
+                "\n\nRelevant dynamic workspace memory:\n" + discovery_context
+                if discovery_context
+                else ""
+            )
             return (
-                f"{prompt}\n\n"
+                f"{prompt}{discovery_section}\n\n"
                 "Runtime tool contract:\n"
                 "- The visible tools are a bounded task-relevant subset; use search_tools only when a required capability is missing.\n"
-                "- Existing UTF-8 files within the transaction limit must use read_file_snapshot then apply_text_patch; use apply_text_patches after snapshotting every target in a multi-file edit. Direct overwrite tools are rejected.\n"
+                "- For one existing UTF-8 file within the transaction limit, use read_file_snapshot then apply_text_patch. For multiple files, call apply_text_patches once with only paths and exact replacements; the wrapper owns snapshots, hashes, ordering, atomicity, and rollback. Direct overwrite tools are rejected.\n"
+                "- During an edit transaction, inspect and submit edits before verification; command and test tools become available after a transactional edit succeeds.\n"
                 "- Required tests or checks must pass after edits. If final verification is incomplete, transactional edits are rolled back when the file has not changed concurrently.\n"
                 "- For MCP work: establish readiness, list tools, invoke the intended tool when requested, verify its result, and stop managed servers started for the task.\n"
                 "- Execute state-changing tools sequentially. Approval-required results mean the action did not run; ask for the exact approval id.\n"
