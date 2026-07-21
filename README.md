@@ -20,6 +20,7 @@ Qubitz is closer to a local style agent with a strong harness. Its stronger poin
 
 - Fully local orientation: no API, no cloud, no subscription dependency.
 - Multiple model variants: lets you compare behavior across 8B-35B-class local models.
+- The LLMs's retrieval source is mostly Unsloth, on HuggingFace.
 - Wrapper-owned routing: simple questions, direct existing scripts, read-only workspace tasks, and tool/MCP paths are not left entirely to the model.
 - Good WSL2/Windows awareness: this is a real advantage because many agents handle mixed Windows/WSL workspaces badly.
 - Strong direct-entrypoint path: this is better than many agents that overthink and rewrite instead of running what already exists.
