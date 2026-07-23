@@ -5008,7 +5008,7 @@ def _patch_local_only_dependencies(base: Any) -> None:
     base._QUBITZ_STRICT_MODEL_PATCHED = True
 
 
-_EMBEDDED_BASE_MODULE_LABEL = 'AI_Agent_Qubitz_Gemma_4_31B_It_Qat_Embd_Base'
+_EMBEDDED_BASE_MODULE_LABEL = f"{re.sub(r'[^A-Za-z0-9]+', '_', Path(__file__).stem).strip('_')}_Base"
 _EMBEDDED_BASE_SOURCE = (
     'from __future__ import annotations\n'
     '\n'
@@ -13233,9 +13233,9 @@ def build_local_only_app(base_module_name: str, wrapper_script: str, display_nam
     return LocalOnlyApp(base_module_name, wrapper_script, display_name)
 
 _APP = build_local_only_app(
-    'AI_Agent_Qubitz_Embedding_Local',
+    _EMBEDDED_BASE_MODULE_LABEL,
     __file__,
-    'AI Agent Qubitz Gemma 4 31B It Qat Embd Local-Only',
+    f"{Path(__file__).stem.replace('_', ' ')} Local-Only",
 )
 
 
