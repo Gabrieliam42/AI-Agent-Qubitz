@@ -59,22 +59,22 @@ Its strong focus on routing and task execution creates a more seamless interacti
 - Direct existing-entrypoint execution for explicit `.py`, `.ps1`, `.sh`, `.bat`, `.cmd`, `uv run`, `npm run`, `pnpm run`, and `make` tasks
 - Local background jobs, local plugin guidance, and wrapper-local sandbox/tool orchestration
 
-## Variant scripts
+## All variant scripts are also using embedding model `BAAI's` BGE-Code-v1
 
-- `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 using embedding model `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q5 using embedding model `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Granite-4.1-8B_Q5_12G.py` - for 12GB VRAM GPU `IBM's` Granite-4.1-8B Q5 also with `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB VRAM GPU `Z.AI's` GLM-4.7-Flash 30B A3B MoE Q4 also using `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` - for 24 GB VRAM GPU `Cohere's` North-Mini-Code-1.0 30B A3B MoE Q4 also using `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-Cascade-2 30B A3B MoE Q4 also using `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Nemotron-3-Nano-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-3-Nano 30B A3B MoE Q4 also using `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB VRAM GPU `Mistral AI's` Devstral-Small-2 24B Q4 also with `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py` - 24 GB VRAM GPU `Google's` Gemma-4-31B-IT-QAT Q4 using `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB VRAM GPU `OpenAI's` GPT-OSS-20B F16 using `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Ornith-1.0-35B-Q4.py` - 24 GB VRAM GPU `DeepReinforce AI's` Ornith-1.0-35B MoE Q4 using `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` - 24 GB VRAM GPU `Qwen Team's` AgenticQwen-30B A3B MoE Q4 with `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Qwen3.6-27B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-27B Q4 Dense with `BAAI's` BGE-Code-v1
-- `AI_Agent_Qubitz_Qwen3.6-35B-A3B_MTP_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-35B-MTP A3B MoE Q4 with `BAAI's` BGE-Code-v1
+- `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5
+- `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q5
+- `AI_Agent_Qubitz_Granite-4.1-8B_Q5_12G.py` - for 12GB VRAM GPU `IBM's` Granite-4.1-8B Q5
+- `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB VRAM GPU `Z.AI's` GLM-4.7-Flash 30B A3B MoE Q4
+- `AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` - for 24 GB VRAM GPU `Cohere's` North-Mini-Code-1.0 30B A3B MoE Q4
+- `AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-Cascade-2 30B A3B MoE Q4
+- `AI_Agent_Qubitz_Nemotron-3-Nano-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-3-Nano 30B A3B MoE
+- `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB VRAM GPU `Mistral AI's` Devstral-Small-2 24B Q4
+- `AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py` - 24 GB VRAM GPU `Google's` Gemma-4-31B-IT-QAT Q4
+- `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB VRAM GPU `OpenAI's` GPT-OSS-20B F16
+- `AI_Agent_Qubitz_Ornith-1.0-35B-Q4.py` - 24 GB VRAM GPU `DeepReinforce AI's` Ornith-1.0-35B MoE Q4
+- `AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` - 24 GB VRAM GPU `Qwen Team's` AgenticQwen-30B A3B MoE Q4
+- `AI_Agent_Qubitz_Qwen3.6-27B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-27B Q4 Dense
+- `AI_Agent_Qubitz_Qwen3.6-35B-A3B_MTP_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-35B-MTP A3B MoE Q4
 
 ## Runtime behavior
 
