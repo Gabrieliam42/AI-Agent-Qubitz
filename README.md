@@ -66,7 +66,7 @@ Its strong focus on routing and task execution creates a more seamless interacti
 - `AI_Agent_Qubitz_Granite-4.1-8B_Q5_12G.py` - for 12GB VRAM GPU `IBM's` Granite-4.1-8B Q5 Dense
 *****
 - `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB VRAM GPU `Z.AI's` GLM-4.7-Flash 30B A3B MoE Q4
-- `AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` - for 24 GB VRAM GPU `Cohere's` North-Mini-Code-1.0 30B A3B MoE Q4
+- `AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` - 24 GB VRAM GPU `Cohere's` North-Mini-Code-1.0 30B A3B MoE Q4
 - `AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-Cascade-2 30B A3B MoE IQ4
 - `AI_Agent_Qubitz_Nemotron-3-Nano-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-3-Nano 30B A3B MoE IQ4
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB VRAM GPU `OpenAI's` GPT-OSS-20B F16 A3B MoE F16
