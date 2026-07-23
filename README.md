@@ -59,7 +59,7 @@ Its strong focus on routing and task execution creates a more seamless interacti
 - Direct existing-entrypoint execution for explicit `.py`, `.ps1`, `.sh`, `.bat`, `.cmd`, `uv run`, `npm run`, `pnpm run`, and `make` tasks
 - Local background jobs, local plugin guidance, and wrapper-local sandbox/tool orchestration
 
-## All variant scripts are also using embedding model `BAAI's` BGE-Code-v1
+## All variant scripts are using embedding model `BAAI's` BGE-Code-v1 along with their main model.
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5
 - `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q5
