@@ -62,6 +62,7 @@ Its strong focus on routing and task execution creates a more seamless interacti
 ## Variant scripts
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q8_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q8 using embedding model `BAAI's` BGE-Code-v1
+- `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q6_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q6 using embedding model `BAAI's` BGE-Code-v1
 - `AI_Agent_Qubitz_Granite-4.1-8B_Q8_12G.py` - for 12GB VRAM GPU `IBM's` Granite-4.1-8B Q8 also with `BAAI's` BGE-Code-v1
 - `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB VRAM GPU `Z.AI's` GLM-4.7-Flash 30B A3B MoE Q4 also using `BAAI's` BGE-Code-v1
 - `AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` - for 24 GB VRAM GPU `Cohere's` North-Mini-Code-1.0 30B A3B MoE Q4 also using `BAAI's` BGE-Code-v1
