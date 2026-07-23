@@ -23,7 +23,6 @@ data/
 node_modules/
 
 # Local plaintext harness and helper keys
-HARNESS.txt
 QUBITZ_HARNESS_KEY*
 !QUBITZ_HARNESS_KEY.local.txt
 
