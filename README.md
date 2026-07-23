@@ -72,7 +72,7 @@ Its strong focus on routing and task execution creates a more seamless interacti
 - `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB VRAM GPU `Mistral AI's` Devstral-Small-2 24B Q4
 - `AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py` - 24 GB VRAM GPU `Google's` Gemma-4-31B-IT-QAT Q4
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB VRAM GPU `OpenAI's` GPT-OSS-20B F16
-- `AI_Agent_Qubitz_Ornith-1.0-35B-Q4.py` - 24 GB VRAM GPU `DeepReinforce AI's` Ornith-1.0-35B MoE Q4
+- `AI_Agent_Qubitz_Ornith-1.0-35B-A3B-Q4.py` - 24 GB VRAM GPU `DeepReinforce AI's` Ornith-1.0-35B A3B MoE Q4
 - `AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` - 24 GB VRAM GPU `Qwen Team's` AgenticQwen-30B A3B MoE Q4
 - `AI_Agent_Qubitz_Qwen3.6-27B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-27B Q4 Dense
 - `AI_Agent_Qubitz_Qwen3.6-35B-A3B_MTP_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-35B-MTP A3B MoE Q4
