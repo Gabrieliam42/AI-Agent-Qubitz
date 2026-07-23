@@ -77,6 +77,18 @@ Its strong focus on routing and task execution creates a more seamless interacti
 - `AI_Agent_Qubitz_Qwen3.6-27B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-27B Q4 Dense
 - `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB VRAM GPU `Mistral AI's` Devstral-Small-2 24B Q4 Dense
 
+Legend:
+MoE = Mixture of Experts
+A3B = Approximately 3 billion parameters are activated per token from the model's total parameters through its Mixture-of-Experts routing.
+QAT = Quantization-Aware Training (trained to better preserve quality after quantization)
+IT = Instruction-Tuned
+MTP = Multi-Token Prediction
+Q4/Q5/Q6/Q8 = Approximate quantization bit-width
+F16/FP16 = 16-bit floating-point precision
+IQ4 = Importance-aware 4-bit quantization
+i1 = Importance-matrix-weighted quantization
+12G = Variant intended for approximately 12 GB of VRAM
+
 
 ## Runtime behavior
 
