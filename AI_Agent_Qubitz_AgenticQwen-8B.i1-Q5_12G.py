@@ -12386,6 +12386,101 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return str(function.get("description", "") or "")
             return str(getattr(tool, "description", "") or "")
 
+        def _wrapper_existing_test_target(self) -> tuple[str, list[Path]]:
+            test_files = sorted(
+                path
+                for path in {
+                    *self.workspace.rglob("test_*.py"),
+                    *self.workspace.rglob("*_test.py"),
+                }
+                if path.is_file()
+                and not any(
+                    part in {".git", ".venv", ".venv312", "__pycache__", "node_modules"}
+                    for part in path.parts
+                )
+            )
+            if not test_files:
+                return "", []
+            tests_directory = self.workspace / "tests"
+            if tests_directory.is_dir() and any(tests_directory in path.parents for path in test_files):
+                return "tests", test_files
+            if len(test_files) == 1:
+                return str(base.relative_path(test_files[0], self.workspace)), test_files
+            return ".", test_files
+
+        async def _wrapper_verify_committed_transaction(
+            self,
+            prompt: str,
+            callback: Callable[[str, str], None] | None,
+        ) -> tuple[bool | None, str] | None:
+            broker = self._tool_permission_broker
+            if not broker.transaction_changed_hashes:
+                return None
+            required, missing = broker.completion_report(prompt)
+            if "tests" not in required or "tests" not in missing:
+                return None
+            test_path, _test_files = self._wrapper_existing_test_target()
+            if not test_path:
+                return None
+            if callback is not None:
+                callback(
+                    "status",
+                    "Wrapper transaction verification: running the existing test target before any further model step.",
+                )
+            async with base.MCPHost(self.workspace) as host:
+                await host.list_tools()
+                test_result = await host.call_tool(
+                    "run_existing_entrypoint",
+                    {
+                        "path": test_path,
+                        "arguments": [],
+                        "cwd": ".",
+                        "timeout_seconds": 300,
+                    },
+                )
+            test_data = getattr(test_result, "structuredContent", None) or {}
+            return_code = test_data.get(
+                "returncode",
+                test_data.get("return_code", test_data.get("exit_code")),
+            )
+            output = "\n".join(
+                value
+                for value in (
+                    str(test_data.get("stdout") or "").strip(),
+                    str(test_data.get("stderr") or "").strip(),
+                )
+                if value
+            )
+            if not bool(getattr(test_result, "isError", False)) and return_code in {None, 0}:
+                broker.transaction_recovery_required = False
+                broker.transaction_recovery_interrupt_requested = False
+                broker.transaction_nonprogress_calls = 0
+                return (
+                    True,
+                    f"Applied the requested atomic edit to {len(broker.transaction_changed_hashes)} file(s), "
+                    "and the existing tests passed.",
+                )
+
+            expected_restore_count = len(broker.transaction_changed_hashes)
+            rollback = broker.rollback_transaction()
+            if (
+                rollback["skipped"]
+                or expected_restore_count == 0
+                or len(rollback["restored"]) != expected_restore_count
+            ):
+                return (
+                    None,
+                    "The atomic edit failed its existing tests, and verified rollback did not complete. "
+                    f"Test output: {output[-1600:] or 'verification failed'}",
+                )
+            broker.reset_transaction_after_rollback()
+            if callback is not None:
+                callback(
+                    "status",
+                    f"Wrapper rolled back {len(rollback['restored'])} file(s) after direct test verification failed.",
+                )
+            return False, output[-4000:] or "Existing tests failed."
+
         async def _wrapper_transaction_proposal_recovery(
             self,
             prompt: str,
@@ -12402,28 +12497,6 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             required, missing = broker.completion_report(prompt)
             if "changed_files" not in missing or broker.transaction_changed_hashes:
                 return None
-
-            def locate_test_target() -> tuple[str, list[Path]]:
-                test_files = sorted(
-                    path
-                    for path in {
-                        *self.workspace.rglob("test_*.py"),
-                        *self.workspace.rglob("*_test.py"),
-                    }
-                    if path.is_file()
-                    and not any(
-                        part in {".git", ".venv", ".venv312", "__pycache__", "node_modules"}
-                        for part in path.parts
-                    )
-                )
-                if not test_files:
-                    return "", []
-                tests_directory = self.workspace / "tests"
-                if tests_directory.is_dir() and any(tests_directory in path.parents for path in test_files):
-                    return "tests", test_files
-                if len(test_files) == 1:
-                    return str(base.relative_path(test_files[0], self.workspace)), test_files
-                return ".", test_files
 
             def build_test_failure_context(output: str, test_files: list[Path]) -> str:
                 workspace_root = self.workspace.resolve()
@@ -12526,7 +12599,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     ]
                 )
 
-            test_path, test_files = locate_test_target() if "tests" in required else ("", [])
+            test_path, test_files = self._wrapper_existing_test_target() if "tests" in required else ("", [])
             focused_context = (
                 self._build_focused_file_context(prompt)
                 or self._build_metadata_or_lexical_context(prompt)
@@ -13208,10 +13281,26 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             try:
                 try:
                     answer = await super()._run_async(effective_prompt, callback)
-                    transaction_answer = await self._wrapper_transaction_proposal_recovery(
+                    committed_verification = await self._wrapper_verify_committed_transaction(
                         prompt,
-                        answer,
                         callback,
+                    )
+                    transaction_recovery_blocked = False
+                    if committed_verification is not None:
+                        verification_passed, verification_summary = committed_verification
+                        if verification_passed is True:
+                            answer = verification_summary
+                        elif verification_passed is None:
+                            answer = verification_summary
+                            transaction_recovery_blocked = True
+                    transaction_answer = (
+                        None
+                        if transaction_recovery_blocked
+                        else await self._wrapper_transaction_proposal_recovery(
+                            prompt,
+                            answer,
+                            callback,
+                        )
                     )
                     if transaction_answer is not None:
                         answer = transaction_answer
@@ -13888,6 +13977,393 @@ class _GpuThermalGate:
         self.finish_request()
 
 
+def _install_gui_run_controls(app: LocalOnlyApp) -> None:
+    base = app.base
+    original_gui = base.QubitzGUI
+    if getattr(original_gui, "_QUBITZ_RUN_CONTROLS_INSTALLED", False):
+        return
+
+    steering_status = (
+        "Received /btw note. It will steer the active task after the current step finishes."
+    )
+
+    def encoded_powershell(script: str) -> str:
+        import base64
+
+        return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+    def run_windows_powershell(
+        script: str,
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> subprocess.CompletedProcess[str] | None:
+        executable = shutil.which("powershell.exe")
+        if not executable:
+            return None
+        arguments = [
+            executable,
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            encoded_powershell(script),
+        ]
+        try:
+            return subprocess.run(
+                arguments,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except OSError:
+            if not (
+                sys.platform.startswith("linux")
+                and base.in_wsl()
+                and Path("/init").is_file()
+            ):
+                return None
+            try:
+                return subprocess.run(
+                    ["/init", *arguments],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return None
+        except subprocess.SubprocessError:
+            return None
+
+    class RunControlGUI(original_gui):
+        _QUBITZ_RUN_CONTROLS_INSTALLED = True
+
+        def __init__(self, config: Any) -> None:
+            super().__init__(config)
+            buttons = self.send_button.master
+            self.clear_button.pack_forget()
+            self.steer_button = self.ttk.Button(
+                buttons,
+                text="Steer",
+                command=self._steer_active_prompt,
+            )
+            self.steer_button.pack(fill="x", pady=(8, 0))
+            self.cancel_button = self.ttk.Button(
+                buttons,
+                text="Cancel",
+                command=self._cancel_active_prompt,
+            )
+            self.cancel_button.pack(fill="x", pady=(8, 0))
+            self.clear_button.pack(fill="x", pady=(8, 0))
+            self._update_run_control_buttons()
+            self._schedule_startup_visibility_recovery()
+
+        def _schedule_startup_visibility_recovery(self) -> None:
+            for delay_ms in (0, 250, 900):
+                self.root.after(delay_ms, self._raise_gui_window)
+            if sys.platform.startswith("linux") and base.in_wsl():
+                self.root.after(350, self._start_wslg_visibility_probe)
+
+        def _raise_gui_window(self) -> None:
+            try:
+                self.root.deiconify()
+                self.root.update_idletasks()
+                self.root.lift()
+                self.root.attributes("-topmost", True)
+                self.root.focus_force()
+                self.root.after(220, self._release_gui_topmost)
+            except self.tk.TclError:
+                pass
+
+        def _release_gui_topmost(self) -> None:
+            try:
+                self.root.attributes("-topmost", False)
+            except self.tk.TclError:
+                pass
+
+        def _start_wslg_visibility_probe(self) -> None:
+            if getattr(self, "_qubitz_wslg_probe_started", False):
+                return
+            self._qubitz_wslg_probe_started = True
+            threading.Thread(
+                target=self._probe_wslg_visibility,
+                name="qubitz-wslg-visibility",
+                daemon=True,
+            ).start()
+
+        def _wslg_copy_mode_active(self) -> bool:
+            log_path = Path("/mnt/wslg/weston.log")
+            try:
+                with log_path.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    size = handle.tell()
+                    handle.seek(max(0, size - 262144))
+                    tail = handle.read().decode("utf-8", errors="ignore")
+            except OSError:
+                return False
+            modes = re.findall(r"RDP backend:\s+use_gfxredir\s*=\s*([01])", tail)
+            return bool(modes and modes[-1] == "0")
+
+        def _probe_wslg_visibility(self) -> None:
+            copy_mode_from_log = self._wslg_copy_mode_active()
+            foreground_script = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class QubitzWindowActivation {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool BringWindowToTop(IntPtr hWnd);
+}
+"@
+$deadline = (Get-Date).AddSeconds(4)
+do {
+    $target = Get-Process -Name msrdc -ErrorAction SilentlyContinue |
+        Where-Object { $_.MainWindowTitle -like '*AI Agent Qubitz*' } |
+        Sort-Object StartTime -Descending |
+        Select-Object -First 1
+    if ($null -ne $target) {
+        $copyMode = $target.MainWindowTitle.StartsWith('[WARN:COPY MODE]')
+        [void][QubitzWindowActivation]::ShowWindowAsync($target.MainWindowHandle, 9)
+        [void][QubitzWindowActivation]::BringWindowToTop($target.MainWindowHandle)
+        [void][QubitzWindowActivation]::SetForegroundWindow($target.MainWindowHandle)
+        if ($copyMode) {
+            Write-Output 'copy_mode_foreground_requested'
+            exit 42
+        }
+        Write-Output 'foreground_requested'
+        exit 0
+    }
+    Start-Sleep -Milliseconds 200
+} while ((Get-Date) -lt $deadline)
+Write-Output 'window_not_found'
+exit 3
+"""
+            result = run_windows_powershell(foreground_script, timeout_seconds=7.0)
+            copy_mode_from_window = result is not None and (
+                result.returncode == 42 or "copy_mode" in result.stdout.lower()
+            )
+            if copy_mode_from_log or copy_mode_from_window:
+                self._handle_wslg_copy_mode()
+
+        def _append_status_from_thread(self, message: str) -> None:
+            try:
+                self.root.after(
+                    0,
+                    lambda text=message: self._append_transcript("status", text),
+                )
+            except self.tk.TclError:
+                pass
+
+        def _wslg_auto_recovery_enabled(self) -> bool:
+            enabled_values = {"1", "enabled", "on", "true", "yes"}
+            environment_value = os.environ.get(
+                "QUBITZ_AUTO_RECOVER_WSLG",
+                "",
+            ).strip().casefold()
+            if environment_value:
+                return environment_value in enabled_values
+            marker_path = Path.home() / ".qubitz" / "auto_recover_wslg"
+            try:
+                marker_value = marker_path.read_text(
+                    encoding="utf-8",
+                    errors="strict",
+                ).strip().casefold()
+            except (OSError, UnicodeError):
+                return False
+            return marker_value in enabled_values
+
+        def _handle_wslg_copy_mode(self) -> None:
+            if getattr(self, "_qubitz_copy_mode_handled", False):
+                return
+            self._qubitz_copy_mode_handled = True
+            automatic_recovery = self._wslg_auto_recovery_enabled()
+            already_retried = os.environ.get("QUBITZ_WSLG_RECOVERY_ATTEMPT", "") == "1"
+            if already_retried:
+                message = (
+                    "WSLg is still in degraded COPY MODE after one automatic recovery "
+                    "attempt. Qubitz will not restart WSL again automatically."
+                )
+                self._append_status_from_thread(message)
+                if automatic_recovery:
+                    return
+                run_windows_powershell(
+                    """
+Add-Type -AssemblyName System.Windows.Forms
+[void][System.Windows.Forms.MessageBox]::Show(
+    'WSLg is still in degraded COPY MODE after one recovery attempt. Qubitz will not restart WSL again automatically. Close or save other WSL work, then run wsl --shutdown manually or restart Windows.',
+    'AI Agent Qubitz - WSLg recovery',
+    [System.Windows.Forms.MessageBoxButtons]::OK,
+    [System.Windows.Forms.MessageBoxIcon]::Error
+)
+""",
+                    timeout_seconds=120.0,
+                )
+                return
+
+            if automatic_recovery:
+                if not self._launch_wslg_recovery(automatic=True):
+                    self._append_status_from_thread(
+                        "Automatic WSLg recovery could not start; close or save WSL "
+                        "work, then run wsl --shutdown manually."
+                    )
+                return
+
+            prompt_result = run_windows_powershell(
+                """
+Add-Type -AssemblyName System.Windows.Forms
+$choice = [System.Windows.Forms.MessageBox]::Show(
+    'WSLg started in degraded COPY MODE. Qubitz attempted normal foreground recovery first. If the Qubitz window is now visible and usable, choose No. If it remains invisible or unusable, choosing Yes will restart WSL, which closes every running WSL distribution and process, wait eight seconds, and relaunch this exact Qubitz variant once.',
+    'AI Agent Qubitz - WSLg recovery',
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Warning,
+    [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+)
+if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
+    Write-Output 'yes'
+} else {
+    Write-Output 'no'
+}
+""",
+                timeout_seconds=600.0,
+            )
+            if prompt_result is None or "yes" not in prompt_result.stdout.lower().split():
+                self._append_status_from_thread(
+                    "WSLg COPY MODE detected; WSL restart and relaunch were not approved."
+                )
+                return
+            if not self._launch_wslg_recovery(automatic=False):
+                self._append_status_from_thread(
+                    "WSLg recovery could not start; close or save WSL work, then run "
+                    "wsl --shutdown manually."
+                )
+
+        def _launch_wslg_recovery(self, *, automatic: bool) -> bool:
+            distro = os.environ.get("WSL_DISTRO_NAME", "").strip()
+            script_path = str(Path(sys.argv[0]).resolve())
+            working_directory = str(Path.cwd())
+            launch_arguments = []
+            if distro:
+                launch_arguments.extend(["-d", distro])
+            launch_arguments.extend(
+                [
+                    "--cd",
+                    working_directory,
+                    "--",
+                    "env",
+                    "QUBITZ_WSLG_RECOVERY_ATTEMPT=1",
+                    sys.executable,
+                    script_path,
+                    *sys.argv[1:],
+                ]
+            )
+            argument_line = subprocess.list2cmdline(launch_arguments).replace("'", "''")
+            recovery_script = f"""
+Start-Sleep -Milliseconds 750
+& "$env:WINDIR\\System32\\wsl.exe" --shutdown | Out-Null
+Start-Sleep -Seconds 8
+$startInfo = New-Object System.Diagnostics.ProcessStartInfo
+$startInfo.FileName = "$env:WINDIR\\System32\\wsl.exe"
+$startInfo.Arguments = '{argument_line}'
+$startInfo.UseShellExecute = $false
+$startInfo.CreateNoWindow = $true
+$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+[void][System.Diagnostics.Process]::Start($startInfo)
+"""
+            recovery_encoded = encoded_powershell(recovery_script)
+            launcher_script = f"""
+$process = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+    '-NoProfile',
+    '-NonInteractive',
+    '-WindowStyle',
+    'Hidden',
+    '-EncodedCommand',
+    '{recovery_encoded}'
+) -WindowStyle Hidden -PassThru
+if ($null -ne $process) {{
+    Write-Output 'started'
+}}
+"""
+            result = run_windows_powershell(launcher_script, timeout_seconds=15.0)
+            if result is None or "started" not in result.stdout.lower().split():
+                return False
+            recovery_mode = "Automatic" if automatic else "Approved"
+            self._append_status_from_thread(
+                f"{recovery_mode} WSLg recovery started; WSL will restart and this "
+                "variant will relaunch once."
+            )
+            try:
+                self.root.after(100, self.root.destroy)
+            except self.tk.TclError:
+                pass
+            return True
+
+        def _update_run_control_buttons(self) -> None:
+            if not hasattr(self, "steer_button") or not hasattr(self, "cancel_button"):
+                return
+            active = bool(getattr(self, "busy", False))
+            cancelling = bool(getattr(self, "cancel_requested", False))
+            state = "normal" if active and not cancelling else "disabled"
+            self.steer_button.configure(state=state)
+            self.cancel_button.configure(state=state)
+
+        def _update_send_button(self) -> None:
+            super()._update_send_button()
+            self._update_run_control_buttons()
+
+        def _request_cancel(self) -> None:
+            super()._request_cancel()
+            self._update_run_control_buttons()
+
+        def _append_transcript(self, role: str, message: str) -> None:
+            if role == "status" and message.strip() == steering_status:
+                message = (
+                    "Steering update accepted; it will apply after the current step "
+                    "reaches a safe boundary."
+                )
+            super()._append_transcript(role, message)
+
+        def _steer_active_prompt(self) -> None:
+            if not self.busy or self.cancel_requested:
+                return
+            raw_prompt = self.prompt_box.get("1.0", "end").strip()
+            if not raw_prompt:
+                return
+            prompt = re.sub(
+                r"^/(?:btw|steer)(?:\s+|$)",
+                "",
+                raw_prompt,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            if not prompt:
+                return
+            if not self.agent.submit_side_note(prompt):
+                self._append_transcript(
+                    "status",
+                    "Unable to steer because the active task is no longer accepting updates.",
+                )
+                return
+            self.prompt_box.delete("1.0", "end")
+            self._last_user_prompt = prompt
+            self._append_transcript("steer", prompt)
+
+        def _cancel_active_prompt(self) -> None:
+            if not self.busy or self.cancel_requested:
+                return
+            self._request_cancel()
+            self._append_transcript(
+                "status",
+                "Cancellation requested for the active task; a blocking step may need "
+                "to reach its cancellation boundary first.",
+            )
+
+    base.QubitzGUI = RunControlGUI
+
 def _install_gpu_thermal_gate(app: LocalOnlyApp) -> None:
     base = app.base
     original_chat = base.LlamaCppClient.chat
@@ -13963,6 +14439,7 @@ def _install_gpu_thermal_gate(app: LocalOnlyApp) -> None:
         base.LlamaCppClient.qubitz_json_chat = thermally_gated_json_chat
     base.MCPHost = ThermallyGatedMCPHost
     base.AgentRunner = ThermallyGatedAgentRunner
+    _install_gui_run_controls(app)
 
 
 _install_agent_tool_hardening(_APP)
