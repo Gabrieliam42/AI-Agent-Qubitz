@@ -270,7 +270,7 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int | None] = {
     "low": 8,
     "medium": 16,
     "high": 24,
-    "xhigh": 0,
+    "xhigh": 48,
 }
 SIMPLE_DIRECT_QUESTION_STEP_CAP = 2
 SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP = 8
@@ -4225,6 +4225,43 @@ def _run_powershell_command(
     return result
 
 
+def _binary_file_notice(path: Path) -> str:
+    """Return guidance when a file cannot be usefully read or searched as text."""
+    document_libraries = {
+        ".docx": "python-docx",
+        ".xlsx": "openpyxl",
+        ".xlsm": "openpyxl",
+        ".pptx": "python-pptx",
+        ".pdf": "pypdf",
+        ".odt": "odfpy",
+        ".ods": "odfpy",
+        ".odp": "odfpy",
+    }
+    opaque_extensions = {
+        ".7z", ".bin", ".bmp", ".dll", ".exe", ".gguf", ".gif", ".gz", ".ico",
+        ".jpeg", ".jpg", ".mp3", ".mp4", ".npy", ".npz", ".pack", ".png",
+        ".pt", ".pth", ".pyc", ".pyd", ".rar", ".so", ".sqlite", ".tar",
+        ".wav", ".webp", ".whl", ".woff", ".woff2", ".zip",
+    }
+    suffix = path.suffix.lower()
+    if suffix in document_libraries:
+        library = document_libraries[suffix]
+        return (
+            f"{path.name} is a {suffix} document; its raw bytes are not text. "
+            f"Read or edit it with the Python library {library} (install it if missing), "
+            f"for example through run_command with the project interpreter."
+        )
+    if suffix in opaque_extensions:
+        return f"{path.name} is a binary {suffix} file and has no readable text content."
+    try:
+        with path.open("rb") as handle:
+            if b"\x00" in handle.read(4096):
+                return f"{path.name} appears to be a binary file and has no readable text content."
+    except OSError:
+        pass
+    return ""
+
+
 def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path, launch_script: Path) -> Any:
     workspace = workspace.resolve()
     runtime_workspace = runtime_workspace.resolve()
@@ -4339,6 +4376,16 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         target = _resolve(path, allow_missing=False, allow_external=True)
         if not target.is_file():
             raise ValueError(f"Not a file: {path}")
+        binary_notice = _binary_file_notice(target)
+        if binary_notice:
+            return {
+                "path": base.relative_path(target, workspace),
+                "start_line": 0,
+                "end_line": 0,
+                "content": "",
+                "binary": True,
+                "notice": binary_notice,
+            }
         lines = _read_text(target).splitlines()
         start_index = max(start_line - 1, 0)
         end_index = min(end_line, len(lines))
@@ -4414,6 +4461,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
     ) -> dict[str, Any]:
         root = _resolve(path, allow_missing=False, allow_external=True)
         hits: list[dict[str, Any]] = []
+        skipped_notices: dict[str, str] = {}
         needle = query if case_sensitive else query.lower()
         for candidate in sorted(root.rglob("*")):
             if not candidate.is_file():
@@ -4421,6 +4469,11 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             if any(part in getattr(base, "EXCLUDED_DIRS", set()) for part in candidate.parts):
                 continue
             if not candidate.match(file_glob) and not Path(base.relative_path(candidate, workspace)).match(file_glob):
+                continue
+            binary_notice = _binary_file_notice(candidate)
+            if binary_notice:
+                if len(skipped_notices) < 8:
+                    skipped_notices[base.relative_path(candidate, workspace)] = binary_notice
                 continue
             text = candidate.read_text(encoding="utf-8", errors="ignore")
             for line_number, line in enumerate(text.splitlines(), start=1):
@@ -4435,7 +4488,12 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                     )
                     if len(hits) >= max_results:
                         return {"query": query, "matches": hits}
-        return {"query": query, "matches": hits}
+        result: dict[str, Any] = {"query": query, "matches": hits}
+        if skipped_notices:
+            result["skipped_binary_files"] = sorted(skipped_notices)
+            if not hits:
+                result["notice"] = next(iter(skipped_notices.values()))
+        return result
 
     @server.tool(
         description=(
@@ -5713,7 +5771,209 @@ def _load_embedded_base_module() -> Any:
     return module
 
 
+def _patch_llamacpp_launch_fit(base: Any) -> None:
+    """Size the llama.cpp server GPU-first: model weights before KV cache.
+
+    Model weights are placed in VRAM first and the KV cache is fitted from what
+    remains, so no layer is offloaded to the CPU. A variant may declare
+    QUBITZ_VRAM_BUDGET_MIB to stay inside a smaller VRAM class than the card
+    provides. When weights nearly fill usable VRAM the KV cache drops from q8_0
+    to q4_0 so the model still fits entirely on the GPU. Handles both launch
+    shapes: raw llama-server argv, and powershell.exe -EncodedCommand wrappers.
+    Builds without --fit keep their original launch arguments unchanged.
+    """
+    server_cls = getattr(base, "LlamaCppServerProcess", None)
+    if server_cls is None or getattr(server_cls, "_qubitz_launch_fit_installed", False):
+        return
+    original_launch_command = server_cls._launch_command
+    safety_margin_mib = 1536
+
+    def _native_probe_path(executable: str) -> str:
+        if os.name != "posix":
+            return executable
+        match = re.match(r"^([A-Za-z]):[\\/](.*)$", executable)
+        if match is None:
+            return executable
+        drive, remainder = match.groups()
+        return f"/mnt/{drive.lower()}/" + remainder.replace("\\", "/")
+
+    def _probe_commands(executable: str) -> list[list[str]]:
+        """Probe candidates: direct exec first, then PowerShell via /init interop."""
+        commands = [[_native_probe_path(executable), "--help"]]
+        if os.name == "posix":
+            windows_path = executable
+            if not re.match(r"^[A-Za-z]:", windows_path):
+                match = re.match(r"^/mnt/([a-z])/(.*)$", windows_path)
+                if match is not None:
+                    drive, remainder = match.groups()
+                    windows_path = f"{drive.upper()}:\\" + remainder.replace("/", "\\")
+            powershell = shutil.which("powershell.exe") or "powershell.exe"
+            powershell_command = [
+                powershell,
+                "-NoProfile",
+                "-Command",
+                f"& '{windows_path}' --help",
+            ]
+            if Path("/init").is_file():
+                commands.append(["/init", *powershell_command])
+            commands.append(powershell_command)
+        return commands
+
+    def _server_help_text(executable: str) -> str:
+        cache = getattr(server_cls, "_qubitz_server_help_cache", None)
+        if cache is None:
+            cache = {}
+            server_cls._qubitz_server_help_cache = cache
+        if executable not in cache:
+            help_text = ""
+            for probe_command in _probe_commands(executable):
+                try:
+                    probe = subprocess.run(
+                        probe_command,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    help_text = f"{probe.stdout}\n{probe.stderr}"
+                except (OSError, subprocess.SubprocessError):
+                    help_text = ""
+                if "--fit-ctx" in help_text:
+                    break
+            if not help_text.strip():
+                return ""
+            cache[executable] = help_text
+        return cache[executable]
+
+    def _total_vram_mib() -> int:
+        try:
+            probe = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            return int(probe.stdout.strip().splitlines()[0].strip())
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            return 0
+
+    def _local_model_path(raw: str) -> Path:
+        text = str(raw or "")
+        match = re.match(r"^([A-Za-z]):[\\/](.*)$", text)
+        if os.name == "posix" and match is not None:
+            drive, remainder = match.groups()
+            return Path(f"/mnt/{drive.lower()}/" + remainder.replace("\\", "/"))
+        return Path(text)
+
+    def _model_size_mib(model_path: str) -> int:
+        try:
+            return _local_model_path(model_path).stat().st_size // (1024 * 1024)
+        except OSError:
+            return 0
+
+    def _variant_vram_budget_mib() -> int:
+        """Optional VRAM ceiling declared by a smaller-class variant."""
+        try:
+            return int(globals().get("QUBITZ_VRAM_BUDGET_MIB", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _fit_margin_mib(total_mib: int) -> int:
+        """Convert an optional variant VRAM budget into a fit margin."""
+        budget = _variant_vram_budget_mib()
+        if budget > 0 and total_mib > budget:
+            return max(safety_margin_mib, total_mib - budget + safety_margin_mib)
+        return safety_margin_mib
+
+    def _keep_configured_context(model_path: str, usable_mib: int) -> bool:
+        """Whether the configured --ctx-size fits alongside all weights in VRAM."""
+        size = _model_size_mib(model_path)
+        if size <= 0 or usable_mib <= 0:
+            return False
+        return size * 5 <= usable_mib * 2
+
+    def _fit_extension_args(executable: str, model_path: str) -> list[str] | None:
+        help_text = _server_help_text(executable)
+        if "--fit-ctx" not in help_text:
+            return None
+        total_mib = _total_vram_mib()
+        margin_mib = _fit_margin_mib(total_mib) if total_mib else safety_margin_mib
+        args = ["--fit", "on", "--fit-ctx", "16384", "--fit-target", str(margin_mib)]
+        usable_mib = max(0, total_mib - margin_mib)
+        size_mib = _model_size_mib(model_path)
+        crowded = usable_mib > 0 and size_mib > (usable_mib * 9) // 10
+        if "--cache-type-k" in help_text:
+            kv_type = "q4_0" if crowded else "q8_0"
+            args.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
+        if crowded and not _variant_vram_budget_mib() and "--n-gpu-layers" in help_text:
+            # Pin every layer to the GPU so fit may only shrink the context;
+            # otherwise fit protects its margin by offloading layers instead.
+            # Budget-constrained variants are exempt, since holding the smaller
+            # VRAM class matters more there than avoiding a little offload.
+            args.extend(["--n-gpu-layers", "999"])
+        return args
+
+    def _launch_command_with_fit(self) -> list[str]:
+        command = list(original_launch_command(self))
+        if not command:
+            return command
+        head_name = str(command[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if head_name == "powershell.exe":
+            encoded_index = -1
+            for index in range(1, len(command) - 1):
+                if str(command[index]).lower() == "-encodedcommand":
+                    encoded_index = index + 1
+                    break
+            if encoded_index < 0:
+                return command
+            import base64
+
+            try:
+                script = base64.b64decode(str(command[encoded_index])).decode("utf-16-le")
+            except (ValueError, UnicodeDecodeError):
+                return command
+            exe_match = re.search(r"& '([^']*llama-server(?:\.exe)?)'", script)
+            if exe_match is None:
+                return command
+            model_match = re.search(r"'--model'\s+'([^']+)'", script)
+            model_path = model_match.group(1) if model_match is not None else ""
+            fit_args = _fit_extension_args(exe_match.group(1), model_path)
+            if fit_args is None:
+                return command
+            total_mib = _total_vram_mib()
+            usable_mib = max(0, total_mib - _fit_margin_mib(total_mib)) if total_mib else 0
+            keep_ctx = bool(model_path) and _keep_configured_context(model_path, usable_mib)
+            new_script = script if keep_ctx else re.sub(
+                r"\s*'--ctx-size'\s+'[0-9]+'", "", script, count=1
+            )
+            new_script = new_script.rstrip() + "".join(f" '{arg}'" for arg in fit_args)
+            command[encoded_index] = base64.b64encode(new_script.encode("utf-16-le")).decode("ascii")
+            return command
+        model_argument = ""
+        if "--model" in command:
+            model_index = command.index("--model")
+            if model_index + 1 < len(command):
+                model_argument = str(command[model_index + 1])
+        fit_args = _fit_extension_args(str(command[0]), model_argument)
+        if fit_args is None:
+            return command
+        total_mib = _total_vram_mib()
+        usable_mib = max(0, total_mib - _fit_margin_mib(total_mib)) if total_mib else 0
+        if not _keep_configured_context(model_argument, usable_mib):
+            try:
+                ctx_index = command.index("--ctx-size")
+                del command[ctx_index : ctx_index + 2]
+            except ValueError:
+                pass
+        command.extend(fit_args)
+        return command
+
+    server_cls._launch_command = _launch_command_with_fit
+    server_cls._qubitz_launch_fit_installed = True
+
+
 def _patch_harness_loader(base: Any) -> None:
+    _patch_llamacpp_launch_fit(base)
+
     def _load_harness_text(workspace: Path) -> str:
         encrypted_name = getattr(base, "DEFAULT_ENCRYPTED_HARNESS_NAME", "HARNESS.enc")
         plaintext_name = getattr(base, "DEFAULT_HARNESS_NAME", "HARNESS.txt")
