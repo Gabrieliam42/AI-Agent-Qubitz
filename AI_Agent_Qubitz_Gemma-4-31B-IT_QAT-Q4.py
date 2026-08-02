@@ -483,9 +483,6 @@ def _tool_arguments_request_external_network(name: str, arguments: dict[str, Any
         return _is_external_network_url(arguments.get("url"))
     if normalized == "open_urls_in_browser":
         return any(_is_external_network_url(value) for value in arguments.get("urls", []))
-    rendered = json.dumps(arguments, ensure_ascii=True, sort_keys=True, default=str)
-    if any(_is_external_network_url(url) for url in _extract_external_urls(rendered)):
-        return True
     if normalized == "install_python_package":
         return True
     if normalized not in {
@@ -493,9 +490,13 @@ def _tool_arguments_request_external_network(name: str, arguments: dict[str, Any
         "run_project_command",
         "run_powershell_command",
         "run_cmd_command",
+        "sandbox_run_command",
         "sandbox_run_powershell",
     }:
         return False
+    rendered = json.dumps(arguments, ensure_ascii=True, sort_keys=True, default=str)
+    if any(_is_external_network_url(url) for url in _extract_external_urls(rendered)):
+        return True
     return bool(
         re.search(
             r"\b(?:curl|wget|invoke-webrequest|invoke-restmethod|iwr|irm|ssh|scp|sftp)\b"
@@ -5799,7 +5800,7 @@ _EMBEDDED_BASE_SOURCE = (
     'MAX_DIRECT_READ_CHARS = 12000\n'
     'DEFAULT_NUM_CTX = 262144\n'
     'DEFAULT_NUM_PREDICT = 16384\n'
-    'DEFAULT_CHAT_TEMPERATURE = 0.5\n'
+    'DEFAULT_CHAT_TEMPERATURE = 0.6\n'
     'DEFAULT_CHAT_TOP_P = 1.0\n'
     'DEFAULT_CHAT_MIN_P = 0.01\n'
     'DEFAULT_REPEAT_PENALTY = 1.0\n'
@@ -16153,7 +16154,14 @@ class _ToolPermissionBroker:
 
     @staticmethod
     def _command_text(name: str, arguments: dict[str, Any]) -> str:
-        if name not in {"run_command", "run_project_command", "run_powershell_command"}:
+        if name not in {
+            "run_command",
+            "run_cmd_command",
+            "run_project_command",
+            "run_powershell_command",
+            "sandbox_run_command",
+            "sandbox_run_powershell",
+        }:
             return ""
         value = arguments.get("command", "")
         return " ".join(str(item) for item in value) if isinstance(value, list) else str(value)
@@ -16403,6 +16411,81 @@ class _ToolPermissionBroker:
         self.transaction_nonprogress_calls = 0
         self.transaction_progress_token = self._transaction_progress_token()
 
+    def _missing_source_evidence_urls(self) -> list[str]:
+        prompt = "\n".join(
+            part
+            for part in (self.approval_context_prompt, self.current_prompt)
+            if str(part or "").strip()
+        )
+        if not re.search(
+            r"\b(?:add|append|change|copy|correct|create|delete|edit|fix|implement|insert|modify|move|"
+            r"patch|populate|put|refactor|remove|rename|replace|rewrite|update|write)\b",
+            prompt,
+            re.IGNORECASE,
+        ):
+            return []
+
+        lowered = prompt.casefold()
+        required_urls: list[str] = []
+        for raw_url in _named_source_urls(prompt):
+            canonical = _canonical_http_url(raw_url)
+            if not canonical or canonical in required_urls:
+                continue
+            start = lowered.find(raw_url.casefold())
+            if start < 0:
+                continue
+            prefix = prompt[max(0, start - 220) : start]
+            suffix = prompt[start + len(raw_url) : start + len(raw_url) + 180]
+            flags = re.IGNORECASE | re.DOTALL
+            literal_link = bool(
+                re.search(r"\b(?:address|link|url)\b.{0,80}$", prefix, flags)
+            )
+            dependency_prefix = bool(
+                re.search(
+                    r"\b(?:according\s+to|based\s+(?:on|upon)|derived\s+from)\b.{0,180}$",
+                    prefix,
+                    flags,
+                )
+            )
+            source_content_prefix = bool(
+                re.search(
+                    r"\b(?:content|data|description|details?|facts?|information|release\s+notes?|"
+                    r"specification)\b.{0,100}\b(?:at|from|in|on|using)\b.{0,100}$",
+                    prefix,
+                    flags,
+                )
+            )
+            source_action_prefix = bool(
+                re.search(
+                    r"\b(?:analy[sz]e|check|consult|fetch|get|inspect|look\s+up|obtain|pull|read|"
+                    r"research|retrieve|review|verify)\b.{0,140}$",
+                    prefix,
+                    flags,
+                )
+            )
+            use_to_edit = bool(
+                re.search(r"\b(?:apply|use)\b.{0,40}$", prefix, flags)
+                and re.search(
+                    r"^.{0,100}\b(?:to|for)\b.{0,100}\b(?:add|change|correct|edit|fix|modify|patch|"
+                    r"populate|put|replace|rewrite|update|write)\b",
+                    suffix,
+                    flags,
+                )
+            )
+            if dependency_prefix or source_action_prefix or use_to_edit or (
+                source_content_prefix and not literal_link
+            ):
+                required_urls.append(canonical)
+
+        fetched_urls = {
+            _canonical_http_url(url)
+            for evidence in self._current_turn_evidence()
+            if evidence.get("success") and evidence.get("tool") == "fetch_url"
+            for url in evidence.get("urls", [])
+        }
+        fetched_urls.discard("")
+        return [url for url in required_urls if url not in fetched_urls]
+
     def authorize(self, name: str, arguments: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         normalized = name.lower()
         mutation_tools = self._MUTATION_TOOLS | {"apply_docx_text_patch"}
@@ -16434,6 +16517,29 @@ class _ToolPermissionBroker:
             reason = "Explicit paths outside the active workspace require Full Access."
             self._audit("mode_denied", normalized, arguments, fingerprint, reason)
             return False, {"status": "access_mode_denied", "tool": normalized, "reason": reason}
+        command_effects = self._command_side_effects(self._command_text(normalized, arguments))
+        if normalized in mutation_tools or "mutate" in command_effects:
+            missing_source_urls = self._missing_source_evidence_urls()
+            if missing_source_urls:
+                if _network_mode_is_online():
+                    reason = (
+                        "This edit explicitly depends on content from named external source(s). Fetch every missing "
+                        "source successfully in the current turn before mutating files; local memory, retrieval, "
+                        "search snippets, and prior model knowledge cannot substitute for the named source."
+                    )
+                else:
+                    reason = (
+                        "This edit explicitly depends on content from named external source(s), but network mode is "
+                        "Offline. Leave the target unchanged and switch to Online before fetching the named source(s)."
+                    )
+                self._audit("source_evidence_required", normalized, arguments, fingerprint, reason)
+                return False, {
+                    "status": "source_evidence_required",
+                    "tool": normalized,
+                    "reason": reason,
+                    "missing_urls": missing_source_urls,
+                    "files_unchanged": True,
+                }
         if fingerprint in self.approved_once:
             self.approved_once.remove(fingerprint)
             self.pending.pop(fingerprint, None)
@@ -16550,7 +16656,6 @@ class _ToolPermissionBroker:
                     "upgrade",
         )
         install_requested = semantic.requests("install", "uninstall", "upgrade")
-        command_effects = self._command_side_effects(self._command_text(normalized, arguments))
         if "mutate" in command_effects and normalized in {
             "run_command",
             "run_project_command",
