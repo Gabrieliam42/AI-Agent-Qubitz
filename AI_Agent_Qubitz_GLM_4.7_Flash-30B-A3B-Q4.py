@@ -4001,59 +4001,239 @@ def _path_exists_safely(path: Path) -> bool:
         return False
 
 
-def _preferred_project_linux_python(workspace: Path) -> Path | None:
-    for candidate in (
-        workspace / ".venv" / "bin" / "python",
-        workspace / ".venv_linux" / "bin" / "python",
-        workspace / ".venv_wsl" / "bin" / "python",
-        workspace / "venv" / "bin" / "python",
-        workspace / "env" / "bin" / "python",
-    ):
-        if _path_exists_safely(candidate):
-            return candidate
+def _project_environment_candidates(
+    workspace: Path,
+    environment_root: Path | None = None,
+) -> list[tuple[Path, Path, str]]:
+    """Return environment-root, interpreter, and layout candidates under the active workspace."""
+    if environment_root is not None:
+        roots = [environment_root]
+    else:
+        roots = [
+            workspace / ".venv",
+            workspace / ".venv312",
+            workspace / ".venv313",
+            workspace / ".venv_wsl",
+            workspace / ".venv_linux",
+            workspace / ".venv_win",
+            workspace / "venv",
+            workspace / "env",
+        ]
+        try:
+            roots.extend(child for child in sorted(workspace.iterdir()) if child.is_dir())
+        except OSError:
+            pass
+
+    candidates: list[tuple[Path, Path, str]] = []
+    seen: set[str] = set()
+    for root in roots:
+        direct_name = root.name.lower()
+        layouts = (
+            [(root.parent.parent, root, "windows")]
+            if direct_name == "python.exe"
+            else [(root.parent.parent, root, "linux")]
+            if direct_name in {"python", "python3"}
+            else [
+                (root, root / "Scripts" / "python.exe", "windows"),
+                (root, root / "bin" / "python", "linux"),
+            ]
+        )
+        for candidate_root, interpreter, layout in layouts:
+            key = str(interpreter).replace("\\", "/").casefold()
+            if key in seen or not _path_exists_safely(interpreter):
+                continue
+            seen.add(key)
+            candidates.append((candidate_root, interpreter, layout))
+    return candidates
+
+
+def _explicit_prompt_environment(prompt: str) -> str | None:
+    """Extract only a high-confidence project-environment path explicitly named by the user."""
+    text = str(prompt or "")
+    assignment = re.search(
+        r"\benvironment\s*=\s*([`'\"]?)([^\s,;`'\"]+)\1",
+        text,
+        re.IGNORECASE,
+    )
+    if assignment is not None:
+        return assignment.group(2).strip()
+    matches = re.findall(
+        r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_./\\:-]*\.venv[A-Za-z0-9._-]*|"
+        r"[A-Za-z0-9_./\\:-]*\bvenv[0-9][A-Za-z0-9._-]*)(?=$|[\s,;:`'\"])",
+        text,
+        re.IGNORECASE,
+    )
+    return matches[-1].strip() if matches else None
+
+
+def _probe_python_environment(
+    environment_root: Path,
+    python_executable: Path,
+    layout: str,
+) -> dict[str, Any]:
+    """Execute an environment's interpreter and classify the environment from runtime facts."""
+    result: dict[str, Any] = {
+        "status": "unusable",
+        "environment_root": str(environment_root),
+        "python": str(python_executable),
+        "layout": layout,
+        "pyvenv_cfg_present": _path_exists_safely(environment_root / "pyvenv.cfg"),
+        "return_code": None,
+        "returncode": None,
+    }
+    if os.name == "nt" and layout == "linux":
+        result["reason"] = "A WSL/Linux interpreter cannot be executed directly by the Windows host process."
+        return result
+    probe_code = (
+        "import json,sys;"
+        "print(json.dumps({'sys_executable':sys.executable,'sys_prefix':sys.prefix,"
+        "'sys_base_prefix':sys.base_prefix,'sys_platform':sys.platform,"
+        "'python_version':'.'.join(map(str,sys.version_info[:3]))},sort_keys=True))"
+    )
     try:
-        for child in sorted(workspace.iterdir()):
-            candidate = child / "bin" / "python"
-            if _path_exists_safely(child / "pyvenv.cfg") and _path_exists_safely(candidate):
-                return candidate
-    except OSError:
-        return None
+        completed = subprocess.run(
+            [str(python_executable), "-I", "-c", probe_code],
+            cwd=environment_root.parent if environment_root.parent.is_dir() else None,
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except Exception as exc:
+        result["reason"] = f"Interpreter execution failed: {type(exc).__name__}: {exc}"
+        return result
+    stdout = _decode_subprocess_output(completed.stdout)
+    stderr = _decode_subprocess_output(completed.stderr)
+    result.update(
+        {
+            "return_code": completed.returncode,
+            "returncode": completed.returncode,
+            "stdout": _shorten(stdout, 2000),
+            "stderr": _shorten(stderr, 4000),
+        }
+    )
+    if completed.returncode != 0:
+        result["reason"] = "The interpreter exists but its direct execution probe failed."
+        return result
+    payload: dict[str, Any] | None = None
+    for line in reversed(stdout.splitlines()):
+        with suppress(json.JSONDecodeError):
+            decoded = json.loads(line)
+            if isinstance(decoded, dict) and decoded.get("sys_executable"):
+                payload = decoded
+                break
+    if payload is None:
+        result["reason"] = "The interpreter ran but did not return the required runtime facts."
+        return result
+    result.update(payload)
+    platform_name = str(payload.get("sys_platform") or "").lower()
+    host_in_wsl = False
+    with suppress(OSError):
+        host_in_wsl = any(
+            token in Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
+            for token in ("microsoft", "wsl")
+        )
+    actual_kind = "windows" if platform_name == "win32" else "wsl_linux" if host_in_wsl else "linux"
+    result["kind"] = actual_kind
+    if (layout == "windows") != (actual_kind == "windows"):
+        result["reason"] = f"Interpreter platform {platform_name or 'unknown'} does not match its {layout} layout."
+        return result
+    prefix = str(payload.get("sys_prefix") or "").replace("\\", "/").rstrip("/").casefold()
+    base_prefix = str(payload.get("sys_base_prefix") or "").replace("\\", "/").rstrip("/").casefold()
+    if not prefix or prefix == base_prefix:
+        result["reason"] = "The interpreter ran, but sys.prefix does not identify an isolated virtual environment."
+        return result
+    result["status"] = "ready"
+    result["reason"] = "The exact environment interpreter executed successfully and reported an isolated prefix."
+    return result
+
+
+def _inspect_project_python_environment(
+    base: Any,
+    workspace: Path,
+    environment: str | None = None,
+) -> dict[str, Any]:
+    """Resolve a named environment from the active workspace and validate it by execution."""
+    workspace = workspace.resolve()
+    requested = str(environment or "").strip()
+    environment_root: Path | None = None
+    if requested:
+        environment_root = base.resolve_workspace_path(
+            workspace,
+            requested,
+            allow_missing=True,
+            allow_external=True,
+        )
+    candidates = _project_environment_candidates(workspace, environment_root)
+    probes = [
+        _probe_python_environment(candidate_root, interpreter, layout)
+        for candidate_root, interpreter, layout in candidates
+    ]
+    ready = [probe for probe in probes if probe.get("status") == "ready"]
+
+    def display_path(value: str) -> str:
+        path = Path(value)
+        with suppress(ValueError):
+            return str(path.resolve().relative_to(workspace)).replace("\\", "/") or "."
+        return str(path)
+
+    for probe in probes:
+        probe["environment"] = display_path(str(probe["environment_root"]))
+        probe["python"] = str(probe["python"])
+    common = {
+        "workspace": str(workspace),
+        "requested_environment": requested or None,
+        "candidates": probes,
+    }
+    if len(ready) == 1:
+        selected = dict(ready[0])
+        selected.pop("environment_root", None)
+        return {**common, **selected}
+    if len(ready) > 1:
+        return {
+            **common,
+            "status": "ambiguous",
+            "reason": (
+                "Multiple executable project-local Python environments were found; pass environment explicitly."
+            ),
+        }
+    if probes:
+        return {
+            **common,
+            "status": "unusable",
+            "reason": "Environment candidates were found, but every exact interpreter execution probe failed.",
+        }
+    expected_root = environment_root if environment_root is not None else workspace
+    return {
+        **common,
+        "status": "not_found",
+        "reason": (
+            f"No Scripts/python.exe or bin/python interpreter was found under {display_path(str(expected_root))}."
+        ),
+    }
+
+
+def _preferred_project_linux_python(workspace: Path) -> Path | None:
+    for environment_root, candidate, layout in _project_environment_candidates(workspace):
+        if layout == "linux" and _probe_python_environment(environment_root, candidate, layout).get("status") == "ready":
+            return candidate
     return None
 
 
 def _preferred_project_windows_python(workspace: Path) -> Path | None:
-    for candidate in (
-        workspace / ".venv312" / "Scripts" / "python.exe",
-        workspace / ".venv313" / "Scripts" / "python.exe",
-        workspace / ".venv" / "Scripts" / "python.exe",
-        workspace / ".venv_win" / "Scripts" / "python.exe",
-        workspace / "venv" / "Scripts" / "python.exe",
-        workspace / "env" / "Scripts" / "python.exe",
-    ):
-        if _path_exists_safely(candidate):
+    for environment_root, candidate, layout in _project_environment_candidates(workspace):
+        if layout == "windows" and _probe_python_environment(environment_root, candidate, layout).get("status") == "ready":
             return candidate
-    try:
-        for child in sorted(workspace.iterdir()):
-            candidate = child / "Scripts" / "python.exe"
-            if _path_exists_safely(child / "pyvenv.cfg") and _path_exists_safely(candidate):
-                return candidate
-    except OSError:
-        return None
     return None
 
 
 def _preferred_project_python(workspace: Path) -> Path | None:
     linux_candidate = _preferred_project_linux_python(workspace)
     windows_candidate = _preferred_project_windows_python(workspace)
-    candidates = (
-        [windows_candidate, linux_candidate]
-        if _is_windows_backed_workspace(workspace)
-        else [linux_candidate, windows_candidate]
-    )
-    for candidate in candidates:
-        if candidate is not None:
-            return candidate
-    return None
+    if os.name == "nt":
+        candidates = (windows_candidate, linux_candidate)
+    else:
+        candidates = (linux_candidate, windows_candidate)
+    return next((candidate for candidate in candidates if candidate is not None), None)
 
 
 def _enable_local_only_environment() -> None:
@@ -4771,43 +4951,219 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
 
     @server.tool(
         description=(
-            "Install Python packages into the preferred active-workspace project-local virtual environment with uv. "
-            "Each package or requirements entry is installed separately with --no-deps. "
-            "A pip fallback is allowed only after repeated uv failure and explicit allow_pip_fallback=true."
+            "Resolve a Python environment relative to the active workspace and validate its exact interpreter "
+            "by execution. Accepts environment='.venv', environment='.venv312', an explicit environment path, "
+            "or no value to discover project-local environments."
+        )
+    )
+    def inspect_python_environment(environment: str | None = None) -> dict[str, Any]:
+        return _inspect_project_python_environment(base, workspace, environment)
+
+    @server.tool(
+        description=(
+            "Install Python packages into an executable active-workspace project-local virtual environment. "
+            "Pass environment='.venv' or environment='.venv312' when the user names it; relative values resolve "
+            "from the active workspace root. Entries are installed separately with --no-deps, verified through "
+            "the target interpreter, and pip fallback requires repeated uv failure plus allow_pip_fallback=true."
         )
     )
     def install_python_package(
         packages: list[str] | None = None,
         requirements_file: str | None = None,
+        environment: str | None = None,
         upgrade: bool = False,
         pip_args: list[str] | None = None,
         allow_pip_fallback: bool = False,
     ) -> dict[str, Any]:
-        python_executable = _preferred_project_python(workspace)
-        if python_executable is None:
-            raise RuntimeError("No project-local Python environment was found in the active workspace.")
         if not packages and not requirements_file:
             raise ValueError("Provide packages and/or requirements_file.")
-
-        uv_executable = _project_launch_command_executable(
-            "uv.exe",
-            "uv",
-        ) if python_executable.suffix.lower() == ".exe" else _project_launch_command_executable("uv", "uv.exe")
-        if not uv_executable:
+        inspection = _inspect_project_python_environment(base, workspace, environment)
+        if inspection.get("status") != "ready":
             return {
-                "status": "uv_unavailable",
-                "return_code": 127,
-                "returncode": 127,
-                "python": str(python_executable),
-                "reason": "uv is unavailable. Ask the user to install uv before retrying.",
+                **inspection,
+                "return_code": 2,
+                "returncode": 2,
                 "commands": [],
                 "results": [],
             }
+        python_executable = Path(str(inspection["python"]))
+        target_kind = str(inspection.get("kind") or "")
+        target_is_windows = target_kind == "windows"
+        target_native_python = str(inspection.get("sys_executable") or python_executable)
 
         def runtime_path(path: Path) -> str:
-            if python_executable.suffix.lower() == ".exe" and str(uv_executable).lower().endswith(".exe"):
+            if target_is_windows:
                 return _workspace_windows_path(base, path)
             return str(path)
+
+        commands: list[list[str]] = []
+        results: list[dict[str, Any]] = []
+
+        def run_process(
+            command: list[str],
+            installer: str,
+            attempt: int,
+            recovery: str = "",
+            timeout_seconds: int = 1800,
+        ) -> dict[str, Any]:
+            commands.append(list(command))
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=workspace,
+                    capture_output=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+                return_code = completed.returncode
+                stdout = _decode_subprocess_output(completed.stdout)
+                stderr = _decode_subprocess_output(completed.stderr)
+            except subprocess.TimeoutExpired as exc:
+                return_code = 124
+                stdout = _decode_subprocess_output(exc.stdout)
+                stderr = f"Installer timed out after {timeout_seconds} seconds.\n{_decode_subprocess_output(exc.stderr)}"
+            except OSError as exc:
+                return_code = 127
+                stdout = ""
+                stderr = f"{type(exc).__name__}: {exc}"
+            entry = {
+                "installer": installer,
+                "attempt": attempt,
+                "recovery": recovery or None,
+                "command": list(command),
+                "return_code": return_code,
+                "returncode": return_code,
+                "stdout": _shorten(stdout, 12000),
+                "stderr": _shorten(stderr, 12000),
+            }
+            results.append(entry)
+            return entry
+
+        def failure_class(result: dict[str, Any]) -> str:
+            output = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".lower()
+            if any(
+                token in output
+                for token in (
+                    "connection reset",
+                    "connection timed out",
+                    "network is unreachable",
+                    "read timed out",
+                    "remote end closed",
+                    "temporary failure",
+                    "temporarily unavailable",
+                    "too many requests",
+                    "timed out",
+                    "tls handshake",
+                )
+            ) or re.search(r"\b(?:429|502|503|504)\b", output):
+                return "transient_network"
+            if any(
+                token in output
+                for token in (
+                    "badzipfile",
+                    "cache entry",
+                    "cached wheel",
+                    "hashes do not match",
+                    "invalid wheel",
+                    "failed to extract",
+                )
+            ):
+                return "cache_or_archive"
+            if any(
+                token in output
+                for token in (
+                    "conflicting dependencies",
+                    "dependency conflict",
+                    "no solution found",
+                    "resolution impossible",
+                    "resolutionimpossible",
+                    "resolution too deep",
+                    "resolutiontoodeep",
+                )
+            ):
+                return "dependency_resolution"
+            if any(
+                token in output
+                for token in (
+                    "no matching distribution",
+                    "not a supported wheel",
+                    "requires-python",
+                    "unsupported python",
+                    "could not find a version that satisfies",
+                )
+            ):
+                return "incompatible_or_unavailable"
+            if any(token in output for token in ("access is denied", "permission denied", "operation not permitted")):
+                return "permission"
+            if any(
+                token in output
+                for token in (
+                    "build failed",
+                    "could not build wheels",
+                    "failed building wheel",
+                    "failed to build",
+                    "subprocess-exited-with-error",
+                )
+            ):
+                return "build"
+            return "unknown"
+
+        def metadata_versions(distribution_names: list[str]) -> dict[str, str | None]:
+            if not distribution_names:
+                return {}
+            code = (
+                "import importlib.metadata as m,json,sys;"
+                "names=json.loads(sys.argv[1]);out={};"
+                "exec(\"for n in names:\\n try: out[n]=m.version(n)\\n except m.PackageNotFoundError: out[n]=None\");"
+                "print(json.dumps(out,sort_keys=True))"
+            )
+            try:
+                completed = subprocess.run(
+                    [str(python_executable), "-I", "-c", code, json.dumps(distribution_names)],
+                    cwd=workspace,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+            except Exception:
+                return {name: None for name in distribution_names}
+            if completed.returncode != 0:
+                return {name: None for name in distribution_names}
+            for line in reversed(_decode_subprocess_output(completed.stdout).splitlines()):
+                with suppress(json.JSONDecodeError):
+                    payload = json.loads(line)
+                    if isinstance(payload, dict):
+                        return {name: payload.get(name) for name in distribution_names}
+            return {name: None for name in distribution_names}
+
+        def distribution_name(unit: list[str]) -> str | None:
+            requirement = unit[1] if unit and unit[0] == "--editable" and len(unit) > 1 else unit[0]
+            match = re.match(
+                r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s*@|\[|===|==|!=|~=|<=|>=|<|>|;|\s*$)",
+                requirement,
+            )
+            return match.group(1) if match is not None else None
+
+        def canonical_distribution(name: str | None) -> str:
+            return re.sub(r"[-_.]+", "-", name or "").casefold()
+
+        def is_unversioned_name(unit: list[str], name: str | None) -> bool:
+            return bool(name and len(unit) == 1 and unit[0].strip().casefold() == name.casefold())
+
+        def uv_module_version() -> str | None:
+            try:
+                completed = subprocess.run(
+                    [str(python_executable), "-I", "-m", "uv", "--version"],
+                    cwd=workspace,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+            except Exception:
+                return None
+            if completed.returncode != 0:
+                return None
+            return _decode_subprocess_output(completed.stdout).strip() or "available"
 
         def logical_requirement_lines(path: Path, seen: set[Path] | None = None) -> list[tuple[Path, str]]:
             resolved = path.resolve()
@@ -4890,88 +5246,275 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             raise ValueError("No installable package entries were found.")
 
         common_args = [str(item) for item in pip_args or [] if str(item).strip()]
-        uv_python = runtime_path(python_executable)
-        commands: list[list[str]] = []
-        results: list[dict[str, Any]] = []
-        active_installer = "uv"
-        final_return_code = 0
+        target_changing_options = (
+            "--prefix",
+            "--python",
+            "--root",
+            "--target",
+            "--user",
+            "-t",
+        )
+        for argument in common_args:
+            lowered_argument = argument.casefold()
+            if lowered_argument in target_changing_options or any(
+                lowered_argument.startswith(f"{option}=") for option in target_changing_options if option.startswith("--")
+            ):
+                raise ValueError(f"pip_args may not redirect installation outside the selected environment: {argument}")
+        common_args = [
+            argument
+            for argument in common_args
+            if argument.casefold() not in {"--no-dependencies", "--no-deps", "--upgrade", "-u"}
+        ]
+
+        names = [name for name in (distribution_name(unit) for unit in requirement_units) if name]
+        names = list(dict.fromkeys(names))
+        versions_before = metadata_versions(names)
+        target_uv_version = uv_module_version()
+        package_results: list[dict[str, Any]] = []
+        pending_units: list[tuple[list[str], str | None]] = []
         for unit in requirement_units:
-            uv_command = [
-                str(uv_executable),
+            name = distribution_name(unit)
+            before = versions_before.get(name) if name else None
+            broken_uv = canonical_distribution(name) == "uv" and target_uv_version is None
+            if before and not upgrade and is_unversioned_name(unit, name) and not broken_uv:
+                package_results.append(
+                    {
+                        "requirement": unit[0],
+                        "distribution": name,
+                        "status": "already_present",
+                        "version_before": before,
+                        "version_after": before,
+                        "verified": True,
+                    }
+                )
+            else:
+                pending_units.append((unit, name))
+
+        uv_prefix: list[str] | None = (
+            [str(python_executable), "-I", "-m", "uv"] if target_uv_version is not None else None
+        )
+        uv_python = target_native_python
+        host_uv = _project_launch_command_executable("uv.exe", "uv") if target_is_windows else _project_launch_command_executable("uv", "uv.exe")
+        if uv_prefix is None and host_uv:
+            host_is_windows = str(host_uv).casefold().endswith(".exe")
+            if host_is_windows == target_is_windows:
+                uv_prefix = [str(host_uv)]
+                uv_python = runtime_path(python_executable)
+
+        uv_pending = next(
+            (
+                (unit, name)
+                for unit, name in pending_units
+                if canonical_distribution(name) == "uv"
+            ),
+            None,
+        )
+        active_installer = "none"
+        if pending_units and uv_prefix is None and uv_pending is not None:
+            unit, name = uv_pending
+            pip_probe = run_process(
+                [str(python_executable), "-I", "-m", "pip", "--version"],
                 "pip",
-                "install",
-                "--python",
-                uv_python,
-                "--no-deps",
-            ]
+                0,
+                "uv_bootstrap_preflight",
+                60,
+            )
+            if pip_probe["return_code"] != 0:
+                ensurepip = run_process(
+                    [str(python_executable), "-I", "-m", "ensurepip", "--upgrade"],
+                    "ensurepip",
+                    1,
+                    "uv_bootstrap",
+                    300,
+                )
+                if ensurepip["return_code"] != 0:
+                    return {
+                        "status": "uv_bootstrap_failed",
+                        "installer": "ensurepip",
+                        "environment": inspection.get("environment"),
+                        "environment_kind": target_kind,
+                        "python": str(python_executable),
+                        "return_code": ensurepip["return_code"],
+                        "returncode": ensurepip["return_code"],
+                        "commands": commands,
+                        "results": results,
+                        "packages": package_results,
+                        "verified": False,
+                        "reason": "The target environment had neither runnable pip nor a successful ensurepip bootstrap.",
+                    }
+            bootstrap_base = [str(python_executable), "-I", "-m", "pip", "install", "--no-deps"]
             if upgrade:
-                uv_command.append("--upgrade")
-            uv_command.extend(sticky_options)
-            uv_command.extend(common_args)
-            uv_command.extend(unit)
-            completed = None
-            for attempt in range(1, 3):
-                commands.append(list(uv_command))
-                completed = subprocess.run(
-                    uv_command,
-                    cwd=workspace,
-                    capture_output=True,
-                    timeout=1800,
-                    check=False,
+                bootstrap_base.append("--upgrade")
+            bootstrap_base.extend(sticky_options)
+            bootstrap_base.extend(common_args)
+            first = run_process([*bootstrap_base, *unit], "pip", 1, "uv_bootstrap")
+            last = first
+            first_class = failure_class(first)
+            recoverable = first_class in {"build", "cache_or_archive", "transient_network", "unknown"} or (
+                first_class == "dependency_resolution" and not upgrade and is_unversioned_name(unit, name)
+            )
+            if first["return_code"] != 0 and recoverable:
+                recovery_flag = (
+                    "--upgrade"
+                    if first_class == "dependency_resolution" and not upgrade and is_unversioned_name(unit, name)
+                    else "--no-cache-dir"
                 )
-                results.append(
-                    {
-                        "installer": "uv",
-                        "attempt": attempt,
-                        "command": uv_command,
-                        "return_code": completed.returncode,
-                        "returncode": completed.returncode,
-                        "stdout": _shorten(_decode_subprocess_output(completed.stdout), 12000),
-                        "stderr": _shorten(_decode_subprocess_output(completed.stderr), 12000),
-                    }
+                recovery = [*bootstrap_base]
+                if recovery_flag not in recovery:
+                    recovery.append(recovery_flag)
+                last = run_process([*recovery, *unit], "pip", 2, f"uv_bootstrap_{first_class}")
+            target_uv_version = uv_module_version() if last["return_code"] == 0 else None
+            if last["return_code"] == 0 and target_uv_version is None and not upgrade:
+                recovery = [*bootstrap_base, "--upgrade", *unit]
+                last = run_process(recovery, "pip", 2, "uv_bootstrap_verification")
+                target_uv_version = uv_module_version() if last["return_code"] == 0 else None
+            after = metadata_versions([name]).get(name) if name else None
+            uv_verified = bool(target_uv_version and after)
+            package_results.append(
+                {
+                    "requirement": unit[0],
+                    "distribution": name,
+                    "status": "installed" if uv_verified else "failed",
+                    "installer": "pip",
+                    "version_before": versions_before.get(name) if name else None,
+                    "version_after": after,
+                    "verified": uv_verified,
+                    "uv_version": target_uv_version,
+                    "failure_class": None if uv_verified else failure_class(last),
+                }
+            )
+            if not uv_verified:
+                return {
+                    "status": "uv_bootstrap_failed",
+                    "installer": "pip",
+                    "environment": inspection.get("environment"),
+                    "environment_kind": target_kind,
+                    "python": str(python_executable),
+                    "return_code": last["return_code"] or 1,
+                    "returncode": last["return_code"] or 1,
+                    "commands": commands,
+                    "results": results,
+                    "packages": package_results,
+                    "verified": False,
+                    "reason": "uv was authorized but could not be installed and executed in the target environment.",
+                }
+            pending_units.remove(uv_pending)
+            uv_prefix = [str(python_executable), "-I", "-m", "uv"]
+            uv_python = target_native_python
+            active_installer = "pip"
+
+        if pending_units and uv_prefix is None:
+            return {
+                "status": "uv_unavailable",
+                "installer": None,
+                "environment": inspection.get("environment"),
+                "environment_kind": target_kind,
+                "python": str(python_executable),
+                "return_code": 127,
+                "returncode": 127,
+                "commands": commands,
+                "results": results,
+                "packages": package_results,
+                "verified": False,
+                "reason": (
+                    "uv is unavailable for the target environment. Ask the user to authorize installing uv in "
+                    "that environment, or include uv in the requested package list."
+                ),
+            }
+
+        final_return_code = 0
+        for unit, name in pending_units:
+            uv_base = [*uv_prefix, "pip", "install", "--python", uv_python, "--no-deps"]
+            if upgrade:
+                uv_base.append("--upgrade")
+            uv_base.extend(sticky_options)
+            uv_base.extend(common_args)
+            first = run_process([*uv_base, *unit], "uv", 1)
+            last = first
+            first_class = failure_class(first)
+            uv_attempts = 1
+            recoverable = first_class in {"build", "cache_or_archive", "transient_network", "unknown"} or (
+                first_class == "dependency_resolution" and not upgrade and is_unversioned_name(unit, name)
+            )
+            if first["return_code"] != 0 and recoverable:
+                recovery_flag = (
+                    "--upgrade"
+                    if first_class == "dependency_resolution" and not upgrade and is_unversioned_name(unit, name)
+                    else "--no-cache"
                 )
-                if completed.returncode == 0:
-                    break
-            if completed is None:
-                raise RuntimeError("uv did not start.")
-            if completed.returncode != 0 and allow_pip_fallback:
-                active_installer = "pip"
-                pip_command = [str(python_executable), "-m", "pip", "install", "--no-deps"]
+                recovery = [*uv_base]
+                if recovery_flag not in recovery:
+                    recovery.append(recovery_flag)
+                last = run_process([*recovery, *unit], "uv", 2, first_class)
+                uv_attempts = 2
+            active_installer = "uv"
+            last_class = failure_class(last)
+            if (
+                last["return_code"] != 0
+                and allow_pip_fallback
+                and uv_attempts >= 2
+                and last_class not in {"incompatible_or_unavailable", "permission"}
+            ):
+                pip_base = [str(python_executable), "-I", "-m", "pip", "install", "--no-deps"]
                 if upgrade:
-                    pip_command.append("--upgrade")
-                pip_command.extend(sticky_options)
-                pip_command.extend(common_args)
-                pip_command.extend(unit)
-                commands.append(list(pip_command))
-                completed = subprocess.run(
-                    pip_command,
-                    cwd=workspace,
-                    capture_output=True,
-                    timeout=1800,
-                    check=False,
+                    pip_base.append("--upgrade")
+                pip_base.extend(sticky_options)
+                pip_base.extend(common_args)
+                last = run_process([*pip_base, *unit], "pip", 1, "after_repeated_uv_failure")
+                pip_class = failure_class(last)
+                pip_recoverable = pip_class in {"build", "cache_or_archive", "transient_network", "unknown"} or (
+                    pip_class == "dependency_resolution" and not upgrade and is_unversioned_name(unit, name)
                 )
-                results.append(
-                    {
-                        "installer": "pip",
-                        "attempt": 1,
-                        "command": pip_command,
-                        "return_code": completed.returncode,
-                        "returncode": completed.returncode,
-                        "stdout": _shorten(_decode_subprocess_output(completed.stdout), 12000),
-                        "stderr": _shorten(_decode_subprocess_output(completed.stderr), 12000),
-                    }
-                )
-            final_return_code = completed.returncode
-            if final_return_code != 0:
+                if last["return_code"] != 0 and pip_recoverable:
+                    recovery_flag = (
+                        "--upgrade"
+                        if pip_class == "dependency_resolution" and not upgrade and is_unversioned_name(unit, name)
+                        else "--no-cache-dir"
+                    )
+                    recovery = [*pip_base]
+                    if recovery_flag not in recovery:
+                        recovery.append(recovery_flag)
+                    last = run_process([*recovery, *unit], "pip", 2, pip_class)
+                active_installer = "pip"
+                last_class = failure_class(last)
+            after = metadata_versions([name]).get(name) if name and last["return_code"] == 0 else None
+            verified = bool(name and after)
+            package_results.append(
+                {
+                    "requirement": unit[0],
+                    "distribution": name,
+                    "status": "installed" if verified else "verification_failed" if last["return_code"] == 0 else "failed",
+                    "installer": active_installer,
+                    "version_before": versions_before.get(name) if name else None,
+                    "version_after": after,
+                    "verified": verified,
+                    "failure_class": None if verified else last_class,
+                }
+            )
+            if last["return_code"] != 0 or not verified:
+                final_return_code = last["return_code"] or 1
                 break
+
+        all_verified = bool(package_results) and all(bool(item.get("verified")) for item in package_results)
+        if final_return_code == 0 and not all_verified:
+            final_return_code = 1
+        final_status = "completed" if final_return_code == 0 and all_verified else "verification_failed" if all_verified is False and any(
+            item.get("status") == "verification_failed" for item in package_results
+        ) else "failed"
         return {
-            "status": "completed" if final_return_code == 0 else "failed",
+            "status": final_status,
             "installer": active_installer,
+            "environment": inspection.get("environment"),
+            "environment_kind": target_kind,
             "python": str(python_executable),
+            "python_runtime": target_native_python,
             "return_code": final_return_code,
             "returncode": final_return_code,
             "commands": commands,
             "results": results,
+            "packages": package_results,
+            "verified": all_verified,
+            "uv_version": uv_module_version(),
             "stdout": results[-1]["stdout"] if results else "",
             "stderr": results[-1]["stderr"] if results else "",
         }
@@ -5261,8 +5804,15 @@ def _workspace_runtime_capabilities(base: Any, workspace: Path | None = None) ->
             setattr(base, "_QUBITZ_WSL_WINDOWS_EXECUTABLE_INTEROP", bool(cached))
         interop_available = bool(cached)
     workspace_is_windows_backed = bool(workspace is not None and _is_windows_backed_workspace(workspace))
-    linux_python = _preferred_project_linux_python(workspace) if workspace is not None else None
-    windows_python = _preferred_project_windows_python(workspace) if workspace is not None else None
+    environment_candidates = _project_environment_candidates(workspace) if workspace is not None else []
+    linux_python = next(
+        (candidate for _, candidate, layout in environment_candidates if layout == "linux"),
+        None,
+    )
+    windows_python = next(
+        (candidate for _, candidate, layout in environment_candidates if layout == "windows"),
+        None,
+    )
     preferred_python_path: Path | None = None
     preferred_python_runner = "shell"
     if in_wsl_session:
@@ -5301,7 +5851,11 @@ def _select_direct_workspace_python(base: Any, workspace: Path) -> tuple[Path, s
     interpreter = capabilities.get("preferred_python_path")
     runner = capabilities.get("preferred_python_runner")
     if isinstance(interpreter, Path) and interpreter.exists() and runner in {"shell", "powershell"}:
-        return interpreter, str(runner)
+        environment_root = interpreter.parent.parent
+        layout = "windows" if interpreter.suffix.lower() == ".exe" else "linux"
+        probe = _probe_python_environment(environment_root, interpreter, layout)
+        if probe.get("status") == "ready":
+            return interpreter, str(runner)
     return None
 
 
@@ -7513,7 +8067,15 @@ class LocalOnlyApp:
                     "powershell_or_side_effect": bool(
                         any(token in lowered for token in ("start-process", "powershell", "activate.ps1", ".ps1"))
                     )
-                    or semantic.requests("open_browser", "restart", "start", "stop"),
+                    or semantic.requests(
+                        "install",
+                        "open_browser",
+                        "restart",
+                        "start",
+                        "stop",
+                        "uninstall",
+                        "upgrade",
+                    ),
                     "plugin_or_skill_request": bool(
                         any(token in lowered for token in ("skill", ".skills", "plugin", ".qubitz/plugins"))
                     ),
@@ -8198,27 +8760,31 @@ class LocalOnlyApp:
                     interop_state = "available" if capabilities.get("windows_interop_available") else "unavailable"
                 else:
                     interop_state = "not_applicable"
+                selected_route = str(
+                    getattr(decision, "selected_route", "") or self._selected_route_name(prompt)
+                )
+                route_profile = str(getattr(decision, "profile", "") or "default")
+                route_reason = str(
+                    getattr(decision, "reason", "") or "heuristic selection based on the current prompt."
+                )
                 lines = [
                     f"- Task class: {self._task_class_label(prompt)}",
                     f"- Semantic speech act: {semantic.speech_act}",
                     f"- Requested actions: {', '.join(sorted(semantic.requested_actions)) or 'none'}",
                     f"- Prohibited actions: {', '.join(sorted(semantic.prohibited_actions)) or 'none'}",
                     f"- Action objects and scope: {', '.join(sorted(semantic.objects)) or 'none'}; {semantic.execution_scope}",
-                    f"- Selected route: {decision.selected_route if isinstance(decision, RouteDecision) else self._selected_route_name(prompt)}",
-                    f"- Route profile: {decision.profile if isinstance(decision, RouteDecision) else ROUTE_PROFILE_GLM_24G}",
+                    f"- Selected route: {selected_route}",
+                    f"- Route profile: {route_profile}",
                     f"- Runtime: {'wsl' if capabilities.get('in_wsl') else 'non_wsl'}",
                     f"- Workspace kind: {'windows_backed' if capabilities.get('workspace_is_windows_backed') else 'wsl_native'}",
                     f"- Windows executable interop: {interop_state}",
-                    f"- Workspace WSL python: {'present' if capabilities.get('workspace_has_wsl_python') else 'absent'}",
-                    f"- Workspace Windows python: {'present' if capabilities.get('workspace_has_windows_python') else 'absent'}",
-                    f"- Preferred project python: {preferred_python}",
+                    f"- Workspace WSL python layout: {'present' if capabilities.get('workspace_has_wsl_python') else 'absent'}",
+                    f"- Workspace Windows python layout: {'present' if capabilities.get('workspace_has_windows_python') else 'absent'}",
+                    f"- Preferred project python candidate: {preferred_python}",
+                    "- Project python candidate validation: execute the exact interpreter before health claims or installs",
                     f"- Preferred project runner: {capabilities.get('preferred_python_runner', 'none') or 'none'}",
                     f"- Preferred llama runtime: {self._preferred_llama_runtime_label(capabilities)}",
-                    (
-                        f"- Route reason: {decision.reason}"
-                        if isinstance(decision, RouteDecision)
-                        else "- Route reason: heuristic selection based on the current prompt."
-                    ),
+                    f"- Route reason: {route_reason}",
                     "- These runtime facts are authoritative for this task. Do not override or re-decide them.",
                 ]
                 return "\n".join(lines)
@@ -10700,6 +11266,9 @@ class _ToolPermissionBroker:
             "timeout",
             "unsupported_format",
             "capability_unavailable",
+            "uv_bootstrap_failed",
+            "uv_unavailable",
+            "verification_failed",
         }
         categories: set[str] = set()
         verified_paths: list[str] = []
@@ -10816,6 +11385,12 @@ class _ToolPermissionBroker:
             categories.add("external_sources")
         if success and normalized == "search_web" and result_count > 0:
             categories.add("web_search")
+        if success and normalized == "install_python_package" and structured.get("verified") is True:
+            package_evidence = structured.get("packages")
+            if isinstance(package_evidence, list) and package_evidence and all(
+                isinstance(item, dict) and item.get("verified") is True for item in package_evidence
+            ):
+                categories.add("dependencies_verified")
         if success and normalized in self._EXECUTION_TOOLS:
             if structured.get("test_runner") or re.search(
                 r"\b(?:pytest|unittest|ruff|lint|test|check)\b",
@@ -10950,6 +11525,8 @@ class _ToolPermissionBroker:
             r"\b(?:tests?|pytest|unittest|ruff|lint|checks?)\b",
         ):
             requirements.add("tests")
+        if semantic.requests("install", "upgrade"):
+            requirements.add("dependencies_verified")
         if positive(
             prompt,
             r"\b(?:start|launch|run|serve)\b",
@@ -11254,7 +11831,7 @@ class _ToolPermissionBroker:
 
     def _outside_workspace_paths(self, arguments: dict[str, Any]) -> list[str]:
         outside: list[str] = []
-        for key in self._PATH_KEYS:
+        for key in self._PATH_KEYS | {"environment"}:
             raw_value = arguments.get(key)
             if not isinstance(raw_value, str) or not raw_value.strip():
                 continue
@@ -11762,6 +12339,10 @@ class _ToolPermissionBroker:
             return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
         if normalized in self._EXECUTION_TOOLS and not execution_requested:
             reason = "The current user prompt did not authorize command or entrypoint execution."
+            self._audit("denied", normalized, arguments, fingerprint, reason)
+            return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+        if normalized == "inspect_python_environment" and not execution_requested:
+            reason = "Validating a Python environment executes its exact interpreter, which this prompt did not request."
             self._audit("denied", normalized, arguments, fingerprint, reason)
             return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
         if normalized == "install_python_package" and not install_requested:
@@ -13498,6 +14079,17 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
             broker = _TOOL_CALL_CONTEXT.get()
+            if (
+                name in {"inspect_python_environment", "install_python_package"}
+                and not str(arguments.get("environment") or "").strip()
+                and broker is not None
+            ):
+                inferred_environment = _explicit_prompt_environment(broker.current_prompt)
+                if inferred_environment:
+                    arguments = {**arguments, "environment": inferred_environment}
+                    broker._emit(
+                        f"Resolved named environment {inferred_environment} from the current active-workspace prompt."
+                    )
             if name in {"read_file", "read_file_snapshot"} and _canonical_http_url(arguments.get("path")):
                 source_url = str(arguments.get("path", "")).strip()
                 name = "fetch_url"
@@ -14858,6 +15450,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     "service_stopped": {"cancel_background_job", "stop_project_mcp_server"},
                     "mcp_ready": {"list_project_mcp_tools", "start_project_mcp_server"},
                     "mcp_tool_called": {"call_project_mcp_tool", "list_project_mcp_tools"},
+                    "dependencies_verified": {
+                        "inspect_python_environment",
+                        "install_python_package",
+                    },
                 }
                 for postcondition in focused_postconditions:
                     focused_names.update(focused_tool_map.get(postcondition, set()))
@@ -14960,6 +15556,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     return "mcp"
                 if "install" in normalized or "package" in normalized:
                     return "install"
+                if normalized == "inspect_python_environment":
+                    return "execute"
                 if normalized in _ToolPermissionBroker._MUTATION_TOOLS or normalized == "apply_docx_text_patch":
                     return "edit"
                 if normalized in _ToolPermissionBroker._EXECUTION_TOOLS or normalized.startswith("run_"):
@@ -15059,7 +15657,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             ranked.sort(key=lambda item: (-item[0], -item[1]))
             selected_limit = TOOL_EXPOSURE_MAX if intent_categories else 5
             if install_intent:
-                pinned_names = ["read_local_only_config", "list_files", "read_file_snapshot", "install_python_package"]
+                pinned_names = [
+                    "inspect_python_environment",
+                    "install_python_package",
+                    "read_local_only_config",
+                    "list_files",
+                    "read_file_snapshot",
+                ]
             elif mcp_intent:
                 pinned_names = [
                     "list_project_mcp_tools",
