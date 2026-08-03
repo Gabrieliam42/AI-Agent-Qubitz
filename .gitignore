@@ -22,10 +22,6 @@ models/
 data/
 node_modules/
 
-# Local plaintext harness and helper keys
-QUBITZ_HARNESS_KEY*
-!QUBITZ_HARNESS_KEY.local.txt
-
 # Logs and temp artifacts
 *.log
 launcher_out.txt
