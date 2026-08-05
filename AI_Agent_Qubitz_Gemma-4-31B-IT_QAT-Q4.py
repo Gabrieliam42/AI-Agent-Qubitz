@@ -518,6 +518,15 @@ _SEMANTIC_ACTION_PATTERN = re.compile(
     r"install|upgrade|uninstall|verify|validate|test|lint|fetch|download|call|invoke|list|discover|cancel)\b",
     re.IGNORECASE,
 )
+# A leading prepositional phrase such as "in the venv .venv312 ..." hides an
+# imperative from an anchored match. This matches that phrase only when an
+# action verb follows it, so it can never reclassify prose that has no verb.
+# The verb alternation is derived from the pattern above so the two cannot drift.
+_SEMANTIC_LEADING_CONTEXT_PATTERN = re.compile(
+    r"^(?:in|into|inside|within|on|onto|under|at|for|from|with|using)\s+[^,;]{1,80}?\s+"
+    r"(?=" + _SEMANTIC_ACTION_PATTERN.pattern.replace("(?P<verb>", "(?:", 1) + r")",
+    re.IGNORECASE,
+)
 _SEMANTIC_SIDE_EFFECT_ACTIONS = frozenset(
     {
         "copy",
@@ -615,6 +624,17 @@ def _semantic_clause_speech_act(clause: str) -> str:
     )
     imperative_text = re.sub(r"^(?:attempt|try)\s+to\s+", "", imperative_text)
     imperative = _SEMANTIC_ACTION_PATTERN.match(imperative_text) is not None
+    if not imperative:
+        # An imperative may follow a leading prepositional phrase, as in
+        # "in the venv .venv312 install uv". Only strip that phrase when an
+        # action verb directly follows it, so questions, explanations, and
+        # hypotheticals (already classified above) stay unaffected.
+        leading_context = _SEMANTIC_LEADING_CONTEXT_PATTERN.match(imperative_text)
+        if leading_context is not None:
+            imperative = (
+                _SEMANTIC_ACTION_PATTERN.match(imperative_text[leading_context.end() :])
+                is not None
+            )
     capability_question = bool(
         re.search(
             r"^(?:can|could|would)\s+(?:this|that|it|the\b)"
