@@ -6362,7 +6362,7 @@ _EMBEDDED_BASE_SOURCE = (
     'CURRENT_MEMORY_NAME = "MEMORY.md"\n'
     'ARCHIVE_MEMORY_PREFIX = "MEMORY_"\n'
     'HISTORY_TURNS = 6\n'
-    'MAX_TOOL_STEPS = 0\n'
+    'MAX_TOOL_STEPS = 128\n'
     'MAX_ADAPTIVE_TOOL_STEPS = 24\n'
     'MAX_STEPS_ENV_NAME = "QUBITZ_MAX_STEPS"\n'
     'MAX_TOOL_RESULT_CHARS = 6000\n'
@@ -12036,7 +12036,33 @@ def _patch_streaming_chat(base: Any) -> None:
                     last_error = exc
         raise RuntimeError(f"Constrained JSON recovery failed: {last_error}")
 
-    base.LlamaCppClient.chat = _chat
+    _TRANSIENT_SERVER_ERRORS = (
+        "500 Internal Server Error",
+        "502 Bad Gateway",
+        "503 Service Unavailable",
+        "504 Gateway Timeout",
+    )
+
+    def _chat_with_transient_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
+        """Retry a chat call once when the local server reports a transient 5xx.
+
+        The transport fallback raises RuntimeError once every transport fails,
+        which otherwise aborts the whole run for a server-side fault that is
+        usually gone a moment later. Any other failure re-raises immediately so
+        genuine model and protocol errors keep their existing behavior.
+        """
+        for attempt in range(2):
+            try:
+                return _chat(self, **kwargs)
+            except RuntimeError as exc:
+                message = str(exc)
+                transient = any(code in message for code in _TRANSIENT_SERVER_ERRORS)
+                if not transient or attempt == 1:
+                    raise
+                time.sleep(2.0)
+        raise RuntimeError("unreachable transient retry state")
+
+    base.LlamaCppClient.chat = _chat_with_transient_retry
     base.LlamaCppClient._qubitz_streaming_patched = True
     base.set_qubitz_stream_callback = _set_stream_callback
     base.set_qubitz_reasoning_budget = _set_reasoning_budget
