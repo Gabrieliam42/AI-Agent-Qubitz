@@ -2,7 +2,7 @@
 
 Exhausted of testing relatively small LLMs with AI agents that often ignore instructions, misuse tools, or wander off task?
 
-Qubitz is a local-first AI agent with a specialized harness that aims to make 7B–35B MCP/tool-capable LLMs more predictable and useful. It keeps routing, workspace handling, retrieval, and tool orchestration under wrapper control, so smaller models are not left to decide everything on their own.
+Qubitz is a local-first AI agent with a specialized harness and Agent Behavioral Contracts, that aims to make 7B–35B MCP/tool-capable LLMs more predictable and useful. It keeps routing, workspace handling, retrieval, and tool orchestration under wrapper control, so smaller models are not left to decide everything on their own.
 
 ***
 Qubitz is a standalone local-only AI agent for GGUF models on `llama.cpp`. It is oriented to local LLM workflows only: no cloud inference, no subscriptions, and no paid hosted services are required.
