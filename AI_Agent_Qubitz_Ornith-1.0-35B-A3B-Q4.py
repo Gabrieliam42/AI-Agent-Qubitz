@@ -265,11 +265,15 @@ IMPLICIT_ENTRYPOINT_WEIGHT_BY_TOKEN = {
 IMPLICIT_ENTRYPOINT_MIN_SCORE = 12
 THINKING_EFFORT_OPTIONS = ("low", "medium", "high", "xhigh")
 THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
+THINKING_EFFORT_STEP_BUDGETS: dict[str, tuple[int, int, int]] = {
+    # (initial soft budget, extension block, absolute hard ceiling)
+    "low": (8, 8, 24),
+    "medium": (16, 16, 48),
+    "high": (24, 24, 96),
+    "xhigh": (48, 16, 128),
+}
 THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
-    "low": 8,
-    "medium": 16,
-    "high": 48,
-    "xhigh": 128,
+    effort: budget[2] for effort, budget in THINKING_EFFORT_STEP_BUDGETS.items()
 }
 SIMPLE_DIRECT_QUESTION_STEP_CAP = 2
 SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP = 8
@@ -7730,16 +7734,18 @@ class LocalOnlyApp:
             def _thinking_effort(self) -> str:
                 return _normalize_thinking_effort(getattr(self.config, "thinking_effort", "medium"))
 
+            def _effort_step_budget_profile(self) -> tuple[int, int, int]:
+                return THINKING_EFFORT_STEP_BUDGETS.get(
+                    self._thinking_effort(),
+                    THINKING_EFFORT_STEP_BUDGETS["medium"],
+                )
+
             def _effective_max_steps(self) -> int:
                 configured = int(getattr(self.config, "max_steps", getattr(base, "MAX_TOOL_STEPS", 0)))
-                override = THINKING_EFFORT_STEP_CAPS.get(self._thinking_effort())
-                if override is None:
-                    return configured
-                if override <= 0:
-                    return 0
+                hard_ceiling = self._effort_step_budget_profile()[2]
                 if configured <= 0:
-                    return override
-                return min(configured, override)
+                    return hard_ceiling
+                return min(configured, hard_ceiling)
 
             def _effective_prompt_max_steps(self, prompt: str) -> int:
                 effective = self._effective_max_steps()
@@ -7764,9 +7770,13 @@ class LocalOnlyApp:
 
             def _adaptive_step_budget(self, prompt: str) -> tuple[int, list[str]]:
                 original = int(getattr(self.config, "max_steps", getattr(base, "MAX_TOOL_STEPS", 0)))
-                setattr(self.config, "max_steps", self._effective_prompt_max_steps(prompt))
+                prompt_ceiling = self._effective_prompt_max_steps(prompt)
+                setattr(self.config, "max_steps", prompt_ceiling)
                 try:
-                    return super()._adaptive_step_budget(prompt)
+                    budget, reasons = super()._adaptive_step_budget(prompt)
+                    if prompt_ceiling > 0:
+                        budget = min(budget, prompt_ceiling)
+                    return budget, reasons
                 finally:
                     setattr(self.config, "max_steps", original)
 
@@ -10863,6 +10873,7 @@ class _ToolPermissionBroker:
         self.turn_id = ""
         self.provenance_urls: set[str] = set()
         self.invalid_call_counts: dict[str, int] = {}
+        self.invalid_error_class_counts: dict[str, int] = {}
         self.invalid_stop_requested = False
         self.permission_denial_counts: dict[str, int] = {}
         self.permission_stop_requested = False
@@ -10870,8 +10881,14 @@ class _ToolPermissionBroker:
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_snapshot_hashes: dict[str, str] = {}
         self.transaction_changed_hashes: dict[str, str] = {}
+        self.transaction_staged_patches: dict[str, dict[str, Any]] = {}
         self.transaction_explicit_file_targets: set[str] = set()
         self.transaction_recovery_callback: Callable[[], None] | None = None
+        self.completion_callback: Callable[[], None] | None = None
+        self.completion_interrupt_enabled = False
+        self.verified_completion_requested = False
+        self.tool_result_count = 0
+        self.first_verified_completion_result = 0
         self.transaction_recovery_interrupt_requested = False
         self.transaction_nonprogress_calls = 0
         self.transaction_progress_token = ""
@@ -10900,12 +10917,14 @@ class _ToolPermissionBroker:
         self.transaction_recovery_required = False
         self.provenance_urls = {url.casefold() for url in _extract_external_urls(prompt)}
         self.invalid_call_counts.clear()
+        self.invalid_error_class_counts.clear()
         self.invalid_stop_requested = False
         self.permission_denial_counts.clear()
         self.permission_stop_requested = False
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
+        self.transaction_staged_patches.clear()
         self.transaction_explicit_file_targets.clear()
         for candidate in self.base.extract_file_tokens(prompt):
             with suppress(Exception):
@@ -10920,6 +10939,10 @@ class _ToolPermissionBroker:
         self.transaction_recovery_interrupt_requested = False
         self.transaction_nonprogress_calls = 0
         self.transaction_progress_token = ""
+        self.verified_completion_requested = False
+        self.completion_interrupt_enabled = False
+        self.tool_result_count = 0
+        self.first_verified_completion_result = 0
         approval_match = re.search(r"\b(?:approve|approved|allow|proceed|confirm)(?:\s+(?:action\s+)?)?([a-f0-9]{8,64})?\b", prompt.lower())
         if approval_match is None:
             return
@@ -10947,16 +10970,22 @@ class _ToolPermissionBroker:
         self.turn_id = ""
         self.provenance_urls.clear()
         self.invalid_call_counts.clear()
+        self.invalid_error_class_counts.clear()
         self.invalid_stop_requested = False
         self.permission_denial_counts.clear()
         self.permission_stop_requested = False
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
+        self.transaction_staged_patches.clear()
         self.transaction_explicit_file_targets.clear()
         self.transaction_recovery_interrupt_requested = False
         self.transaction_nonprogress_calls = 0
         self.transaction_progress_token = ""
+        self.verified_completion_requested = False
+        self.completion_interrupt_enabled = False
+        self.tool_result_count = 0
+        self.first_verified_completion_result = 0
 
     def _emit(self, message: str) -> None:
         if self.callback is not None:
@@ -11009,10 +11038,50 @@ class _ToolPermissionBroker:
         )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _invalid_error_class_key(name: str, arguments: dict[str, Any], reason: str) -> str:
+        target_keys = {"path", "source", "destination", "cwd", "server_script", "python_path"}
+        targets: set[str] = set()
+
+        def argument_shape(value: Any, key: str = "") -> Any:
+            if isinstance(value, dict):
+                return {
+                    str(item_key).lower(): argument_shape(item_value, str(item_key).lower())
+                    for item_key, item_value in sorted(value.items(), key=lambda item: str(item[0]).lower())
+                }
+            if isinstance(value, list):
+                return [argument_shape(item, key) for item in value]
+            if key in target_keys:
+                target = str(value or "").strip().replace("\\", "/").casefold()
+                if target:
+                    targets.add(target)
+                return "<target>"
+            return f"<{type(value).__name__}>"
+
+        shape = argument_shape(arguments)
+        normalized_reason = re.sub(r"\b\d+\b", "#", reason.strip().lower())
+        normalized_reason = re.sub(r"\b[a-f0-9]{16,}\b", "<value>", normalized_reason)
+        encoded = json.dumps(
+            {
+                "tool": name.lower(),
+                "reason": normalized_reason,
+                "targets": sorted(targets),
+                "argument_shape": shape,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
     def register_invalid_call(self, name: str, arguments: dict[str, Any], reason: str) -> int:
-        key = self._invalid_call_key(name, arguments, reason)
-        count = self.invalid_call_counts.get(key, 0) + 1
-        self.invalid_call_counts[key] = count
+        exact_key = self._invalid_call_key(name, arguments, reason)
+        exact_count = self.invalid_call_counts.get(exact_key, 0) + 1
+        self.invalid_call_counts[exact_key] = exact_count
+        error_class_key = self._invalid_error_class_key(name, arguments, reason)
+        error_class_count = self.invalid_error_class_counts.get(error_class_key, 0) + 1
+        self.invalid_error_class_counts[error_class_key] = error_class_count
+        count = max(exact_count, error_class_count)
         if count > 1:
             transactional_patch = name.lower() in {
                 "apply_docx_text_patch",
@@ -11041,7 +11110,7 @@ class _ToolPermissionBroker:
                     self.stop_callback("repeated equivalent invalid tool calls")
         return count
 
-    def _transaction_progress_token(self) -> str:
+    def progress_token(self) -> str:
         verified_categories = sorted(
             {
                 category
@@ -11053,10 +11122,45 @@ class _ToolPermissionBroker:
         payload = {
             "snapshots": sorted(self.transaction_snapshot_hashes.items()),
             "changes": sorted(self.transaction_changed_hashes.items()),
+            "staged_patches": sorted(
+                (
+                    path,
+                    hashlib.sha256(
+                        json.dumps(patch, ensure_ascii=True, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest(),
+                )
+                for path, patch in self.transaction_staged_patches.items()
+            ),
             "verified_categories": verified_categories,
+            "evidence": sorted(
+                {
+                    json.dumps(
+                        {
+                            "tool": evidence.get("tool"),
+                            "success": evidence.get("success"),
+                            "categories": evidence.get("categories", []),
+                            "paths": evidence.get("paths", []),
+                            "status": evidence.get("status"),
+                            "return_code": evidence.get("return_code"),
+                            "result_count": evidence.get("result_count"),
+                            "opened_count": evidence.get("opened_count"),
+                            "urls": evidence.get("urls", []),
+                            "evidence_path": evidence.get("evidence_path", ""),
+                            "mcp_target": evidence.get("mcp_target", ""),
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        default=str,
+                    )
+                    for evidence in self._current_turn_evidence()
+                }
+            ),
         }
         encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _transaction_progress_token(self) -> str:
+        return self.progress_token()
 
     def register_permission_denial(
         self,
@@ -11075,7 +11179,7 @@ class _ToolPermissionBroker:
         } and not status.endswith("_denied"):
             return 1
         reason = str(payload.get("reason") or "").strip().lower()
-        key = self._invalid_call_key(name, arguments, f"{status}: {reason}")
+        key = self._invalid_error_class_key(name, arguments, f"{status}: {reason}")
         count = self.permission_denial_counts.get(key, 0) + 1
         self.permission_denial_counts[key] = count
         if count > 1 and not self.permission_stop_requested and self.stop_callback is not None:
@@ -11153,12 +11257,69 @@ class _ToolPermissionBroker:
             )
         return (
             "Wrapper-owned transactional edit continuation:\n"
-            "For multiple existing text files, call `apply_text_patches` directly with only each path and its "
-            "exact old_text/new_text replacements; the wrapper owns snapshots, hashes, ordering, atomicity, and rollback. "
+            "For multiple existing text files, call `apply_text_patches` with one or more path/replacement proposals. "
+            "The wrapper safely stages incomplete proposals and commits only when every explicitly named target has a "
+            "valid patch; it owns snapshots, hashes, ordering, atomicity, and rollback. "
             "For one existing text file, use the normal snapshot-bound `apply_text_patch` path. "
             "Command tools are verification-only during this continuation.\n"
             "After a successful patch, run only the requested tests or checks and report verified results."
         )
+
+    def stage_text_patch_arguments(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        patches = arguments.get("patches")
+        explicit_targets = set(self.transaction_explicit_file_targets)
+        if not isinstance(patches, list) or not 2 <= len(explicit_targets) <= 16 or not 1 <= len(patches) <= 16:
+            return arguments, None
+
+        proposed: dict[str, dict[str, Any]] = {}
+        for patch in patches:
+            if not isinstance(patch, dict):
+                return arguments, None
+            target = self._resolved_argument_path(patch, "path")
+            if target is None or str(target) not in explicit_targets or str(target) in proposed:
+                return arguments, None
+            proposed[str(target)] = json.loads(json.dumps(patch, ensure_ascii=True, default=str))
+
+        self.transaction_staged_patches.update(proposed)
+        pending = sorted(explicit_targets - set(self.transaction_staged_patches))
+        if pending:
+            relative_pending: list[str] = []
+            for path_text in pending:
+                path = Path(path_text)
+                with suppress(Exception):
+                    path_text = str(self.base.relative_path(path, self.workspace))
+                relative_pending.append(path_text)
+            fingerprint = self._fingerprint("apply_text_patches", arguments)
+            self._audit(
+                "patch_staged",
+                "apply_text_patches",
+                arguments,
+                fingerprint,
+                f"waiting for {len(pending)} explicitly named target(s)",
+            )
+            return arguments, {
+                "status": "patch_staged",
+                "tool": "apply_text_patches",
+                "staged_count": len(self.transaction_staged_patches),
+                "required_count": len(explicit_targets),
+                "pending_paths": relative_pending,
+                "file_unchanged": True,
+                "instruction": (
+                    "No file was modified. Submit valid exact replacements for the remaining pending_paths; "
+                    "the wrapper will then validate and commit the complete batch atomically."
+                ),
+            }
+
+        combined = {
+            "patches": [
+                self.transaction_staged_patches[path]
+                for path in sorted(self.transaction_staged_patches, key=str.casefold)
+            ]
+        }
+        return combined, None
 
     @staticmethod
     def semantic_argument_error(name: str, arguments: dict[str, Any]) -> str:
@@ -11320,7 +11481,7 @@ class _ToolPermissionBroker:
             if target is not None and target.is_file():
                 verified_paths.append(str(target))
 
-        if normalized in mutation_tools and success:
+        if normalized in mutation_tools and success and status != "patch_staged":
             target: Path | None = None
             if normalized == "apply_text_patches":
                 files = structured.get("files")
@@ -11473,9 +11634,31 @@ class _ToolPermissionBroker:
             "mcp_target": str(arguments.get("tool_name") or arguments.get("server_script") or ""),
         }
         self.evidence.append(evidence)
+        self.tool_result_count += 1
         fingerprint = self._fingerprint(normalized, arguments)
         self._audit("completed" if success else "failed", normalized, arguments, fingerprint, status)
         self._track_transaction_recovery_progress()
+        if (
+            self.current_prompt
+            and self.completion_interrupt_enabled
+            and not self.verified_completion_requested
+        ):
+            required, missing = self.completion_report(self.current_prompt)
+            if required and not missing:
+                self.verified_completion_requested = True
+                self.first_verified_completion_result = self.tool_result_count
+                self._audit(
+                    "completion_verified",
+                    "__wrapper_completion__",
+                    {"required": sorted(required)},
+                    self.progress_token(),
+                    f"verified after tool result {self.tool_result_count}",
+                )
+                self._emit(
+                    "All required postconditions are verified; ending tool use and finalizing from structured evidence."
+                )
+                if self.completion_callback is not None:
+                    self.completion_callback()
 
     @staticmethod
     def _positive_requirement_match(prompt: str, action_pattern: str, target_pattern: str) -> bool:
@@ -12459,6 +12642,22 @@ class _ToolPermissionBroker:
                         "path": str(patch.get("path", "")),
                     }
                 seen_targets.add(target_key)
+            explicit_targets = set(self.transaction_explicit_file_targets)
+            if len(explicit_targets) >= 2 and seen_targets != explicit_targets:
+                pending = sorted(explicit_targets - seen_targets)
+                unexpected = sorted(seen_targets - explicit_targets)
+                reason = (
+                    "The atomic batch must cover every explicitly named existing target exactly once."
+                )
+                self._audit("atomic_batch_incomplete", normalized, arguments, fingerprint, reason)
+                return False, {
+                    "status": "atomic_batch_incomplete",
+                    "tool": normalized,
+                    "reason": reason,
+                    "pending_paths": pending,
+                    "unexpected_paths": unexpected,
+                    "file_unchanged": True,
+                }
         if normalized in {"apply_text_patch", "apply_docx_text_patch"}:
             recorded_hash = self.transaction_snapshot_hashes.get(str(target)) if target is not None else None
             if recorded_hash is None:
@@ -14141,6 +14340,15 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 isError=True,
             )
 
+        @staticmethod
+        def _success_result(payload: dict[str, Any]) -> Any:
+            rendered = json.dumps(payload, ensure_ascii=True, sort_keys=True)
+            return base.mcp_types.CallToolResult(
+                content=[base.mcp_types.TextContent(type="text", text=rendered)],
+                structuredContent=payload,
+                isError=False,
+            )
+
         async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
             broker = _TOOL_CALL_CONTEXT.get()
             if (
@@ -14224,6 +14432,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     )
                     broker.record_result(name, arguments, invalid_result)
                     return invalid_result
+                if name == "apply_text_patches":
+                    arguments, staged_payload = broker.stage_text_patch_arguments(arguments)
+                    if staged_payload is not None:
+                        staged_result = self._success_result(staged_payload)
+                        broker.record_result(name, arguments, staged_result)
+                        return staged_result
                 allowed, error_payload = broker.authorize(name, arguments)
                 if not allowed:
                     assert error_payload is not None
@@ -14270,6 +14484,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 result.structuredContent = structured_content
             if broker is not None:
                 broker.record_result(name, arguments, result)
+                if (
+                    name == "apply_text_patches"
+                    and not bool(getattr(result, "isError", False))
+                    and str((getattr(result, "structuredContent", None) or {}).get("status") or "").lower()
+                    != "patch_staged"
+                ):
+                    broker.transaction_staged_patches.clear()
             return result
 
     class HardenedAgentRunner(original_runner):
@@ -14303,6 +14524,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return str(self._task_class_label(prompt) or "")
             except Exception:
                 return ""
+
+        def _request_verified_completion(self) -> None:
+            if self._cancel_event.is_set():
+                return
+            self._cancel_source = "wrapper_verified_completion"
+            self._cancel_event.set()
 
         def _request_wrapper_stop(self, reason: str) -> None:
             if self._cancel_event.is_set():
@@ -14363,6 +14590,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             )
             self._tool_permission_broker.stop_callback = self._request_wrapper_stop
             self._tool_permission_broker.transaction_recovery_callback = self._request_transaction_recovery
+            self._tool_permission_broker.completion_callback = self._request_verified_completion
             self.discovery_memory = WorkspaceDiscoveryMemory(
                 self.workspace,
                 getattr(self, "runtime_workspace", self.workspace),
@@ -15885,6 +16113,136 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     self._active_discovery_context = self.discovery_memory.context_for(prompt)
             self._tool_permission_broker.begin_turn(prompt, callback)
             broker_context_token = _TOOL_CALL_CONTEXT.set(self._tool_permission_broker)
+            selected_route = self._selected_route_name(prompt)
+            progressive_budget_enabled = selected_route not in {
+                "simple_answer",
+                "direct_existing_entrypoint",
+            }
+            soft_budget, extension_block, profile_hard_ceiling = self._effort_step_budget_profile()
+            effective_hard_ceiling = min(profile_hard_ceiling, self._effective_max_steps())
+            soft_budget = min(soft_budget, effective_hard_ceiling)
+            allocated_step_budget = 0
+            last_model_pass_steps = 0
+            progress_checkpoint = self._tool_permission_broker.progress_token()
+
+            def reserve_step_budget(requested: int) -> int:
+                nonlocal allocated_step_budget
+                remaining = max(0, effective_hard_ceiling - allocated_step_budget)
+                granted = min(max(0, int(requested)), remaining)
+                allocated_step_budget += granted
+                return granted
+
+            async def run_model_pass(pass_prompt: str, step_cap: int | None = None) -> str:
+                nonlocal last_model_pass_steps
+                pass_steps = 0
+
+                def pass_callback(kind: str, message: str) -> None:
+                    nonlocal pass_steps
+                    if kind == "status":
+                        match = re.search(r"\bModel step\s+(\d+)\s*/\s*(\d+)\b", message, re.IGNORECASE)
+                        if match:
+                            pass_steps = max(pass_steps, int(match.group(1)))
+                    if callback is not None:
+                        callback(kind, message)
+
+                self._prompt_step_retry_override = None if step_cap is None else max(1, int(step_cap))
+                self._tool_permission_broker.completion_interrupt_enabled = True
+                try:
+                    return await super(HardenedAgentRunner, self)._run_async(pass_prompt, pass_callback)
+                finally:
+                    last_model_pass_steps = pass_steps
+                    self._tool_permission_broker.completion_interrupt_enabled = False
+
+            def verified_completion_answer() -> str | None:
+                if not (
+                    self._cancel_source == "wrapper_verified_completion"
+                    or self._tool_permission_broker.verified_completion_requested
+                ):
+                    return None
+                required, missing = self._tool_permission_broker.completion_report(prompt)
+                self._cancel_source = ""
+                if not required or missing:
+                    return None
+                summary = self._tool_permission_broker.completion_evidence_summary(prompt)
+                return (
+                    "Completed the requested task.\n\n"
+                    f"Verified current-turn evidence: {summary}.\n\n"
+                    "[Completion status: verified]"
+                )
+
+            def step_budget_exhausted(rendered_answer: Any) -> bool:
+                return str(rendered_answer or "").strip().startswith(
+                    "Stopped after reaching the maximum tool steps"
+                )
+
+            def account_model_pass(granted_budget: int, rendered_answer: Any) -> int:
+                nonlocal allocated_step_budget
+                if last_model_pass_steps > 0:
+                    consumed = min(granted_budget, last_model_pass_steps)
+                elif step_budget_exhausted(rendered_answer):
+                    consumed = granted_budget
+                else:
+                    consumed = 0
+                allocated_step_budget -= max(0, granted_budget - consumed)
+                return consumed
+
+            async def run_progressive_model_pass(
+                pass_prompt: str,
+                requested_budget: int | None = None,
+            ) -> str:
+                nonlocal progress_checkpoint
+                if not progressive_budget_enabled:
+                    answer_text = await run_model_pass(pass_prompt)
+                    return verified_completion_answer() or answer_text
+
+                progress_checkpoint = self._tool_permission_broker.progress_token()
+                next_budget = reserve_step_budget(
+                    soft_budget if requested_budget is None else requested_budget
+                )
+                if next_budget <= 0:
+                    return "Stopped after reaching the maximum tool steps for this request."
+
+                original_pass_prompt = pass_prompt.rstrip()
+                while True:
+                    answer_text = await run_model_pass(pass_prompt, next_budget)
+                    account_model_pass(next_budget, answer_text)
+                    verified_answer = verified_completion_answer()
+                    if verified_answer is not None:
+                        return verified_answer
+                    if not step_budget_exhausted(answer_text):
+                        return answer_text
+
+                    current_progress = self._tool_permission_broker.progress_token()
+                    if current_progress == progress_checkpoint:
+                        return answer_text
+                    progress_checkpoint = current_progress
+                    next_budget = reserve_step_budget(extension_block)
+                    if next_budget <= 0:
+                        return answer_text
+
+                    required, missing = self._tool_permission_broker.completion_report(prompt)
+                    missing_text = ", ".join(sorted(item.replace("_", " ") for item in missing))
+                    evidence_summary = self._tool_permission_broker.completion_evidence_summary(prompt)
+                    if callback is not None:
+                        callback(
+                            "status",
+                            "Progressive tool-step budget extended "
+                            f"to {allocated_step_budget}/{effective_hard_ceiling} after verified new progress.",
+                        )
+                    continuation_context = (
+                        "Wrapper progressive continuation: continue the original request from current-turn "
+                        "structured evidence. Do not repeat completed work."
+                    )
+                    if required:
+                        continuation_context += (
+                            f" Verified evidence: {evidence_summary}."
+                            + (
+                                f" Complete only these remaining postconditions: {missing_text}."
+                                if missing_text
+                                else " All required postconditions are verified; return a concise final result."
+                            )
+                        )
+                    pass_prompt = f"{original_pass_prompt}\n\n{continuation_context}"
 
             def finalize_turn_answer(rendered_answer: str) -> str:
                 nonlocal turn_history_finalized
@@ -15942,7 +16300,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         )
                     return finalize_turn_answer(preflight_denial)
                 try:
-                    answer = await super()._run_async(effective_prompt, callback)
+                    answer = await run_progressive_model_pass(effective_prompt)
                     if (
                         self._tool_permission_broker.transaction_recovery_interrupt_requested
                         and self._cancel_source == "wrapper_transaction_recovery"
@@ -16001,14 +16359,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                                     callback(
                                         "status",
                                         f"Wrapper no-progress recovery: requiring one {tool_name} call before returning control to automatic tool selection.",
-                                    )
+                                )
                                 base.set_qubitz_forced_tool_choice(forced_tool_choice)
                                 try:
-                                    answer = await super()._run_async(
+                                    answer = await run_progressive_model_pass(
                                         f"{effective_prompt.rstrip()}\n\n"
                                         f"Wrapper recovery: the previous model pass produced no tool call or usable final answer. "
                                         f"Call {tool_name} once with valid task-specific arguments, then continue from its structured result.",
-                                        callback,
+                                        extension_block,
                                     )
                                 finally:
                                     base.set_qubitz_forced_tool_choice(None)
@@ -16057,11 +16415,11 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         callback(
                             "status",
                             "Retrying once with wrapper-owned transactional patch tools and preserved snapshots.",
-                        )
+                    )
                     try:
-                        answer = await super()._run_async(
+                        answer = await run_progressive_model_pass(
                             f"{effective_prompt.rstrip()}\n\n{recovery_context}",
-                            callback,
+                            extension_block,
                         )
                         if (
                             self._tool_permission_broker.transaction_recovery_interrupt_requested
