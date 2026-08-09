@@ -10361,7 +10361,7 @@ class LocalOnlyApp:
     def parse_args(self, argv: Sequence[str] | None = None) -> Any:
         raw_args = list(argv) if argv is not None else sys.argv[1:]
         filtered_args: list[str] = []
-        thinking_effort = "medium"
+        thinking_effort = "xhigh"
         explicit_num_ctx = False
         index = 0
         while index < len(raw_args):
@@ -16612,6 +16612,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     os.environ.get(NETWORK_MODE_ENV_NAME, DEFAULT_NETWORK_MODE),
                 )
             super().__init__(config)
+            self._install_variant_selector()
             self.access_mode_var = self.tk.StringVar(
                 master=self.root,
                 value=_access_mode_label(getattr(config, "access_mode", DEFAULT_ACCESS_MODE)),
@@ -16649,6 +16650,200 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             mode = _normalize_access_mode(self.access_mode_var.get())
             setattr(self.config, "access_mode", mode)
             self.agent.set_access_mode(mode)
+
+        def _install_variant_selector(self) -> None:
+            variant_groups = (
+                (
+                    "12 GB VRAM",
+                    (
+                        "AI_Agent_Qubitz_Granite-4.1-8B_Q5_12G.py",
+                        "AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py",
+                        "AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py",
+                    ),
+                ),
+                (
+                    "24 GB VRAM",
+                    (
+                        "AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py",
+                        "AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py",
+                        "AI_Agent_Qubitz_Ornith-1.0-35B-A3B-Q4.py",
+                        "AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py",
+                        "AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py",
+                        "AI_Agent_Qubitz_GPT-OSS-20B_F16.py",
+                        "AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py",
+                        "AI_Agent_Qubitz_Nemotron-3-Nano-30B-A3B-IQ4.py",
+                        "AI_Agent_Qubitz_Qwen3.6-27B_Q4.py",
+                        "AI_Agent_Qubitz_Qwen3.6-35B-A3B_Q4.py",
+                        "AI_Agent_Qubitz_Granite-4.1-8B_Q8.py",
+                        "AI_Agent_Qubitz_Qwen3.5_9B_Q8.py",
+                        "AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py",
+                        "AI_Agent_Qubitz_AgenticQwen-8B-F16.py",
+                    ),
+                ),
+            )
+            runtime_root = Path(__file__).resolve().parent
+            current_filename = Path(__file__).name
+            panel_color = getattr(base, "UI_PANEL", "#1b1c1f")
+            panel_alt_color = getattr(base, "UI_PANEL_ALT", "#23252a")
+            text_color = getattr(base, "UI_TEXT", "#ffffff")
+            muted_text_color = getattr(base, "UI_TEXT_MUTED", "#d7d7d9")
+            select_color = getattr(base, "UI_SELECT", "#3c4048")
+            border_color = getattr(base, "UI_BORDER", "#2d3036")
+            selector_style = "QubitzVariant.TMenubutton"
+            style = self.ttk.Style(self.root)
+            style.configure(
+                selector_style,
+                background=panel_alt_color,
+                foreground=text_color,
+                bordercolor=border_color,
+                lightcolor=panel_alt_color,
+                darkcolor=panel_alt_color,
+                arrowcolor=text_color,
+                padding=(8, 6),
+            )
+            style.map(
+                selector_style,
+                background=[
+                    ("disabled", panel_color),
+                    ("pressed", select_color),
+                    ("active", select_color),
+                    ("!disabled", panel_alt_color),
+                ],
+                foreground=[
+                    ("disabled", muted_text_color),
+                    ("pressed", text_color),
+                    ("active", text_color),
+                    ("!disabled", text_color),
+                ],
+                arrowcolor=[
+                    ("disabled", muted_text_color),
+                    ("!disabled", text_color),
+                ],
+            )
+            controls = self.num_ctx_entry.master
+            variant_bar = self.ttk.Frame(controls.master)
+            variant_bar.pack(fill="x", pady=(0, 10), before=controls)
+            self.ttk.Label(variant_bar, text="Variant").pack(side="left")
+            self.variant_selector_var = self.tk.StringVar(
+                master=self.root,
+                value=current_filename,
+            )
+            self.variant_selector = self.ttk.Menubutton(
+                variant_bar,
+                textvariable=self.variant_selector_var,
+                style=selector_style,
+            )
+            self.variant_selector.pack(side="left", fill="x", expand=True, padx=(6, 0))
+            variant_menu = self.tk.Menu(
+                self.variant_selector,
+                tearoff=False,
+                background=panel_color,
+                foreground=text_color,
+                activebackground=select_color,
+                activeforeground=text_color,
+                disabledforeground=muted_text_color,
+                selectcolor=text_color,
+                borderwidth=0,
+            )
+            self.variant_selector.configure(menu=variant_menu)
+            self._qubitz_variant_switch_pending: Path | None = None
+            self._qubitz_variant_switch_in_progress = False
+
+            def restore_current_selection(message: str | None = None) -> None:
+                self.variant_selector_var.set(current_filename)
+                self.variant_selector.configure(state="normal")
+                self._qubitz_variant_switch_pending = None
+                self._qubitz_variant_switch_in_progress = False
+                if message:
+                    self._append_transcript("status", message)
+
+            def perform_switch() -> None:
+                if self.busy:
+                    self.root.after(100, perform_switch)
+                    return
+                target = self._qubitz_variant_switch_pending
+                if target is None:
+                    restore_current_selection()
+                    return
+                if not target.is_file() or target.parent != runtime_root:
+                    restore_current_selection(
+                        f"Variant switch failed because {target.name} is no longer available."
+                    )
+                    return
+                workspace = Path(getattr(self.agent, "workspace", self.config.workspace)).resolve()
+                environment = os.environ.copy()
+                environment[ACCESS_MODE_ENV_NAME] = _normalize_access_mode(
+                    getattr(self.config, "access_mode", DEFAULT_ACCESS_MODE)
+                )
+                environment[NETWORK_MODE_ENV_NAME] = _normalize_network_mode(
+                    getattr(self.config, "network_mode", DEFAULT_NETWORK_MODE)
+                )
+                command = [
+                    sys.executable,
+                    str(target),
+                    "--workspace",
+                    str(workspace),
+                ]
+                self._append_transcript(
+                    "status",
+                    f"Switching to {target.name}; stopping the current model runtime first.",
+                )
+                self.root.update_idletasks()
+                try:
+                    self.agent.reset_runtime()
+                except Exception as exc:
+                    restore_current_selection(
+                        f"Variant switch stopped because the current runtime could not be closed: {exc}"
+                    )
+                    return
+                try:
+                    os.chdir(runtime_root)
+                    os.execve(sys.executable, command, environment)
+                except OSError as exc:
+                    restore_current_selection(
+                        f"Variant switch failed while launching {target.name}: {exc}"
+                    )
+
+            def select_variant(filename: str) -> None:
+                if filename == current_filename or self._qubitz_variant_switch_in_progress:
+                    self.variant_selector_var.set(current_filename)
+                    return
+                target = (runtime_root / filename).resolve()
+                if target.parent != runtime_root or not target.is_file():
+                    restore_current_selection(
+                        f"Variant switch failed because {filename} is unavailable."
+                    )
+                    return
+                self._qubitz_variant_switch_pending = target
+                self._qubitz_variant_switch_in_progress = True
+                self.variant_selector_var.set(filename)
+                self.variant_selector.configure(state="disabled")
+                self.pending_prompts.clear()
+                if self.busy:
+                    self._append_transcript(
+                        "status",
+                        f"Variant switch selected: {filename}. Cancelling the active request at its safe boundary before switching.",
+                    )
+                    self._request_cancel()
+                    self.root.after(100, perform_switch)
+                    return
+                self.root.after_idle(perform_switch)
+
+            self._qubitz_select_variant = select_variant
+            for group_index, (group_label, filenames) in enumerate(variant_groups):
+                if group_index:
+                    variant_menu.add_separator()
+                variant_menu.add_command(label=group_label, state="disabled")
+                for filename in filenames:
+                    target_exists = (runtime_root / filename).is_file()
+                    state = "normal" if target_exists and filename != current_filename else "disabled"
+                    variant_menu.add_radiobutton(
+                        label=filename,
+                        variable=self.variant_selector_var,
+                        value=filename,
+                        state=state,
+                        command=lambda selected=filename: select_variant(selected),
+                    )
 
         def _apply_network_mode(self, _event: Any = None) -> None:
             mode = _normalize_network_mode(self.network_mode_var.get())
