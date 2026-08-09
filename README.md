@@ -85,7 +85,6 @@ Legend:
 - A3B = Approximately 3 billion parameters are activated per token from the model's total parameters through its Mixture-of-Experts routing.
 - QAT = Quantization-Aware Training (trained to better preserve quality after quantization)
 - IT = Instruction-Tuned
-- MTP = Multi-Token Prediction
 - Q4/Q5/Q6/Q8 = Approximate quantization bit-width
 - F16/FP16 = 16-bit floating-point precision
 - IQ4 = Importance-aware 4-bit quantization
