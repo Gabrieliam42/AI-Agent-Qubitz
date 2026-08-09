@@ -263,14 +263,13 @@ IMPLICIT_ENTRYPOINT_WEIGHT_BY_TOKEN = {
     "train": 5,
 }
 IMPLICIT_ENTRYPOINT_MIN_SCORE = 12
-THINKING_EFFORT_OPTIONS = ("default", "low", "medium", "high", "xhigh")
-THINKING_EFFORT_DISPLAY_OPTIONS = ("Default", "low", "medium", "high", "xhigh")
-THINKING_EFFORT_STEP_CAPS: dict[str, int | None] = {
-    "default": None,
+THINKING_EFFORT_OPTIONS = ("low", "medium", "high", "xhigh")
+THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
+THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
     "low": 8,
     "medium": 16,
-    "high": 24,
-    "xhigh": 48,
+    "high": 48,
+    "xhigh": 128,
 }
 SIMPLE_DIRECT_QUESTION_STEP_CAP = 2
 SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP = 8
@@ -2272,20 +2271,17 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def _normalize_thinking_effort(value: str | None) -> str:
-    normalized = (value or "default").strip().lower()
-    if normalized == "default":
-        return "default"
-    return normalized if normalized in THINKING_EFFORT_OPTIONS else "default"
+    normalized = (value or "medium").strip().lower()
+    return normalized if normalized in THINKING_EFFORT_OPTIONS else "medium"
 
 
 def _display_thinking_effort(value: str | None) -> str:
-    normalized = _normalize_thinking_effort(value)
-    return "Default" if normalized == "default" else normalized
+    return _normalize_thinking_effort(value)
 
 
 def _parse_thinking_effort_cli_value(value: str) -> str:
     normalized = _normalize_thinking_effort(value)
-    if normalized == "default" or normalized == (value or "").strip().lower():
+    if normalized == (value or "").strip().lower():
         return normalized
     choices = ", ".join(THINKING_EFFORT_DISPLAY_OPTIONS)
     raise SystemExit(f"--thinking-effort must be one of: {choices}")
@@ -3192,6 +3188,7 @@ class LocalMCPServerManager:
         self.base = base
         self.root = self.runtime_workspace / ".cache" / "mcp_servers"
         self.root.mkdir(parents=True, exist_ok=True)
+        self._mcp_python_probe_cache: dict[str, tuple[bool, str]] = {}
 
     def _meta_path(self, server_id: str) -> Path:
         return self.root / server_id / "meta.json"
@@ -3244,6 +3241,73 @@ class LocalMCPServerManager:
         if preferred is not None:
             return preferred.absolute()
         return Path(sys.executable).absolute()
+
+    def _probe_mcp_python(self, workspace: Path, python_path: Path) -> tuple[bool, str]:
+        key = str(python_path.absolute()).replace("\\", "/").casefold()
+        cached = self._mcp_python_probe_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            completed = self._run_python(
+                workspace,
+                python_path,
+                [
+                    "-I",
+                    "-c",
+                    "import mcp; print('QUBITZ_MCP_CLIENT_READY')",
+                ],
+                timeout_seconds=20,
+            )
+        except Exception as exc:
+            result = (False, f"{type(exc).__name__}: {exc}")
+        else:
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
+            if completed.returncode == 0 and "QUBITZ_MCP_CLIENT_READY" in stdout:
+                result = (True, "")
+            else:
+                result = (
+                    False,
+                    _shorten(stderr or stdout or f"interpreter exited with {completed.returncode}", 1000),
+                )
+        self._mcp_python_probe_cache[key] = result
+        return result
+
+    def _resolve_mcp_python(self, workspace: Path, python_path: str | None = None) -> Path:
+        if python_path:
+            explicit = self._resolve_workspace_path(workspace, python_path, allow_missing=False)
+            ready, reason = self._probe_mcp_python(workspace, explicit)
+            if ready:
+                return explicit.absolute()
+            raise RuntimeError(
+                f"The requested Python interpreter cannot run the MCP client: {explicit}. {reason}"
+            )
+
+        project_candidates = list(_project_environment_candidates(workspace))
+        candidates: list[Path] = []
+        preferred = _preferred_project_python(workspace)
+        if preferred is not None:
+            candidates.append(preferred)
+        candidates.extend(interpreter for _root, interpreter, _layout in project_candidates)
+        if not candidates:
+            candidates.append(Path(sys.executable))
+
+        failures: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate.absolute()).replace("\\", "/").casefold()
+            if key in seen or not candidate.exists():
+                continue
+            seen.add(key)
+            ready, reason = self._probe_mcp_python(workspace, candidate)
+            if ready:
+                return candidate.absolute()
+            failures.append(f"{candidate}: {reason}")
+        detail = "; ".join(failures[:4]) or "no executable project Python candidate was found"
+        raise RuntimeError(
+            "No verified MCP-capable Python interpreter is available for the active project. "
+            f"Install the MCP package into the intended project environment after user approval. Probes: {detail}"
+        )
 
     def _normalize_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
         merged = {}
@@ -3593,6 +3657,11 @@ class LocalMCPServerManager:
         workspace = self._resolve_workspace_path(self.workspace, cwd, allow_missing=False)
         script_path = self._resolve_workspace_path(workspace, server_script, allow_missing=False)
         interpreter = self._resolve_python(workspace, python_path)
+        mcp_client_interpreter = (
+            self._resolve_mcp_python(workspace)
+            if connection_uri.strip()
+            else interpreter
+        )
         server_id = uuid.uuid4().hex[:12]
         log_path = self.root / server_id / "server.log"
         process, command = self._popen_python(
@@ -3638,7 +3707,7 @@ class LocalMCPServerManager:
                     self._probe_tools(
                         workspace,
                         server_reference=metadata["connection_uri"],
-                        python_path=interpreter,
+                        python_path=mcp_client_interpreter,
                         env=env,
                         timeout_seconds=10,
                     )
@@ -3676,12 +3745,12 @@ class LocalMCPServerManager:
         if server_id:
             metadata = self._refresh_status(self._read_meta(server_id))
             workspace = Path(metadata["workspace"])
-            interpreter = Path(metadata["python_path"])
+            interpreter = self._resolve_mcp_python(workspace, python_path)
             reference = server_reference.strip() or metadata.get("connection_uri") or metadata.get("server_script") or ""
             env = metadata.get("environment") or {}
         else:
             workspace = self._resolve_workspace_path(self.workspace, cwd, allow_missing=False)
-            interpreter = self._resolve_python(workspace, python_path)
+            interpreter = self._resolve_mcp_python(workspace, python_path)
             reference = server_reference.strip()
             env = None
         if not reference:
@@ -3713,12 +3782,12 @@ class LocalMCPServerManager:
         if server_id:
             metadata = self._refresh_status(self._read_meta(server_id))
             workspace = Path(metadata["workspace"])
-            interpreter = Path(metadata["python_path"])
+            interpreter = self._resolve_mcp_python(workspace, python_path)
             reference = server_reference.strip() or metadata.get("connection_uri") or metadata.get("server_script") or ""
             env = metadata.get("environment") or {}
         else:
             workspace = self._resolve_workspace_path(self.workspace, cwd, allow_missing=False)
-            interpreter = self._resolve_python(workspace, python_path)
+            interpreter = self._resolve_mcp_python(workspace, python_path)
             reference = server_reference.strip()
             env = None
         if not reference:
@@ -4757,6 +4826,19 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
     def _read_text(candidate: Path) -> str:
         return candidate.read_text(encoding="utf-8", errors="ignore")
 
+    def _relative_exclusion_parts(candidate: Path, requested_root: Path) -> tuple[str, ...]:
+        for anchor in (workspace, requested_root):
+            with suppress(ValueError):
+                return candidate.relative_to(anchor).parts
+        return (candidate.name,)
+
+    def _is_excluded_candidate(candidate: Path, requested_root: Path) -> bool:
+        excluded = {str(part).casefold() for part in getattr(base, "EXCLUDED_DIRS", set())}
+        return any(
+            part.casefold() in excluded
+            for part in _relative_exclusion_parts(candidate, requested_root)
+        )
+
     @server.resource("workspace://summary")
     def workspace_summary() -> str:
         return json.dumps(
@@ -4804,7 +4886,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         iterator = root.rglob("*") if recursive else root.iterdir()
         entries: list[dict[str, Any]] = []
         for candidate in sorted(iterator):
-            if any(part in getattr(base, "EXCLUDED_DIRS", set()) for part in candidate.parts if candidate != root):
+            if candidate != root and _is_excluded_candidate(candidate, root):
                 continue
             entries.append(
                 {
@@ -4912,7 +4994,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         for candidate in sorted(root.rglob("*")):
             if not candidate.is_file():
                 continue
-            if any(part in getattr(base, "EXCLUDED_DIRS", set()) for part in candidate.parts):
+            if _is_excluded_candidate(candidate, root):
                 continue
             if not candidate.match(file_glob) and not Path(base.relative_path(candidate, workspace)).match(file_glob):
                 continue
@@ -7078,25 +7160,118 @@ def _patch_streaming_chat(base: Any) -> None:
         "503 Service Unavailable",
         "504 Gateway Timeout",
     )
+    # A dropped connection carries no HTTP status, so it cannot match the codes
+    # above, yet it is the same momentary local-server fault and clears on retry.
+    _TRANSIENT_TRANSPORT_ERRORS = (
+        "Connection reset by peer",
+        "ReadError",
+        "WriteError",
+        "ConnectError",
+        "RemoteProtocolError",
+        "Server disconnected",
+        "Connection aborted",
+        "IncompleteRead",
+    )
 
     def _chat_with_transient_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
-        """Retry a chat call once when the local server reports a transient 5xx.
+        """Retry a chat call once on a transient local-server or transport fault.
 
         The transport fallback raises RuntimeError once every transport fails,
         which otherwise aborts the whole run for a server-side fault that is
         usually gone a moment later. Any other failure re-raises immediately so
         genuine model and protocol errors keep their existing behavior.
         """
+        _fit_messages_to_window(self, kwargs)
         for attempt in range(2):
             try:
                 return _chat(self, **kwargs)
             except RuntimeError as exc:
                 message = str(exc)
-                transient = any(code in message for code in _TRANSIENT_SERVER_ERRORS)
+                transient = any(
+                    marker in message
+                    for marker in _TRANSIENT_SERVER_ERRORS + _TRANSIENT_TRANSPORT_ERRORS
+                )
                 if not transient or attempt == 1:
                     raise
                 time.sleep(2.0)
         raise RuntimeError("unreachable transient retry state")
+
+    _CONTEXT_GUARD_HEADROOM = 0.90
+    _CONTEXT_GUARD_MIN_TOOL_CHARS = 240
+
+    def _server_context_window(client: Any) -> int:
+        """Context window llama-server actually loaded, cached per client.
+
+        The configured value is only a ceiling; llama.cpp clamps it to whatever
+        fits alongside the weights, and the difference can be large.
+        """
+        cached = getattr(client, "_qubitz_server_context_window", None)
+        if cached is not None:
+            return int(cached)
+        window = 0
+        try:
+            probe = client._probe_with_fallback("/props")
+            if int(probe.get("status_code") or 0) == 200:
+                props = probe.get("json") or {}
+                settings = props.get("default_generation_settings")
+                for value in (
+                    settings.get("n_ctx") if isinstance(settings, dict) else None,
+                    props.get("n_ctx"),
+                ):
+                    try:
+                        resolved = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if resolved > 0:
+                        window = resolved
+                        break
+        except Exception:
+            window = 0
+        client._qubitz_server_context_window = window
+        return window
+
+    def _fit_messages_to_window(client: Any, kwargs: dict[str, Any]) -> None:
+        """Shrink oldest tool results until the request fits the real window.
+
+        Structure is preserved exactly: no message is removed, no role changes,
+        and tool_call_id values are untouched, so assistant tool_calls stay
+        paired with their results. Only role="tool" content shrinks. If that is
+        not enough the request proceeds unchanged rather than editing user or
+        assistant turns, so a genuine overflow still surfaces as itself.
+        """
+        messages = kwargs.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return
+        window = _server_context_window(client)
+        if window <= 0:
+            return
+        try:
+            predict = int(kwargs.get("num_predict") or 0)
+        except (TypeError, ValueError):
+            predict = 0
+        limit = int(window * _CONTEXT_GUARD_HEADROOM) - max(0, predict)
+        if limit <= 0:
+            return
+
+        def estimate() -> int:
+            payload = json.dumps(
+                {"messages": messages, "tools": kwargs.get("tools") or []},
+                ensure_ascii=False,
+                default=str,
+            )
+            return base.estimate_tokens(payload)
+
+        if estimate() <= limit:
+            return
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "tool":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or len(content) <= _CONTEXT_GUARD_MIN_TOOL_CHARS:
+                continue
+            message["content"] = base.shorten(content, _CONTEXT_GUARD_MIN_TOOL_CHARS)
+            if estimate() <= limit:
+                return
 
     base.LlamaCppClient.chat = _chat_with_transient_retry
     base.LlamaCppClient._qubitz_streaming_patched = True
@@ -7620,7 +7795,7 @@ class LocalOnlyApp:
 
         class EnhancedAgentRunner(base.AgentRunner):
             def _thinking_effort(self) -> str:
-                return _normalize_thinking_effort(getattr(self.config, "thinking_effort", "default"))
+                return _normalize_thinking_effort(getattr(self.config, "thinking_effort", "medium"))
 
             def _effective_max_steps(self) -> int:
                 configured = int(getattr(self.config, "max_steps", getattr(base, "MAX_TOOL_STEPS", 0)))
@@ -9576,7 +9751,7 @@ class LocalOnlyApp:
                 history_summary: str = "",
             ) -> str:
                 if self._simple_direct_mode:
-                    effort_section = _thinking_effort_guidance(getattr(self.config, "thinking_effort", "default"))
+                    effort_section = _thinking_effort_guidance(getattr(self.config, "thinking_effort", "medium"))
                     simple_prompt_mode = os.environ.get(
                         "QUBITZ_SIMPLE_PROMPT_MODE",
                         "legacy",
@@ -9603,7 +9778,7 @@ class LocalOnlyApp:
                         prompt = f"{prompt}\n\nAdditional effort guidance:\n{effort_section}"
                     return prompt
                 original = super()._system_prompt("", "", "")
-                effort_section = _thinking_effort_guidance(getattr(self.config, "thinking_effort", "default"))
+                effort_section = _thinking_effort_guidance(getattr(self.config, "thinking_effort", "medium"))
                 overlay_lines = [
                     "",
                     "Local-only overlay for this copy:",
@@ -9696,7 +9871,7 @@ class LocalOnlyApp:
                 self._transcript_tags_ready = False
                 self.thinking_effort_var = self.tk.StringVar(
                     master=self.root,
-                    value=_display_thinking_effort(getattr(self.config, "thinking_effort", "default")),
+                    value=_display_thinking_effort(getattr(self.config, "thinking_effort", "medium")),
                 )
                 buttons = self.clear_button.master
                 self.ttk.Label(buttons, text="Effort").pack(fill="x", pady=(12, 0))
@@ -10045,7 +10220,7 @@ class LocalOnlyApp:
         if "selected_model_filename" in getattr(self.base.AgentConfig, "__dataclass_fields__", {}):
             kwargs["selected_model_filename"] = getattr(self.base, "DEFAULT_GGUF_MODEL_FILENAME")
         config = self.base.AgentConfig(**kwargs)
-        setattr(config, "thinking_effort", _normalize_thinking_effort(getattr(args, "thinking_effort", "default")))
+        setattr(config, "thinking_effort", _normalize_thinking_effort(getattr(args, "thinking_effort", "medium")))
         return config
 
     def run_cli(self, config: Any, initial_prompt: str | None = None) -> None:
@@ -10132,7 +10307,7 @@ class LocalOnlyApp:
     def parse_args(self, argv: Sequence[str] | None = None) -> Any:
         raw_args = list(argv) if argv is not None else sys.argv[1:]
         filtered_args: list[str] = []
-        thinking_effort = "default"
+        thinking_effort = "medium"
         index = 0
         while index < len(raw_args):
             arg = raw_args[index]
@@ -10902,7 +11077,9 @@ class _ToolPermissionBroker:
         self.provenance_urls: set[str] = set()
         self.invalid_call_counts: dict[str, int] = {}
         self.invalid_stop_requested = False
-        self.stop_callback: Callable[[], None] | None = None
+        self.permission_denial_counts: dict[str, int] = {}
+        self.permission_stop_requested = False
+        self.stop_callback: Callable[[str], None] | None = None
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_snapshot_hashes: dict[str, str] = {}
         self.transaction_changed_hashes: dict[str, str] = {}
@@ -10937,6 +11114,8 @@ class _ToolPermissionBroker:
         self.provenance_urls = {url.casefold() for url in _extract_external_urls(prompt)}
         self.invalid_call_counts.clear()
         self.invalid_stop_requested = False
+        self.permission_denial_counts.clear()
+        self.permission_stop_requested = False
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -10982,6 +11161,8 @@ class _ToolPermissionBroker:
         self.provenance_urls.clear()
         self.invalid_call_counts.clear()
         self.invalid_stop_requested = False
+        self.permission_denial_counts.clear()
+        self.permission_stop_requested = False
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -11070,7 +11251,7 @@ class _ToolPermissionBroker:
                 )
                 if not self.invalid_stop_requested and self.stop_callback is not None:
                     self.invalid_stop_requested = True
-                    self.stop_callback()
+                    self.stop_callback("repeated equivalent invalid tool calls")
         return count
 
     def _transaction_progress_token(self) -> str:
@@ -11089,6 +11270,35 @@ class _ToolPermissionBroker:
         }
         encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def register_permission_denial(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> int:
+        status = str(payload.get("status") or "").strip().lower()
+        if status not in {
+            "access_mode_denied",
+            "approval_required",
+            "environment_mismatch",
+            "network_offline",
+            "protected_harness_denied",
+            "scope_denied",
+        } and not status.endswith("_denied"):
+            return 1
+        reason = str(payload.get("reason") or "").strip().lower()
+        key = self._invalid_call_key(name, arguments, f"{status}: {reason}")
+        count = self.permission_denial_counts.get(key, 0) + 1
+        self.permission_denial_counts[key] = count
+        if count > 1 and not self.permission_stop_requested and self.stop_callback is not None:
+            self.permission_stop_requested = True
+            self._emit(
+                f"Stopped repeated identical {name} permission denial after the first denied attempt; "
+                "report the blocker instead of retrying the same action."
+            )
+            self.stop_callback("repeated identical permission denials")
+        return count
 
     def _track_transaction_recovery_progress(self) -> None:
         if not self.transaction_recovery_required:
@@ -11230,6 +11440,38 @@ class _ToolPermissionBroker:
         resolved = target.resolve()
         digest = hashlib.sha256(data).hexdigest()
         key = str(resolved)
+        if key not in self.transaction_originals:
+            # Durable pre-edit copy. transaction_originals is cleared at both turn
+            # boundaries, so it cannot restore an edit the user notices after the
+            # turn ends; this copy can. Best effort by design: the hash-verified
+            # transaction remains the primary safeguard, so a backup failure must
+            # never block the edit. Plain file I/O, never the tool path, so writing
+            # a backup cannot re-enter this method.
+            try:
+                workspace = Path(self.workspace).resolve()
+                root = workspace / ".qubitz" / "backups"
+                root.mkdir(parents=True, exist_ok=True)
+                try:
+                    relative = resolved.relative_to(workspace).as_posix()
+                except ValueError:
+                    relative = resolved.name
+                safe = re.sub(r"[^A-Za-z0-9._-]+", "__", relative).strip("_") or "file"
+                existing = sorted(
+                    root.glob(f"{safe}.[0-9][0-9][0-9].bak"),
+                    key=lambda item: item.stat().st_mtime,
+                )
+                highest = 0
+                for item in existing:
+                    with suppress(ValueError):
+                        highest = max(highest, int(item.name.rsplit(".", 2)[1]))
+                # Number from the highest seen, and prune by modification time, so
+                # pruning can never delete the copy just written.
+                (root / f"{safe}.{highest + 1:03d}.bak").write_bytes(data)
+                for stale in existing[: max(0, len(existing) + 1 - 5)]:
+                    with suppress(OSError):
+                        stale.unlink()
+            except Exception:
+                pass
         self.transaction_originals.setdefault(
             key,
             {"data": data, "mode": mode, "sha256": digest},
@@ -14200,6 +14442,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 allowed, error_payload = broker.authorize(name, arguments)
                 if not allowed:
                     assert error_payload is not None
+                    broker.register_permission_denial(name, arguments, error_payload)
                     denied_result = self._error_result(error_payload)
                     broker.record_result(name, arguments, denied_result)
                     return denied_result
@@ -14333,9 +14576,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 self.workspace,
                 getattr(self, "runtime_workspace", self.workspace),
             )
-            self._tool_permission_broker.stop_callback = lambda: self._request_wrapper_stop(
-                "repeated equivalent invalid tool calls"
-            )
+            self._tool_permission_broker.stop_callback = self._request_wrapper_stop
             self._tool_permission_broker.transaction_recovery_callback = self._request_transaction_recovery
             self.discovery_memory = WorkspaceDiscoveryMemory(
                 self.workspace,
@@ -14456,6 +14697,51 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 broker.task_intent = intent
                 broker.required_postconditions = broker._completion_requirements(prompt, intent)
             return intent
+
+        def _read_only_external_path_preflight(self, prompt: str) -> str:
+            if _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE)) != ACCESS_MODE_READ_ONLY:
+                return ""
+            intent = self._task_intent_for_prompt(prompt, "")
+            operation_pattern = re.compile(
+                r"\b(?:attempt\s+to\s+)?(?:copy|create|delete|edit|execute|inspect|modify|move|open|"
+                r"overwrite|read|remove|rename|run|start|stop|write)\b",
+                re.IGNORECASE,
+            )
+            operation_requested = bool(intent.semantic.requested_actions) or bool(operation_pattern.search(prompt))
+            prohibited_operation = bool(
+                re.search(
+                    r"\b(?:do\s+not|don't|never|avoid)\s+(?:attempting\s+to\s+)?"
+                    r"(?:copy|create|delete|edit|execute|inspect|modify|move|open|overwrite|read|remove|"
+                    r"rename|run|start|stop|write)\b",
+                    prompt,
+                    re.IGNORECASE,
+                )
+            )
+            if (
+                intent.semantic.speech_act in {"explanation", "hypothetical"}
+                or not operation_requested
+                or (prohibited_operation and not intent.semantic.requested_actions)
+            ):
+                return ""
+            outside_paths: list[str] = []
+            for token in base.extract_file_tokens(prompt):
+                candidate = str(token).strip().strip("`\"'")
+                if not candidate or _canonical_http_url(candidate):
+                    continue
+                if not base.is_explicit_absolute_path_text(candidate):
+                    continue
+                if self._tool_permission_broker._outside_workspace_paths({"path": candidate}):
+                    outside_paths.append(candidate)
+            outside_paths = list(dict.fromkeys(outside_paths))
+            if not outside_paths:
+                return ""
+            rendered_paths = ", ".join(f"`{path}`" for path in outside_paths[:4])
+            return (
+                "Read-only mode denied the requested operation because it names an explicit path outside "
+                f"the active workspace: {rendered_paths}. No model was loaded, no tool was called, and no "
+                "file or process state was changed. Switch to Full Access only if that external operation "
+                "is intended."
+            )
 
         def _select_task_guidance(self, prompt: str) -> str:
             guidance = super()._select_task_guidance(prompt)
@@ -15862,6 +16148,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return rollback
 
             try:
+                preflight_denial = self._read_only_external_path_preflight(prompt)
+                if preflight_denial:
+                    if callback is not None:
+                        callback(
+                            "status",
+                            "Wrapper preflight resolved an explicit read-only external-path denial; model loading was skipped.",
+                        )
+                    return finalize_turn_answer(preflight_denial)
                 try:
                     answer = await super()._run_async(effective_prompt, callback)
                     if (
@@ -15939,6 +16233,18 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                                 ):
                                     answer = ""
                                     self._cancel_source = ""
+                                repeated_no_progress = str(answer or "").strip().lower()
+                                if any(
+                                    marker in repeated_no_progress
+                                    for marker in (
+                                        "stopped after a focused recovery attempt because consecutive model steps produced",
+                                        "stopped without a final answer",
+                                        "you returned neither tool calls nor a final answer",
+                                    )
+                                ):
+                                    self._request_wrapper_stop(
+                                        "repeated empty model responses after one focused recovery"
+                                    )
                 except (Exception, asyncio.CancelledError):
                     if (
                         self._tool_permission_broker.transaction_recovery_interrupt_requested
