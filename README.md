@@ -28,6 +28,7 @@ Qubitz is closer to a local style agent with a strong harness. Its stronger poin
 - Strong direct-entrypoint path: this is better than many agents that overthink and rewrite instead of running what already exists.
 - Harness plus wrapper separation: useful because small models need both persistent policy and runtime facts.
 - Local retrieval/embeddings: gives project context without cloud retrieval.
+- Agentic Behavioral Contracts based.
 
 A realistical view: For its purposes Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is not better than frontier cloud coding agents on raw intelligence, but it is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
 
