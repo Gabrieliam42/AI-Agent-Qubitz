@@ -3295,6 +3295,14 @@ class LocalMCPServerManager:
         path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
     def _read_meta(self, server_id: str) -> dict[str, Any]:
+        raw_server_id = str(server_id or "").strip().lower()
+        normalized_server_id = re.sub(r"[\s_-]+", "", raw_server_id)
+        if not re.fullmatch(r"[a-f0-9]{12}", normalized_server_id):
+            raise ValueError(
+                "server_id must be a 12-character hexadecimal id; optional spaces, hyphens, "
+                "or underscores are ignored."
+            )
+        server_id = normalized_server_id
         path = self._meta_path(server_id)
         if not path.exists():
             raise FileNotFoundError(server_id)
@@ -16758,6 +16766,23 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         f"{rendered_answer}\n\n[Completion evidence correction] Structured runtime evidence verified: "
                         f"{summary}. This supersedes any contradictory completion wording above."
                     )
+                if required:
+                    rendered_answer = re.sub(
+                        r"\n\n\[Completion status: verified\]\s*\Z",
+                        "",
+                        rendered_answer,
+                        flags=re.IGNORECASE,
+                    ).rstrip()
+                    if not re.search(
+                        r"\bVerified current-turn evidence:",
+                        rendered_answer,
+                        re.IGNORECASE,
+                    ):
+                        summary = self._tool_permission_broker.completion_evidence_summary(prompt)
+                        rendered_answer = (
+                            f"{rendered_answer}\n\nVerified current-turn evidence: {summary}."
+                        )
+                    rendered_answer = f"{rendered_answer}\n\n[Completion status: verified]"
                 return finalize_turn_answer(rendered_answer)
             finally:
                 with suppress(Exception):
@@ -17269,7 +17294,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
     base.QubitzGUI = HardenedGUI
 
 
-GPU_THERMAL_TRIGGER_C = 89.0
+GPU_THERMAL_TRIGGER_C = 86.0
 GPU_THERMAL_RESUME_C = 78.0
 GPU_THERMAL_POLL_SECONDS = 3.0
 GPU_THERMAL_ACTIVE_GRACE_SECONDS = 42.0
