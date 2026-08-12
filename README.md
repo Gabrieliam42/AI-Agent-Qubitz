@@ -7,7 +7,7 @@ Qubitz is a local-first AI agent with a specialized harness and Agent Behavioral
 ***
 Qubitz is a standalone local-only AI agent for GGUF models on `llama.cpp`. It is oriented to local LLM workflows only: no cloud inference, no subscriptions, and no paid hosted services are required.
 
-Qubitz is unusual compared to most AI agents because it is strongly local-first and wrapper-driven and harness-driven.
+Qubitz is unusual compared to most AI agents because it is strongly local-first, Agentic Behavioral Contracts Wrapper-driven and Harness-driven.
 
 ![MasterHead](https://i.imgur.com/mDfL5vB.png)
 
