@@ -357,6 +357,529 @@ class TaskIntent:
     required_postconditions: frozenset[str]
 
 
+@dataclass(frozen=True)
+class DependencyInstallManifest:
+    environment: str | None
+    packages: tuple[str, ...]
+    pip_args: tuple[str, ...]
+    requirements_file: str | None
+    upgrade: bool
+    force_reinstall: bool
+    no_deps: bool
+    manifest_id: str
+    errors: tuple[str, ...] = ()
+
+    def tool_arguments(self) -> dict[str, Any]:
+        return {
+            "packages": list(self.packages),
+            "requirements_file": self.requirements_file,
+            "environment": self.environment,
+            "upgrade": self.upgrade,
+            "force_reinstall": self.force_reinstall,
+            "pip_args": list(self.pip_args),
+            "no_deps": self.no_deps,
+            "allow_pip_fallback": True,
+        }
+
+
+def _normalize_terminal_display_text(value: Any) -> str:
+    """Normalize terminal carriage returns without changing retained tool evidence."""
+    text = str(value or "").replace("\r\n", "\n").replace("\n\r", "\n").replace("\x00", "")
+    if "\r" not in text:
+        return text
+    rendered_lines: list[str] = []
+    for line in text.split("\n"):
+        segments = line.split("\r")
+        rendered_lines.append(next((segment for segment in reversed(segments) if segment), ""))
+    return "\n".join(rendered_lines)
+
+
+_INSTALL_INDEX_OPTION_PATTERN = re.compile(
+    r"(?P<option>--(?:extra-index-url|find-links|index-url))"
+    r"(?:\s*(?:=|\s)\s*(?P<url>https?://[^\s<>\[\]{}()\"']+))?",
+    re.IGNORECASE,
+)
+_INSTALL_RAW_URL_PATTERN = re.compile(r"https?://[^\s<>\[\]{}()\"']+", re.IGNORECASE)
+_INSTALL_ARTIFACT_SUFFIXES = (".whl", ".tar.gz", ".tar.bz2", ".tar.xz", ".zip")
+_INSTALL_REQUIREMENT_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?"
+    r"(?:\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[^\s;]+)?(?:\s*;\s*.+)?$"
+)
+
+
+def _clean_install_url(value: Any) -> str:
+    return str(value or "").strip().strip("`'\"").rstrip(".,;:!?")
+
+
+def _install_artifact_basename(value: Any) -> str:
+    from urllib.parse import unquote, urlsplit
+
+    text = _clean_install_url(value)
+    try:
+        path = urlsplit(text).path if re.match(r"^https?://", text, re.IGNORECASE) else text
+    except ValueError:
+        path = text
+    return unquote(path.replace("\\", "/").rsplit("/", 1)[-1])
+
+
+def _install_requirement_identity(requirement: Any) -> tuple[str, str | None]:
+    text = str(requirement or "").strip()
+    direct_value = text.split("@", 1)[1].strip() if "@" in text else text
+    basename = _install_artifact_basename(direct_value)
+    if basename.lower().endswith(".whl"):
+        wheel_parts = basename[:-4].split("-")
+        if len(wheel_parts) >= 5:
+            return re.sub(r"[-_.]+", "-", wheel_parts[0]).casefold(), wheel_parts[1]
+    match = re.match(
+        r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?"
+        r"(?:\s*(?:===|==)\s*([^\s;]+))?",
+        text,
+    )
+    if match is None:
+        return "", None
+    return re.sub(r"[-_.]+", "-", match.group(1)).casefold(), match.group(2)
+
+
+def _direct_wheel_public_version_matches(
+    requirement: Any,
+    installed_version: Any,
+    expected_version: Any,
+) -> bool:
+    """Accept wheel filename build metadata omitted by installed METADATA."""
+    text = str(requirement or "").strip()
+    direct_value = text.split("@", 1)[1].strip() if "@" in text else text
+    if not _install_artifact_basename(direct_value).lower().endswith(".whl"):
+        return False
+    expected_public, separator, expected_local = str(expected_version or "").partition("+")
+    if not separator or not expected_public or not expected_local:
+        return False
+    return str(installed_version or "").casefold() == expected_public.casefold()
+
+
+def _direct_wheel_request(requirement: Any) -> tuple[str | None, dict[str, str]]:
+    """Return a fragment-free remote wheel URL and any requested URL hashes."""
+    from urllib.parse import parse_qsl, urlsplit, urlunsplit
+
+    text = str(requirement or "").strip()
+    direct_value = _clean_install_url(text.split("@", 1)[1].strip() if "@" in text else text)
+    try:
+        parsed = urlsplit(direct_value)
+    except ValueError:
+        return None, {}
+    if parsed.scheme.casefold() not in {"http", "https"}:
+        return None, {}
+    if not _install_artifact_basename(direct_value).lower().endswith(".whl"):
+        return None, {}
+    available_algorithms = {
+        algorithm.casefold().replace("-", "") for algorithm in hashlib.algorithms_available
+    }
+    requested_hashes: dict[str, str] = {}
+    for algorithm, digest in parse_qsl(parsed.fragment, keep_blank_values=True):
+        normalized_algorithm = algorithm.casefold().replace("-", "")
+        if normalized_algorithm not in available_algorithms:
+            continue
+        normalized_digest = digest.strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]+", normalized_digest):
+            return None, {}
+        requested_hashes[normalized_algorithm] = normalized_digest
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")), requested_hashes
+
+
+def _direct_wheel_provenance_matches(
+    requirement: Any,
+    installed_version: Any,
+    expected_version: Any,
+    direct_url_data: Any,
+    hash_arguments: Sequence[Any] = (),
+) -> bool:
+    """Verify installed direct-URL provenance before reusing a remote wheel."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    requested_url, required_hashes = _direct_wheel_request(requirement)
+    if requested_url is None or not isinstance(direct_url_data, dict):
+        return False
+    recorded_url = str(direct_url_data.get("url") or "").strip()
+    try:
+        parsed_recorded = urlsplit(recorded_url)
+        recorded_url = urlunsplit(
+            (
+                parsed_recorded.scheme,
+                parsed_recorded.netloc,
+                parsed_recorded.path,
+                parsed_recorded.query,
+                "",
+            )
+        )
+    except ValueError:
+        return False
+    if recorded_url != requested_url:
+        return False
+    version_matches = bool(
+        installed_version
+        and expected_version
+        and (
+            str(installed_version).casefold() == str(expected_version).casefold()
+            or _direct_wheel_public_version_matches(
+                requirement,
+                installed_version,
+                expected_version,
+            )
+        )
+    )
+    if not version_matches:
+        return False
+
+    available_algorithms = {
+        algorithm.casefold().replace("-", "") for algorithm in hashlib.algorithms_available
+    }
+
+    def parse_hash_spec(value: Any) -> tuple[str, str] | None:
+        text = str(value or "").strip()
+        separator = ":" if ":" in text else "=" if "=" in text else ""
+        if not separator:
+            return None
+        algorithm, digest = text.split(separator, 1)
+        normalized_algorithm = algorithm.casefold().replace("-", "")
+        normalized_digest = digest.strip().casefold()
+        if (
+            normalized_algorithm not in available_algorithms
+            or not re.fullmatch(r"[0-9a-f]+", normalized_digest)
+        ):
+            return None
+        return normalized_algorithm, normalized_digest
+
+    for argument in hash_arguments:
+        text = str(argument or "").strip()
+        if not text.casefold().startswith("--hash"):
+            continue
+        hash_spec = text.split("=", 1)[1] if "=" in text else text[len("--hash") :].strip()
+        parsed_hash = parse_hash_spec(hash_spec)
+        if parsed_hash is None:
+            return False
+        required_hashes[parsed_hash[0]] = parsed_hash[1]
+    if not required_hashes:
+        return True
+
+    archive_info = direct_url_data.get("archive_info")
+    if not isinstance(archive_info, dict):
+        return False
+    recorded_hashes: dict[str, str] = {}
+    hashes = archive_info.get("hashes")
+    if isinstance(hashes, dict):
+        for algorithm, digest in hashes.items():
+            parsed_hash = parse_hash_spec(f"{algorithm}:{digest}")
+            if parsed_hash is not None:
+                recorded_hashes[parsed_hash[0]] = parsed_hash[1]
+    legacy_hash = parse_hash_spec(archive_info.get("hash"))
+    if legacy_hash is not None:
+        recorded_hashes[legacy_hash[0]] = legacy_hash[1]
+    return all(recorded_hashes.get(algorithm) == digest for algorithm, digest in required_hashes.items())
+
+
+def _semantic_text_without_install_literals(prompt: str) -> str:
+    text = str(prompt or "")
+    text = _INSTALL_INDEX_OPTION_PATTERN.sub(" <install-source> ", text)
+    text = _INSTALL_RAW_URL_PATTERN.sub(" <url> ", text)
+    text = re.sub(
+        r"(?<![A-Za-z0-9_.-])[^\s`'\"]+\.(?:whl|tar\.gz|tar\.bz2|tar\.xz|zip)"
+        r"(?![A-Za-z0-9_.-])",
+        " <install-artifact> ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
+def _dependency_install_manifest(prompt: str) -> DependencyInstallManifest | None:
+    raw_prompt = str(prompt or "")
+    force_reinstall = bool(
+        re.search(
+            r"(?<!\w)--(?:force-reinstall|reinstall)\b"
+            r"|\b(?:force(?:d)?[-\s]+)?re-?install\b"
+            r"|\bforce\s+(?:the\s+)?installation\b"
+            r"|\brepair\s+(?:the\s+)?(?:package|dependency|environment)\s+installation\b",
+            raw_prompt,
+            re.IGNORECASE,
+        )
+    )
+    semantic = _analyze_semantic_intent(raw_prompt)
+    explicit_reinstall_imperative = bool(
+        re.match(
+            r"^\s*(?:please\s+)?(?:force(?:d)?[-\s]+)?re-?install\b"
+            r"|^\s*(?:please\s+)?repair\s+(?:the\s+)?(?:package|dependency|environment)\s+installation\b",
+            raw_prompt,
+            re.IGNORECASE,
+        )
+    )
+    if (
+        semantic.speech_act != "request"
+        and not explicit_reinstall_imperative
+    ) or not (semantic.requests("install", "upgrade") or force_reinstall):
+        return None
+    indexed_urls: list[tuple[int, str]] = []
+    for match in _INSTALL_RAW_URL_PATTERN.finditer(raw_prompt):
+        url = _clean_install_url(match.group(0))
+        if url and (match.start(), url) not in indexed_urls:
+            indexed_urls.append((match.start(), url))
+
+    used_index_urls: set[str] = set()
+    pip_args: list[str] = []
+    option_matches = list(_INSTALL_INDEX_OPTION_PATTERN.finditer(raw_prompt))
+    for match in option_matches:
+        option = match.group("option").lower()
+        url = _clean_install_url(match.group("url"))
+        if not url:
+            candidates = [
+                (abs(position - match.start()), candidate)
+                for position, candidate in indexed_urls
+                if candidate not in used_index_urls
+                and not _install_artifact_basename(candidate).lower().endswith(
+                    _INSTALL_ARTIFACT_SUFFIXES
+                )
+            ]
+            if candidates:
+                distance, candidate = min(candidates, key=lambda item: item[0])
+                if distance <= 256:
+                    url = candidate
+        if url:
+            used_index_urls.add(url)
+            pair = (option, url)
+            existing_pairs = list(zip(pip_args[::2], pip_args[1::2], strict=False))
+            if pair not in existing_pairs:
+                pip_args.extend(pair)
+
+    artifact_entries: list[tuple[int, str]] = []
+    for position, url in indexed_urls:
+        basename = _install_artifact_basename(url)
+        if basename.lower().endswith(_INSTALL_ARTIFACT_SUFFIXES) and all(
+            existing_url != url for _existing_position, existing_url in artifact_entries
+        ):
+            artifact_entries.append((position, url))
+
+    artifact_urls = [url for _position, url in artifact_entries]
+    wheel_url_basenames = {
+        _install_artifact_basename(url).casefold() for url in artifact_urls
+    }
+    artifact_identities = {
+        identity
+        for identity in (_install_requirement_identity(url) for url in artifact_urls)
+        if identity[0]
+    }
+    package_entries: list[tuple[int, int, str]] = []
+    entry_serial = 0
+
+    def is_nearby_artifact_label(candidate: str, position: int) -> bool:
+        """Recognize an exact wheel name-version label adjacent to its URL."""
+        normalized_candidate = re.sub(r"[-_.]+", "-", candidate).casefold()
+        for artifact_position, artifact_url in artifact_entries:
+            artifact_name, artifact_version = _install_requirement_identity(artifact_url)
+            if not artifact_name or not artifact_version:
+                continue
+            normalized_label = re.sub(
+                r"[-_.]+",
+                "-",
+                f"{artifact_name}-{artifact_version}",
+            ).casefold()
+            if normalized_candidate != normalized_label:
+                continue
+            start, end = sorted((max(0, int(position)), artifact_position))
+            between = raw_prompt[start:end]
+            if len(between) <= 2048 and between.count("\n") <= 2:
+                return True
+        return False
+
+    def add_package_candidate(candidate: str, position: int) -> None:
+        nonlocal entry_serial
+        normalized = " ".join(
+            str(candidate or "").strip().strip("`'\"[](){}<>,:;").split()
+        )
+        if not normalized:
+            return
+        if normalized not in artifact_urls and is_nearby_artifact_label(normalized, position):
+            return
+        identity = _install_requirement_identity(normalized)
+        if normalized not in artifact_urls and identity[0] and any(
+            identity[0] == artifact_name
+            and (identity[1] is None or artifact_version is None or identity[1] == artifact_version)
+            for artifact_name, artifact_version in artifact_identities
+        ):
+            return
+        if identity[0]:
+            for index, (existing_position, serial, existing) in enumerate(package_entries):
+                existing_identity = _install_requirement_identity(existing)
+                if existing_identity[0] != identity[0]:
+                    continue
+                if existing_identity[1] is None and identity[1] is not None:
+                    package_entries[index] = (
+                        min(existing_position, max(0, int(position))),
+                        serial,
+                        normalized,
+                    )
+                return
+        if any(existing == normalized for _position, _serial, existing in package_entries):
+            return
+        package_entries.append((max(0, int(position)), entry_serial, normalized))
+        entry_serial += 1
+
+    for position, url in artifact_entries:
+        add_package_candidate(url, position)
+
+    literal_prompt = _INSTALL_INDEX_OPTION_PATTERN.sub(
+        lambda match: " " * len(match.group(0)),
+        raw_prompt,
+    )
+    literal_prompt = _INSTALL_RAW_URL_PATTERN.sub(
+        lambda match: " " * len(match.group(0)),
+        literal_prompt,
+    )
+    literal_prompt = re.sub(
+        r"(?<!\S)--(?:force-reinstall|reinstall)(?=\s|$)",
+        lambda match: " " * len(match.group(0)),
+        literal_prompt,
+        flags=re.IGNORECASE,
+    )
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9_.-])"
+        r"([A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?"
+        r"\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[^\s,;:]+)",
+        literal_prompt,
+    ):
+        add_package_candidate(match.group(1), match.start(1))
+    install_stopwords = {
+        "a",
+        "dependencies",
+        "dependency",
+        "all",
+        "each",
+        "following",
+        "in",
+        "into",
+        "libraries",
+        "library",
+        "listed",
+        "only",
+        "package",
+        "packages",
+        "python",
+        "requested",
+        "requirements",
+        "specified",
+        "stack",
+        "the",
+        "these",
+        "this",
+        "those",
+        "to",
+    }
+    for match in re.finditer(
+        r"\b(?:add|install|re-?install|upgrade)\s+([A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?)\b",
+        literal_prompt,
+        re.IGNORECASE,
+    ):
+        candidate = match.group(1)
+        if candidate.casefold() not in install_stopwords:
+            add_package_candidate(candidate, match.start(1))
+
+    requirements_file: str | None = None
+    requirements_match = re.search(
+        r"\b(?:(?:re-?install|install)(?:\s+dependencies)?\s+(?:from\s+)?|from\s+)"
+        r"([A-Za-z0-9_./\\-]*requirements(?:[-_.][A-Za-z0-9_.-]+)?\.txt)\b",
+        raw_prompt,
+        re.IGNORECASE,
+    )
+    if requirements_match is not None:
+        prefix = raw_prompt[max(0, requirements_match.start() - 80) : requirements_match.start()]
+        if not re.search(r"\b(?:do\s+not|don't|never|without|avoid)\b", prefix, re.IGNORECASE):
+            requirements_file = requirements_match.group(1).strip()
+
+    line_offset = 0
+    for raw_line_with_ending in raw_prompt.splitlines(keepends=True):
+        raw_line = raw_line_with_ending.rstrip("\r\n")
+        current_line_offset = line_offset
+        line_offset += len(raw_line_with_ending)
+        line = raw_line.strip().strip("`")
+        if not line or line.startswith("```"):
+            continue
+        line = _INSTALL_INDEX_OPTION_PATTERN.sub(
+            lambda match: " " * len(match.group(0)),
+            line,
+        )
+        line = _INSTALL_RAW_URL_PATTERN.sub(
+            lambda match: " " * len(match.group(0)),
+            line,
+        )
+        line = re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip()
+        line = line.strip("[](){}<>`'\" ,:")
+        if not line or line.lower() in {"python", "packages", "dependencies"}:
+            continue
+        wheel_matches = re.findall(r"[^\s`'\"]+\.whl", line, re.IGNORECASE)
+        for wheel in wheel_matches:
+            candidate = wheel.strip("[](){}<>`'\" ,:;")
+            if candidate.casefold() not in wheel_url_basenames:
+                add_package_candidate(candidate, current_line_offset)
+        if wheel_matches:
+            continue
+        compact = " ".join(line.split())
+        spaced_version = re.fullmatch(
+            r"([A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?)\s+"
+            r"([0-9][A-Za-z0-9.+!_-]*)",
+            compact,
+        )
+        if spaced_version is not None:
+            compact = f"{spaced_version.group(1)}=={spaced_version.group(2)}"
+        if not _INSTALL_REQUIREMENT_PATTERN.fullmatch(compact):
+            continue
+        add_package_candidate(compact, current_line_offset)
+
+    packages = [
+        value
+        for _position, _serial, value in sorted(
+            package_entries,
+            key=lambda item: (item[0], item[1]),
+        )
+    ]
+
+    explicit_no_deps = bool(re.search(r"(?<!\S)--no-deps(?:\s|$)", raw_prompt, re.IGNORECASE))
+    curated_stack = bool(re.search(r"\b(?:curated|exact|specific|this)\s+(?:python\s+)?stack\b", raw_prompt, re.IGNORECASE))
+    all_exact = bool(packages) and all(
+        bool(_install_requirement_identity(package)[1])
+        or _install_artifact_basename(package).lower().endswith(_INSTALL_ARTIFACT_SUFFIXES)
+        for package in packages
+    )
+    no_deps = explicit_no_deps or (curated_stack and all_exact)
+    errors: list[str] = []
+    if not packages and requirements_file is None:
+        errors.append("No unambiguous package, wheel URL, wheel path, or explicitly named requirements file was found.")
+    for match in option_matches:
+        option = match.group("option").lower()
+        if option not in pip_args:
+            errors.append(f"{option} has no unambiguous URL value.")
+
+    normalized_payload = {
+        "environment": _explicit_prompt_environment(raw_prompt),
+        "packages": packages,
+        "pip_args": pip_args,
+        "requirements_file": requirements_file,
+        "upgrade": semantic.requests("upgrade"),
+        "force_reinstall": force_reinstall,
+        "no_deps": no_deps,
+    }
+    manifest_id = hashlib.sha256(
+        json.dumps(normalized_payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    return DependencyInstallManifest(
+        environment=normalized_payload["environment"],
+        packages=tuple(packages),
+        pip_args=tuple(pip_args),
+        requirements_file=requirements_file,
+        upgrade=bool(normalized_payload["upgrade"]),
+        force_reinstall=force_reinstall,
+        no_deps=no_deps,
+        manifest_id=manifest_id,
+        errors=tuple(dict.fromkeys(errors)),
+    )
+
+
 NETWORK_MODE_ENV_NAME = "QUBITZ_NETWORK_MODE"
 NETWORK_MODE_ONLINE = "online"
 NETWORK_MODE_OFFLINE = "offline"
@@ -481,7 +1004,24 @@ def _prompt_requests_general_web_search(prompt: str) -> bool:
 
 
 def _prompt_requests_network_research(prompt: str) -> bool:
-    return bool(_named_source_urls(prompt) or _prompt_requests_general_web_search(prompt))
+    named_urls = _named_source_urls(prompt)
+    general_search = _prompt_requests_general_web_search(prompt)
+    explicit_package_action = bool(
+        named_urls
+        and re.search(r"\b(?:add|install|upgrade|update)\b", prompt, re.IGNORECASE)
+        and (
+            re.search(
+                r"\b(?:dependencies|dependency|library|libraries|package|packages|pip|requirements|uv|wheel|wheels)\b",
+                prompt,
+                re.IGNORECASE,
+            )
+            or any(re.search(r"\.whl(?:[?#]|$)", url, re.IGNORECASE) for url in named_urls)
+        )
+    )
+    # A package URL in an explicit install request is an installer input, not a
+    # research source. The installer performs the authoritative availability and
+    # compatibility check without a preliminary bounded text fetch.
+    return bool(general_search or (named_urls and not explicit_package_action))
 
 
 def _tool_arguments_request_external_network(name: str, arguments: dict[str, Any]) -> bool:
@@ -493,7 +1033,23 @@ def _tool_arguments_request_external_network(name: str, arguments: dict[str, Any
     if normalized == "open_urls_in_browser":
         return any(_is_external_network_url(value) for value in arguments.get("urls", []))
     if normalized == "install_python_package":
-        return True
+        values = [
+            *(str(item) for item in arguments.get("packages") or []),
+            *(str(item) for item in arguments.get("pip_args") or []),
+        ]
+        if any(_is_external_network_url(url) for url in _extract_external_urls("\n".join(values))):
+            return True
+        if str(arguments.get("requirements_file") or "").strip():
+            return True
+        for value in arguments.get("packages") or []:
+            requirement = str(value or "").strip()
+            direct_value = requirement.split("@", 1)[1].strip() if "@" in requirement else requirement
+            if direct_value.lower().startswith("file://"):
+                continue
+            if _install_artifact_basename(direct_value).lower().endswith(_INSTALL_ARTIFACT_SUFFIXES):
+                continue
+            return True
+        return False
     if normalized not in {
         "run_command",
         "run_project_command",
@@ -752,7 +1308,7 @@ def _semantic_prohibited_actions_for_verb(verb: str, objects: set[str]) -> set[s
 
 
 def _analyze_semantic_intent(prompt: str) -> SemanticIntent:
-    text = " ".join(str(prompt).strip().split())
+    text = " ".join(_semantic_text_without_install_literals(prompt).strip().split())
     lowered = text.lower()
     requested: set[str] = set()
     prohibited: set[str] = set()
@@ -847,6 +1403,8 @@ def _task_kind_from_semantic(
         return "foreground_existing_script_task"
     if route == "read_only_workspace":
         return "read_only_workspace_task"
+    if route == "dependency_install":
+        return "dependency_install_task"
     if route == "ask_user_missing_info":
         return "missing_context_task"
     if semantic.requests("copy", "create", "delete", "edit", "move"):
@@ -5252,8 +5810,10 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         description=(
             "Install Python packages into an executable active-workspace project-local virtual environment. "
             "Pass environment='.venv' or environment='.venv312' when the user names it; relative values resolve "
-            "from the active workspace root. Entries are installed separately with --no-deps, verified through "
-            "the target interpreter, and pip fallback requires repeated uv failure plus allow_pip_fallback=true."
+            "from the active workspace root. Entries are installed separately and verified through the exact "
+            "target interpreter. Set no_deps only for an explicit curated stack or when the user requests it; "
+            "set force_reinstall only for an explicit reinstall or repair request. Pip fallback requires repeated "
+            "uv failure plus allow_pip_fallback=true."
         )
     )
     def install_python_package(
@@ -5261,7 +5821,9 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         requirements_file: str | None = None,
         environment: str | None = None,
         upgrade: bool = False,
+        force_reinstall: bool = False,
         pip_args: list[str] | None = None,
+        no_deps: bool = False,
         allow_pip_fallback: bool = False,
     ) -> dict[str, Any]:
         if not packages and not requirements_file:
@@ -5279,6 +5841,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         target_kind = str(inspection.get("kind") or "")
         target_is_windows = target_kind == "windows"
         target_native_python = str(inspection.get("sys_executable") or python_executable)
+        operation_started = time.perf_counter()
 
         def runtime_path(path: Path) -> str:
             if target_is_windows:
@@ -5296,6 +5859,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             timeout_seconds: int = 1800,
         ) -> dict[str, Any]:
             commands.append(list(command))
+            started = time.perf_counter()
             try:
                 completed = subprocess.run(
                     command,
@@ -5324,6 +5888,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                 "returncode": return_code,
                 "stdout": _shorten(stdout, 12000),
                 "stderr": _shorten(stderr, 12000),
+                "duration_seconds": round(time.perf_counter() - started, 6),
             }
             results.append(entry)
             return entry
@@ -5397,15 +5962,34 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                 return "build"
             return "unknown"
 
-        def metadata_versions(distribution_names: list[str]) -> dict[str, str | None]:
+        def metadata_records(distribution_names: list[str]) -> dict[str, dict[str, Any]]:
             if not distribution_names:
                 return {}
             code = (
-                "import importlib.metadata as m,json,sys;"
-                "names=json.loads(sys.argv[1]);out={};"
-                "exec(\"for n in names:\\n try: out[n]=m.version(n)\\n except m.PackageNotFoundError: out[n]=None\");"
-                "print(json.dumps(out,sort_keys=True))"
+                "import importlib.metadata as m\n"
+                "import json,sys\n"
+                "names=json.loads(sys.argv[1])\n"
+                "out={}\n"
+                "for n in names:\n"
+                " try:\n"
+                "  dist=m.distribution(n)\n"
+                " except m.PackageNotFoundError:\n"
+                "  out[n]={'version':None,'direct_url':None}\n"
+                "  continue\n"
+                " direct_url=None\n"
+                " try:\n"
+                "  raw=dist.read_text('direct_url.json')\n"
+                "  parsed=json.loads(raw) if raw else None\n"
+                "  direct_url=parsed if isinstance(parsed,dict) else None\n"
+                " except Exception:\n"
+                "  direct_url=None\n"
+                " out[n]={'version':dist.version,'direct_url':direct_url}\n"
+                "print(json.dumps(out,sort_keys=True))\n"
             )
+            empty = {
+                name: {"version": None, "direct_url": None}
+                for name in distribution_names
+            }
             try:
                 completed = subprocess.run(
                     [str(python_executable), "-I", "-c", code, json.dumps(distribution_names)],
@@ -5415,29 +5999,104 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                     check=False,
                 )
             except Exception:
-                return {name: None for name in distribution_names}
+                return empty
             if completed.returncode != 0:
-                return {name: None for name in distribution_names}
+                return empty
             for line in reversed(_decode_subprocess_output(completed.stdout).splitlines()):
                 with suppress(json.JSONDecodeError):
                     payload = json.loads(line)
                     if isinstance(payload, dict):
-                        return {name: payload.get(name) for name in distribution_names}
-            return {name: None for name in distribution_names}
+                        return {
+                            name: payload.get(name)
+                            if isinstance(payload.get(name), dict)
+                            else {"version": None, "direct_url": None}
+                            for name in distribution_names
+                        }
+            return empty
 
-        def distribution_name(unit: list[str]) -> str | None:
-            requirement = unit[1] if unit and unit[0] == "--editable" and len(unit) > 1 else unit[0]
+        def metadata_versions(distribution_names: list[str]) -> dict[str, str | None]:
+            return {
+                name: record.get("version")
+                for name, record in metadata_records(distribution_names).items()
+            }
+
+        def dependency_consistency_check() -> dict[str, Any]:
+            command = [str(python_executable), "-I", "-m", "pip", "check"]
+            started = time.perf_counter()
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=workspace,
+                    capture_output=True,
+                    timeout=120,
+                    check=False,
+                )
+                return_code = completed.returncode
+                stdout = _decode_subprocess_output(completed.stdout)
+                stderr = _decode_subprocess_output(completed.stderr)
+            except subprocess.TimeoutExpired as exc:
+                return_code = 124
+                stdout = _decode_subprocess_output(exc.stdout)
+                stderr = f"pip check timed out after 120 seconds.\n{_decode_subprocess_output(exc.stderr)}"
+            except OSError as exc:
+                return {
+                    "status": "unavailable",
+                    "command": command,
+                    "return_code": 127,
+                    "output": _shorten(f"{type(exc).__name__}: {exc}", 2000),
+                    "duration_seconds": round(time.perf_counter() - started, 6),
+                }
+            output = "\n".join(part.strip() for part in (stdout, stderr) if part.strip())
+            lowered = output.casefold()
+            status = (
+                "passed"
+                if return_code == 0
+                else "unavailable"
+                if "no module named pip" in lowered
+                else "warning"
+            )
+            return {
+                "status": status,
+                "command": command,
+                "return_code": return_code,
+                "output": _shorten(output or "No broken requirements found.", 2000),
+                "duration_seconds": round(time.perf_counter() - started, 6),
+            }
+
+        def requirement_value(unit: list[str]) -> str:
+            return unit[1] if unit and unit[0] == "--editable" and len(unit) > 1 else unit[0]
+
+        def requirement_identity(unit: list[str]) -> tuple[str | None, str | None]:
+            requirement = requirement_value(unit)
+            normalized_name, expected_version = _install_requirement_identity(requirement)
+            if normalized_name:
+                return normalized_name, expected_version
             match = re.match(
                 r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s*@|\[|===|==|!=|~=|<=|>=|<|>|;|\s*$)",
                 requirement,
             )
-            return match.group(1) if match is not None else None
+            return (match.group(1), None) if match is not None else (None, None)
 
         def canonical_distribution(name: str | None) -> str:
             return re.sub(r"[-_.]+", "-", name or "").casefold()
 
+        def package_phase_timings(
+            preflight_seconds: float,
+            download_install_seconds: float = 0.0,
+            verification_seconds: float = 0.0,
+        ) -> dict[str, float]:
+            preflight = max(0.0, float(preflight_seconds))
+            download_install = max(0.0, float(download_install_seconds))
+            verification = max(0.0, float(verification_seconds))
+            return {
+                "preflight": round(preflight, 6),
+                "download_install": round(download_install, 6),
+                "verification": round(verification, 6),
+                "total": round(preflight + download_install + verification, 6),
+            }
+
         def is_unversioned_name(unit: list[str], name: str | None) -> bool:
-            return bool(name and len(unit) == 1 and unit[0].strip().casefold() == name.casefold())
+            return bool(name and len(unit) == 1 and requirement_value(unit).strip().casefold() == name.casefold())
 
         def uv_module_version() -> str | None:
             try:
@@ -5490,7 +6149,11 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         sticky_options: list[str] = []
         requirement_units: list[list[str]] = []
         if requirements_file:
+            if any(character in requirements_file for character in ("\n", "\r", "\x00")):
+                raise ValueError("requirements_file must be one explicit file path, not inline requirements text.")
             requirements_path = _resolve(requirements_file, allow_missing=False, allow_external=True)
+            if not requirements_path.is_file():
+                raise ValueError(f"requirements_file is not a file: {requirements_file}")
             option_pattern = re.compile(
                 r"^(?:--(?:extra-index-url|find-links|index-url|no-binary|only-binary|trusted-host)"
                 r"|--no-index|--pre|--prefer-binary)\b",
@@ -5530,11 +6193,18 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         for package in packages or []:
             package_text = str(package).strip()
             if package_text:
+                if package_text.startswith("-"):
+                    raise ValueError(
+                        f"Package entries may not contain installer options: {package_text}. "
+                        "Pass supported options through pip_args."
+                    )
+                if any(character in package_text for character in ("\n", "\r", "\x00")):
+                    raise ValueError("Each package entry must be one logical requirement or artifact URL.")
                 requirement_units.append([package_text])
         if not requirement_units:
             raise ValueError("No installable package entries were found.")
 
-        common_args = [str(item) for item in pip_args or [] if str(item).strip()]
+        raw_common_args = [str(item).strip() for item in pip_args or [] if str(item).strip()]
         target_changing_options = (
             "--prefix",
             "--python",
@@ -5543,41 +6213,154 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             "--user",
             "-t",
         )
-        for argument in common_args:
+        for argument in raw_common_args:
             lowered_argument = argument.casefold()
             if lowered_argument in target_changing_options or any(
                 lowered_argument.startswith(f"{option}=") for option in target_changing_options if option.startswith("--")
             ):
                 raise ValueError(f"pip_args may not redirect installation outside the selected environment: {argument}")
-        common_args = [
-            argument
-            for argument in common_args
-            if argument.casefold() not in {"--no-dependencies", "--no-deps", "--upgrade", "-u"}
-        ]
+        value_options = {
+            "--config-settings",
+            "--constraint",
+            "--extra-index-url",
+            "--find-links",
+            "--index-url",
+            "--no-binary",
+            "--only-binary",
+            "--trusted-host",
+            "-c",
+            "-f",
+            "-i",
+        }
+        flag_options = {
+            "--no-build-isolation",
+            "--no-cache",
+            "--no-cache-dir",
+            "--no-index",
+            "--pre",
+            "--prefer-binary",
+            "--require-hashes",
+        }
+        common_args: list[str] = []
+        index = 0
+        while index < len(raw_common_args):
+            argument = raw_common_args[index]
+            lowered_argument = argument.casefold()
+            if lowered_argument in {"--no-dependencies", "--no-deps"}:
+                no_deps = True
+                index += 1
+                continue
+            if lowered_argument in {"--upgrade", "-u"}:
+                upgrade = True
+                index += 1
+                continue
+            if lowered_argument in {"--force-reinstall", "--reinstall"}:
+                force_reinstall = True
+                index += 1
+                continue
+            matched_value_option = next(
+                (
+                    option
+                    for option in value_options
+                    if option.startswith("--") and lowered_argument.startswith(f"{option}=")
+                ),
+                None,
+            )
+            if matched_value_option is not None:
+                if not argument.split("=", 1)[1].strip():
+                    raise ValueError(f"pip_args option requires a value: {argument}")
+                common_args.append(argument)
+                index += 1
+                continue
+            if lowered_argument in value_options:
+                if index + 1 >= len(raw_common_args):
+                    raise ValueError(f"pip_args option requires a value: {argument}")
+                value = raw_common_args[index + 1]
+                if not value or value.startswith("-"):
+                    raise ValueError(f"pip_args option requires a concrete value: {argument}")
+                common_args.extend([argument, value])
+                index += 2
+                continue
+            if lowered_argument in flag_options:
+                common_args.append(argument)
+                index += 1
+                continue
+            raise ValueError(
+                f"Unsupported or misplaced pip_args value: {argument}. "
+                "Package requirements and artifact URLs belong in packages."
+            )
 
-        names = [name for name in (distribution_name(unit) for unit in requirement_units) if name]
+        identities = [requirement_identity(unit) for unit in requirement_units]
+        names = [name for name, _expected_version in identities if name]
         names = list(dict.fromkeys(names))
-        versions_before = metadata_versions(names)
+        metadata_preflight_started = time.perf_counter()
+        records_before = metadata_records(names)
+        versions_before = {
+            name: record.get("version") for name, record in records_before.items()
+        }
         target_uv_version = uv_module_version()
+        metadata_preflight_seconds = time.perf_counter() - metadata_preflight_started
         package_results: list[dict[str, Any]] = []
-        pending_units: list[tuple[list[str], str | None]] = []
-        for unit in requirement_units:
-            name = distribution_name(unit)
+        pending_units: list[tuple[list[str], str | None, str | None, float]] = []
+        for unit, (name, expected_version) in zip(requirement_units, identities, strict=True):
+            preflight_started = time.perf_counter()
             before = versions_before.get(name) if name else None
+            before_record = records_before.get(name, {}) if name else {}
             broken_uv = canonical_distribution(name) == "uv" and target_uv_version is None
-            if before and not upgrade and is_unversioned_name(unit, name) and not broken_uv:
+            expected_satisfied = bool(
+                before
+                and expected_version
+                and str(before).casefold() == str(expected_version).casefold()
+            )
+            requirement = requirement_value(unit)
+            direct_wheel_url, _requested_hashes = _direct_wheel_request(requirement)
+            provenance_satisfied = bool(
+                direct_wheel_url
+                and _direct_wheel_provenance_matches(
+                    requirement,
+                    before,
+                    expected_version,
+                    before_record.get("direct_url"),
+                    unit[1:],
+                )
+            )
+            already_satisfied = (
+                provenance_satisfied
+                if direct_wheel_url is not None
+                else is_unversioned_name(unit, name) or expected_satisfied
+            )
+            if (
+                before
+                and not upgrade
+                and not force_reinstall
+                and already_satisfied
+                and not broken_uv
+            ):
                 package_results.append(
                     {
-                        "requirement": unit[0],
+                        "requirement": requirement,
                         "distribution": name,
                         "status": "already_present",
                         "version_before": before,
                         "version_after": before,
+                        "expected_version": expected_version,
+                        "source_url": direct_wheel_url,
+                        "provenance_verified": direct_wheel_url is not None,
                         "verified": True,
+                        "timings_seconds": package_phase_timings(
+                            time.perf_counter() - preflight_started
+                        ),
                     }
                 )
             else:
-                pending_units.append((unit, name))
+                pending_units.append(
+                    (
+                        unit,
+                        name,
+                        expected_version,
+                        time.perf_counter() - preflight_started,
+                    )
+                )
 
         uv_prefix: list[str] | None = (
             [str(python_executable), "-I", "-m", "uv"] if target_uv_version is not None else None
@@ -5592,15 +6375,16 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
 
         uv_pending = next(
             (
-                (unit, name)
-                for unit, name in pending_units
+                (unit, name, expected_version, preflight_seconds)
+                for unit, name, expected_version, preflight_seconds in pending_units
                 if canonical_distribution(name) == "uv"
             ),
             None,
         )
         active_installer = "none"
         if pending_units and uv_prefix is None and uv_pending is not None:
-            unit, name = uv_pending
+            unit, name, expected_version, preflight_seconds = uv_pending
+            install_result_start = len(results)
             pip_probe = run_process(
                 [str(python_executable), "-I", "-m", "pip", "--version"],
                 "pip",
@@ -5634,6 +6418,8 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             bootstrap_base = [str(python_executable), "-I", "-m", "pip", "install", "--no-deps"]
             if upgrade:
                 bootstrap_base.append("--upgrade")
+            if force_reinstall:
+                bootstrap_base.append("--force-reinstall")
             bootstrap_base.extend(sticky_options)
             bootstrap_base.extend(common_args)
             first = run_process([*bootstrap_base, *unit], "pip", 1, "uv_bootstrap")
@@ -5652,12 +6438,23 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                 if recovery_flag not in recovery:
                     recovery.append(recovery_flag)
                 last = run_process([*recovery, *unit], "pip", 2, f"uv_bootstrap_{first_class}")
+            verification_seconds = 0.0
+            verification_started = time.perf_counter()
             target_uv_version = uv_module_version() if last["return_code"] == 0 else None
+            verification_seconds += time.perf_counter() - verification_started
             if last["return_code"] == 0 and target_uv_version is None and not upgrade:
                 recovery = [*bootstrap_base, "--upgrade", *unit]
                 last = run_process(recovery, "pip", 2, "uv_bootstrap_verification")
+                verification_started = time.perf_counter()
                 target_uv_version = uv_module_version() if last["return_code"] == 0 else None
+                verification_seconds += time.perf_counter() - verification_started
+            verification_started = time.perf_counter()
             after = metadata_versions([name]).get(name) if name else None
+            verification_seconds += time.perf_counter() - verification_started
+            download_install_seconds = sum(
+                float(item.get("duration_seconds") or 0.0)
+                for item in results[install_result_start:]
+            )
             uv_verified = bool(target_uv_version and after)
             package_results.append(
                 {
@@ -5667,9 +6464,15 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                     "installer": "pip",
                     "version_before": versions_before.get(name) if name else None,
                     "version_after": after,
+                    "expected_version": expected_version,
                     "verified": uv_verified,
                     "uv_version": target_uv_version,
                     "failure_class": None if uv_verified else failure_class(last),
+                    "timings_seconds": package_phase_timings(
+                        preflight_seconds,
+                        download_install_seconds,
+                        verification_seconds,
+                    ),
                 }
             )
             if not uv_verified:
@@ -5712,10 +6515,15 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             }
 
         final_return_code = 0
-        for unit, name in pending_units:
-            uv_base = [*uv_prefix, "pip", "install", "--python", uv_python, "--no-deps"]
+        for unit, name, expected_version, preflight_seconds in pending_units:
+            install_result_start = len(results)
+            uv_base = [*uv_prefix, "pip", "install", "--python", uv_python]
+            if no_deps:
+                uv_base.append("--no-deps")
             if upgrade:
                 uv_base.append("--upgrade")
+            if force_reinstall:
+                uv_base.append("--reinstall")
             uv_base.extend(sticky_options)
             uv_base.extend(common_args)
             first = run_process([*uv_base, *unit], "uv", 1)
@@ -5744,9 +6552,13 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                 and uv_attempts >= 2
                 and last_class not in {"incompatible_or_unavailable", "permission"}
             ):
-                pip_base = [str(python_executable), "-I", "-m", "pip", "install", "--no-deps"]
+                pip_base = [str(python_executable), "-I", "-m", "pip", "install"]
+                if no_deps:
+                    pip_base.append("--no-deps")
                 if upgrade:
                     pip_base.append("--upgrade")
+                if force_reinstall:
+                    pip_base.append("--force-reinstall")
                 pip_base.extend(sticky_options)
                 pip_base.extend(common_args)
                 last = run_process([*pip_base, *unit], "pip", 1, "after_repeated_uv_failure")
@@ -5766,24 +6578,64 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                     last = run_process([*recovery, *unit], "pip", 2, pip_class)
                 active_installer = "pip"
                 last_class = failure_class(last)
-            after = metadata_versions([name]).get(name) if name and last["return_code"] == 0 else None
-            verified = bool(name and after)
+            download_install_seconds = sum(
+                float(item.get("duration_seconds") or 0.0)
+                for item in results[install_result_start:]
+            )
+            verification_started = time.perf_counter()
+            after_record = metadata_records([name]).get(name, {}) if name else {}
+            after = after_record.get("version") if name else None
+            requirement = requirement_value(unit)
+            direct_wheel_url, _requested_hashes = _direct_wheel_request(requirement)
+            version_verified = bool(
+                name
+                and after
+                and (
+                    expected_version is None
+                    or str(after).casefold() == str(expected_version).casefold()
+                    or (
+                        last["return_code"] == 0
+                        and _direct_wheel_public_version_matches(requirement, after, expected_version)
+                    )
+                )
+            )
+            provenance_verified = bool(
+                direct_wheel_url is None
+                or _direct_wheel_provenance_matches(
+                    requirement,
+                    after,
+                    expected_version,
+                    after_record.get("direct_url"),
+                    unit[1:],
+                )
+            )
+            verified = version_verified and provenance_verified
+            verification_seconds = time.perf_counter() - verification_started
             package_results.append(
                 {
-                    "requirement": unit[0],
+                    "requirement": requirement,
                     "distribution": name,
                     "status": "installed" if verified else "verification_failed" if last["return_code"] == 0 else "failed",
                     "installer": active_installer,
                     "version_before": versions_before.get(name) if name else None,
                     "version_after": after,
+                    "expected_version": expected_version,
+                    "source_url": direct_wheel_url,
+                    "provenance_verified": provenance_verified if direct_wheel_url is not None else None,
                     "verified": verified,
                     "failure_class": None if verified else last_class,
+                    "timings_seconds": package_phase_timings(
+                        preflight_seconds,
+                        download_install_seconds,
+                        verification_seconds,
+                    ),
                 }
             )
             if last["return_code"] != 0 or not verified:
                 final_return_code = last["return_code"] or 1
-                break
+                continue
 
+        dependency_check = dependency_consistency_check()
         all_verified = bool(package_results) and all(bool(item.get("verified")) for item in package_results)
         if final_return_code == 0 and not all_verified:
             final_return_code = 1
@@ -5803,6 +6655,13 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             "results": results,
             "packages": package_results,
             "verified": all_verified,
+            "dependency_check": dependency_check,
+            "timings_seconds": {
+                "metadata_preflight": round(metadata_preflight_seconds, 6),
+                "dependency_check": float(dependency_check.get("duration_seconds") or 0.0),
+                "total": round(time.perf_counter() - operation_started, 6),
+            },
+            "force_reinstall": force_reinstall,
             "uv_version": uv_module_version(),
             "stdout": results[-1]["stdout"] if results else "",
             "stderr": results[-1]["stderr"] if results else "",
@@ -6858,6 +7717,206 @@ def _load_embedded_base_module() -> Any:
     return module
 
 
+def _patch_cuda_retrieval_runtime(base: Any) -> None:
+    """Harden the optional CUDA retrieval stack without touching fast routes."""
+    retriever_cls = getattr(base, "RepoRetriever", None)
+    if retriever_cls is None or getattr(retriever_cls, "_qubitz_cuda_stack_patched", False):
+        return
+
+    original_init = retriever_cls.__init__
+    original_ensure_faiss_index = retriever_cls._ensure_faiss_index
+    original_release_gpu_resources = retriever_cls.release_gpu_resources
+
+    def _get_rmm_resource(rmm: Any) -> Any:
+        getter = getattr(rmm.mr, "get_per_device_resource", None)
+        if getter is not None:
+            return getter(0)
+        getter = getattr(rmm.mr, "get_current_device_resource", None)
+        if getter is not None:
+            return getter()
+        raise RuntimeError("The installed RMM package cannot report the active memory resource.")
+
+    def _set_rmm_resource(rmm: Any, resource: Any) -> None:
+        setter = getattr(rmm.mr, "set_per_device_resource", None)
+        if setter is not None:
+            try:
+                setter(0, resource)
+                return
+            except TypeError:
+                pass
+        setter = getattr(rmm.mr, "set_current_device_resource", None)
+        if setter is not None:
+            setter(resource)
+            return
+        raise RuntimeError("The installed RMM package cannot set the active memory resource.")
+
+    def _init(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self._qubitz_rmm_module = None
+        self._qubitz_rmm_previous_resource = None
+        self._qubitz_retrieval_health_reported = False
+
+    def _configure_rmm_pool(self: Any) -> None:
+        pool_gib = float(getattr(self.config, "retrieval_rmm_pool_gib", 0.0))
+        if self._rmm_attempted or pool_gib <= 0:
+            return
+        self._rmm_attempted = True
+        try:
+            import rmm
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            self._report(
+                "RMM pooling was requested but the RMM Python package is unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        pool_bytes = int(pool_gib * 1024**3)
+        if pool_bytes <= 0:
+            return
+        previous_resource = None
+        try:
+            previous_resource = _get_rmm_resource(rmm)
+            pool = rmm.mr.PoolMemoryResource(
+                previous_resource,
+                initial_pool_size=pool_bytes,
+            )
+            _set_rmm_resource(rmm, pool)
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            if previous_resource is not None:
+                try:
+                    _set_rmm_resource(rmm, previous_resource)
+                except Exception:
+                    pass
+            self._report(
+                "RMM pool setup failed; continuing without pooling: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        self._qubitz_rmm_module = rmm
+        self._qubitz_rmm_previous_resource = previous_resource
+        self._rmm_pool = pool
+        self._rmm_configured = True
+        self._report(
+            "Enabled RMM pooling for cuVS-backed retrieval with initial pool size "
+            f"{base.format_bytes(pool_bytes)}."
+        )
+
+    def _report_retrieval_stack_health(self: Any) -> None:
+        if self._qubitz_retrieval_health_reported:
+            return
+        self._qubitz_retrieval_health_reported = True
+        healthy = True
+        parts: list[str] = []
+
+        torch = getattr(self.embedder, "_torch", None)
+        if torch is None:
+            healthy = False
+            parts.append("torch=not loaded")
+        else:
+            torch_version = str(getattr(torch, "__version__", "unknown"))
+            runtime_cuda = str(getattr(getattr(torch, "version", None), "cuda", None) or "none")
+            cuda_available = bool(torch.cuda.is_available())
+            device_text = "unavailable"
+            if cuda_available:
+                try:
+                    major, minor = torch.cuda.get_device_capability(0)
+                    device_text = f"{torch.cuda.get_device_name(0)} sm_{major}{minor}"
+                except Exception:
+                    device_text = "CUDA device 0"
+            if not cuda_available or not runtime_cuda.startswith("13."):
+                healthy = False
+            parts.append(
+                f"torch={torch_version} runtime_cuda={runtime_cuda} device={device_text}"
+            )
+
+        if getattr(self.embedder, "uses_flash_attention", False):
+            parts.append("attention=FlashAttention2")
+        elif getattr(self.embedder, "uses_xformers", False):
+            healthy = False
+            parts.append("attention=xFormers fallback")
+        else:
+            healthy = False
+            parts.append("attention=standard fallback")
+
+        faiss = getattr(self, "_faiss", None)
+        backend = str(getattr(self, "_backend", "unavailable"))
+        if faiss is None:
+            healthy = False
+            parts.append(f"faiss=unavailable backend={backend}")
+        else:
+            faiss_version = str(getattr(faiss, "__version__", "unknown"))
+            try:
+                gpu_count = int(faiss.get_num_gpus())
+            except Exception:
+                gpu_count = 0
+            try:
+                compile_options = str(faiss.get_compile_options()).upper()
+            except Exception:
+                compile_options = ""
+            cuvs_enabled = "CUVS" in compile_options or "cuvs" in backend.lower()
+            gpu_backend = backend.startswith("faiss-gpu")
+            if gpu_count < 1 or not cuvs_enabled or not gpu_backend:
+                healthy = False
+            parts.append(
+                f"faiss={faiss_version} gpu_count={gpu_count} cuVS={'yes' if cuvs_enabled else 'no'} "
+                f"backend={backend}"
+            )
+
+        rmm_requested = float(getattr(self.config, "retrieval_rmm_pool_gib", 0.0)) > 0
+        if not rmm_requested:
+            parts.append("RMM=disabled")
+        else:
+            rmm = getattr(self, "_qubitz_rmm_module", None)
+            if rmm is None or not getattr(self, "_rmm_configured", False):
+                healthy = False
+                parts.append("RMM=requested but inactive")
+            else:
+                parts.append(f"RMM={getattr(rmm, '__version__', 'unknown')} active")
+
+        label = "health" if healthy else "warning"
+        self._report(f"CUDA retrieval stack {label}: {'; '.join(parts)}.")
+
+    def _ensure_faiss_index(self: Any) -> bool:
+        ready = original_ensure_faiss_index(self)
+        if getattr(self, "_vectors", None) is not None:
+            _report_retrieval_stack_health(self)
+        return ready
+
+    def _restore_rmm_resource(self: Any) -> bool:
+        if not getattr(self, "_rmm_configured", False):
+            return False
+        rmm = getattr(self, "_qubitz_rmm_module", None)
+        previous_resource = getattr(self, "_qubitz_rmm_previous_resource", None)
+        if rmm is None or previous_resource is None:
+            self._report("RMM resource restoration was skipped because prior allocator state is unavailable.")
+            return False
+        try:
+            _set_rmm_resource(rmm, previous_resource)
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            self._report(
+                "RMM resource restoration failed; the retrieval pool may remain active: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return False
+        self._rmm_pool = None
+        self._rmm_configured = False
+        self._rmm_attempted = False
+        self._qubitz_rmm_module = None
+        self._qubitz_rmm_previous_resource = None
+        return True
+
+    def _release_gpu_resources(self: Any) -> None:
+        try:
+            original_release_gpu_resources(self)
+        finally:
+            if _restore_rmm_resource(self):
+                self._report("Restored the prior RMM memory resource after CUDA retrieval release.")
+
+    retriever_cls.__init__ = _init
+    retriever_cls._configure_rmm_pool = _configure_rmm_pool
+    retriever_cls._ensure_faiss_index = _ensure_faiss_index
+    retriever_cls.release_gpu_resources = _release_gpu_resources
+    retriever_cls._qubitz_cuda_stack_patched = True
+
 def _patch_llamacpp_launch_fit(base: Any) -> None:
     """Size the llama.cpp server GPU-first: model weights before KV cache.
 
@@ -7059,6 +8118,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
 
 
 def _patch_harness_loader(base: Any) -> None:
+    _patch_cuda_retrieval_runtime(base)
     _patch_llamacpp_launch_fit(base)
 
     def _load_harness_text(workspace: Path) -> str:
@@ -7071,6 +8131,21 @@ def _patch_harness_loader(base: Any) -> None:
                 f"{plaintext_name} is an editable source only and is never loaded by a Qubitz variant."
             )
         return base.decrypt_harness_bytes(encrypted_path.read_bytes(), workspace)
+
+    def _write_encrypted_harness(workspace: Path) -> Path:
+        plaintext_name = getattr(base, "DEFAULT_HARNESS_NAME", "HARNESS.txt")
+        encrypted_name = getattr(base, "DEFAULT_ENCRYPTED_HARNESS_NAME", "HARNESS.enc")
+        plaintext_path = workspace / plaintext_name
+        if not plaintext_path.exists():
+            raise FileNotFoundError(
+                f"Cannot create {encrypted_name} because {plaintext_name} is missing in {workspace}."
+            )
+        Fernet, _ = base._fernet_classes()
+        encrypted_path = workspace / encrypted_name
+        encrypted_path.write_bytes(
+            Fernet(base.harness_key_bytes(workspace)).encrypt(plaintext_path.read_bytes())
+        )
+        return encrypted_path
 
     excluded = set(getattr(base, "EXCLUDED_RETRIEVAL_FILENAMES", set()))
     excluded.update(
@@ -7119,6 +8194,7 @@ def _patch_harness_loader(base: Any) -> None:
     base.is_excluded_dir_name = _is_excluded_dir_name
     base.iter_workspace_files = _iter_workspace_files
     base.load_harness_text = _load_harness_text
+    base.write_encrypted_harness = _write_encrypted_harness
 
 
 def _patch_streaming_chat(base: Any) -> None:
@@ -10560,7 +11636,10 @@ def _install_gui_temperature_status_patch(app: LocalOnlyApp) -> None:
             return text
 
         def _append_transcript(self, role: str, message: str) -> None:
-            filtered = self._filter_gui_transcript_message(role, message)
+            filtered = self._filter_gui_transcript_message(
+                role,
+                _normalize_terminal_display_text(message),
+            )
             if filtered is None:
                 return
             super()._append_transcript(role, filtered)
@@ -10958,6 +12037,7 @@ _HARNESS_ROUTE_BLOCKS = {
     "read_only_workspace": ("ANALYSIS",),
     "project_launch": ("EXECUTION",),
     "direct_existing_entrypoint": ("EXECUTION", "ANALYSIS"),
+    "dependency_install": ("EXECUTION",),
     "retrieval_plus_model": ("ANALYSIS",),
     "tool_loop": ("EXECUTION", "ANALYSIS"),
 }
@@ -11173,6 +12253,9 @@ class _ToolPermissionBroker:
         self.invalid_stop_requested = False
         self.permission_denial_counts: dict[str, int] = {}
         self.permission_stop_requested = False
+        self.failed_result_counts: dict[str, int] = {}
+        self.failed_route_counts: dict[str, int] = {}
+        self.failed_result_block_counts: dict[str, int] = {}
         self.stop_callback: Callable[[str], None] | None = None
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_snapshot_hashes: dict[str, str] = {}
@@ -11194,6 +12277,7 @@ class _ToolPermissionBroker:
         self.transaction_progress_token = ""
         self.access_mode = DEFAULT_ACCESS_MODE
         self.task_intent: TaskIntent | None = None
+        self.dependency_manifest: DependencyInstallManifest | None = None
 
     def set_access_mode(self, value: Any) -> None:
         self.access_mode = _normalize_access_mode(value)
@@ -11207,6 +12291,7 @@ class _ToolPermissionBroker:
         self.turn_id = uuid.uuid4().hex
         self.current_prompt = prompt
         self.task_intent = _build_task_intent(prompt, "")
+        self.dependency_manifest = _dependency_install_manifest(prompt)
         self.callback = callback
         self.approved_once.clear()
         self.evidence.clear()
@@ -11221,6 +12306,9 @@ class _ToolPermissionBroker:
         self.invalid_stop_requested = False
         self.permission_denial_counts.clear()
         self.permission_stop_requested = False
+        self.failed_result_counts.clear()
+        self.failed_route_counts.clear()
+        self.failed_result_block_counts.clear()
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -11262,6 +12350,7 @@ class _ToolPermissionBroker:
     def end_turn(self) -> None:
         self.current_prompt = ""
         self.task_intent = None
+        self.dependency_manifest = None
         self.callback = None
         self.approved_once.clear()
         self.evidence.clear()
@@ -11277,6 +12366,9 @@ class _ToolPermissionBroker:
         self.invalid_stop_requested = False
         self.permission_denial_counts.clear()
         self.permission_stop_requested = False
+        self.failed_result_counts.clear()
+        self.failed_route_counts.clear()
+        self.failed_result_block_counts.clear()
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -11819,11 +12911,15 @@ class _ToolPermissionBroker:
             "dependency_missing",
             "error",
             "failed",
+            "http_request_denied",
+            "http_request_failed",
             "invalid",
             "invalid_expected_sha256",
             "missing",
+            "network_request_failed",
             "no_change",
             "not_found",
+            "repeated_failed_result",
             "commit_denied",
             "stale_snapshot",
             "timed_out",
@@ -11834,6 +12930,50 @@ class _ToolPermissionBroker:
             "uv_unavailable",
             "verification_failed",
         }
+        result_fingerprint = self._fingerprint(normalized, arguments)
+        untracked_failure_statuses = {
+            "access_mode_denied",
+            "approval_required",
+            "atomic_batch_incomplete",
+            "atomic_batch_required",
+            "environment_mismatch",
+            "invalid",
+            "invalid_arguments",
+            "network_offline",
+            "protected_harness_denied",
+            "repeated_invalid_arguments",
+            "scope_denied",
+            "source_evidence_required",
+            "transaction_required",
+            "verification_required",
+        }
+        if success:
+            self.failed_result_counts.pop(result_fingerprint, None)
+            self.failed_result_block_counts.pop(result_fingerprint, None)
+        elif status not in untracked_failure_statuses:
+            failure_count = self.failed_result_counts.get(result_fingerprint, 0) + 1
+            self.failed_result_counts[result_fingerprint] = failure_count
+            if failure_count == 2:
+                self._emit(
+                    f"The same valid {normalized} call failed twice with no verified progress; "
+                    "do not repeat it unchanged and switch to a materially different route."
+                )
+        if normalized == "fetch_url" and status in {
+            "http_request_denied",
+            "network_request_failed",
+        }:
+            canonical_url = _canonical_http_url(arguments.get("url"))
+            host_match = re.match(r"https?://([^/?#]+)", canonical_url, re.IGNORECASE)
+            if host_match is not None:
+                route_key = f"fetch_url:{host_match.group(1).casefold()}:{status}"
+                route_count = self.failed_route_counts.get(route_key, 0) + 1
+                self.failed_route_counts[route_key] = route_count
+                if route_count == 2:
+                    self._emit(
+                        f"Two {normalized} requests to {host_match.group(1)} failed with the same "
+                        "access or network class; stop probing equivalent URLs and use a different "
+                        "authoritative route."
+                    )
         self._register_mcp_launch_result(normalized, arguments, success)
         categories: set[str] = set()
         verified_paths: list[str] = []
@@ -12262,6 +13402,8 @@ class _ToolPermissionBroker:
         return set(self.focused_missing_postconditions)
 
     def mark_transaction_recovery_required(self) -> None:
+        if "changed_files" not in self.required_postconditions:
+            return
         self.transaction_recovery_required = True
         self.focused_missing_postconditions.add("changed_files")
 
@@ -12784,6 +13926,52 @@ class _ToolPermissionBroker:
             reason = "Explicit paths outside the active workspace require Full Access."
             self._audit("mode_denied", normalized, arguments, fingerprint, reason)
             return False, {"status": "access_mode_denied", "tool": normalized, "reason": reason}
+        manifest = self.dependency_manifest
+        if manifest is not None:
+            dependency_tools = {"inspect_python_environment", "install_python_package"}
+            if normalized not in dependency_tools:
+                reason = (
+                    "This turn is an explicit dependency-install transaction. Only exact environment inspection "
+                    "and the manifest-bound installer are relevant; file edits, manifest edits, environment "
+                    "creation, arbitrary commands, and entrypoint launches are outside scope."
+                )
+                self._audit("dependency_scope_denied", normalized, arguments, fingerprint, reason)
+                return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+            expected_arguments = manifest.tool_arguments()
+            expected_environment = str(expected_arguments.get("environment") or "").strip()
+            submitted_environment = str(arguments.get("environment") or "").strip()
+            if expected_environment != submitted_environment:
+                reason = "The installer must use the exact active-workspace environment named in the user request."
+                self._audit("dependency_manifest_mismatch", normalized, arguments, fingerprint, reason)
+                return False, {
+                    "status": "scope_denied",
+                    "tool": normalized,
+                    "reason": reason,
+                    "expected_environment": expected_environment or None,
+                }
+            if normalized == "install_python_package":
+                submitted_packages = tuple(str(item).strip() for item in arguments.get("packages") or [])
+                submitted_pip_args = tuple(str(item).strip() for item in arguments.get("pip_args") or [])
+                manifest_matches = (
+                    submitted_packages == manifest.packages
+                    and submitted_pip_args == manifest.pip_args
+                    and str(arguments.get("requirements_file") or "").strip()
+                    == str(manifest.requirements_file or "").strip()
+                    and bool(arguments.get("upgrade")) == manifest.upgrade
+                    and bool(arguments.get("no_deps")) == manifest.no_deps
+                )
+                if not manifest_matches:
+                    reason = (
+                        "The installer arguments differ from the wrapper-parsed user manifest. "
+                        "Do not add, remove, reorder, substitute, or reinterpret requested artifacts or sources."
+                    )
+                    self._audit("dependency_manifest_mismatch", normalized, arguments, fingerprint, reason)
+                    return False, {
+                        "status": "scope_denied",
+                        "tool": normalized,
+                        "reason": reason,
+                        "manifest_id": manifest.manifest_id,
+                    }
         command_effects = self._command_side_effects(self._command_text(normalized, arguments))
         if normalized in mutation_tools or "mutate" in command_effects:
             missing_source_urls = self._missing_source_evidence_urls()
@@ -12972,6 +14160,30 @@ class _ToolPermissionBroker:
             reason = "The current user prompt did not request dependency installation."
             self._audit("denied", normalized, arguments, fingerprint, reason)
             return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
+        if normalized == "run_existing_entrypoint":
+            requested_entrypoint = str(arguments.get("path") or "").strip().strip("\"'")
+            basename = Path(requested_entrypoint.replace("\\", "/")).name.casefold()
+            generic_launchers = {
+                "bash",
+                "bash.exe",
+                "cmd",
+                "cmd.exe",
+                "powershell",
+                "powershell.exe",
+                "pwsh",
+                "pwsh.exe",
+                "py",
+                "python",
+                "python.exe",
+                "python3",
+            }
+            if basename in generic_launchers and requested_entrypoint.casefold() not in self.current_prompt.casefold():
+                reason = (
+                    "run_existing_entrypoint requires a task-relevant existing project entrypoint, not an "
+                    "invented bare shell or interpreter launcher."
+                )
+                self._audit("entrypoint_relevance_denied", normalized, arguments, fingerprint, reason)
+                return False, {"status": "scope_denied", "tool": normalized, "reason": reason}
 
         target = self._resolved_argument_path(arguments, "path")
         if normalized in {"write_file", "replace_text"} and target is not None and target.is_file():
@@ -14426,6 +15638,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
         )
         def fetch_url(url: str, timeout_seconds: int = 30, max_bytes: int = 1000000) -> dict[str, Any]:
             from html.parser import HTMLParser
+            import urllib.error
             import urllib.request
             from urllib.parse import urlsplit
 
@@ -14434,74 +15647,146 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 raise ValueError("fetch_url requires an absolute HTTP or HTTPS URL.")
             bounded_timeout = max(1, min(int(timeout_seconds), 120))
             bounded_bytes = max(1, min(int(max_bytes), 2000000))
-            request = urllib.request.Request(
-                url.strip(),
-                headers={"User-Agent": "Qubitz-Local-Agent/1.0"},
+            header_profiles = (
+                {
+                    "Accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5",
+                    "User-Agent": "Qubitz-Local-Agent/1.0",
+                },
+                {
+                    "Accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                    ),
+                },
             )
-            with urllib.request.urlopen(request, timeout=bounded_timeout) as response:
-                payload = response.read(bounded_bytes + 1)
-                truncated = len(payload) > bounded_bytes
-                payload = payload[:bounded_bytes]
-                charset = response.headers.get_content_charset() or "utf-8"
-                content_type = response.headers.get_content_type()
-                body = payload.decode(charset, errors="replace")
-                body_format = "text"
-                if content_type == "text/html":
-                    class VisibleTextParser(HTMLParser):
-                        _SKIP_TAGS = {"script", "style", "noscript", "svg", "template"}
-                        _BREAK_TAGS = {
-                            "br",
-                            "div",
-                            "h1",
-                            "h2",
-                            "h3",
-                            "h4",
-                            "h5",
-                            "h6",
-                            "li",
-                            "p",
-                            "section",
-                            "tr",
-                        }
+            payload = b""
+            final_url = url.strip()
+            status_code = 0
+            content_type = "application/octet-stream"
+            charset = "utf-8"
+            attempts = 0
+            for attempt, headers in enumerate(header_profiles):
+                attempts = attempt + 1
+                request = urllib.request.Request(url.strip(), headers=headers)
+                try:
+                    with urllib.request.urlopen(request, timeout=bounded_timeout) as response:
+                        payload = response.read(bounded_bytes + 1)
+                        final_url = response.geturl()
+                        status_code = int(getattr(response, "status", 200) or 200)
+                        content_type = response.headers.get_content_type()
+                        charset = response.headers.get_content_charset() or "utf-8"
+                    break
+                except urllib.error.HTTPError as exc:
+                    status_code = int(exc.code or 0)
+                    if status_code in {403, 406} and attempt == 0:
+                        continue
+                    with suppress(Exception):
+                        payload = exc.read(min(bounded_bytes, 65536))
+                    error_charset = exc.headers.get_content_charset() if exc.headers else None
+                    error_body = payload.decode(error_charset or "utf-8", errors="replace")
+                    denied = status_code in {401, 403, 406}
+                    return {
+                        "requested_url": url.strip(),
+                        "final_url": exc.geturl() or url.strip(),
+                        "status": "http_request_denied" if denied else "http_request_failed",
+                        "http_status": status_code,
+                        "retrieved": False,
+                        "request_attempts": attempts,
+                        "retry_attempted": attempts > 1,
+                        "reason": (
+                            "The server denied this HTTP request. This does not prove that the URL, "
+                            "artifact, or package is unavailable; use the direct installer, browser, "
+                            "official API, or another authoritative route when appropriate."
+                            if denied
+                            else "This exact HTTP request failed; do not generalize the result to other URLs or routes."
+                        ),
+                        "body_snippet": _shorten(error_body.strip(), 2000),
+                    }
+                except urllib.error.URLError as exc:
+                    return {
+                        "requested_url": url.strip(),
+                        "final_url": url.strip(),
+                        "status": "network_request_failed",
+                        "retrieved": False,
+                        "request_attempts": attempts,
+                        "retry_attempted": False,
+                        "reason": (
+                            f"The network request failed: {exc.reason}. This does not prove that the "
+                            "URL, artifact, or package is unavailable."
+                        ),
+                    }
 
-                        def __init__(self) -> None:
-                            super().__init__(convert_charrefs=True)
-                            self.skip_depth = 0
-                            self.parts: list[str] = []
+            truncated = len(payload) > bounded_bytes
+            payload = payload[:bounded_bytes]
+            textual_content = content_type.startswith("text/") or content_type in {
+                "application/json",
+                "application/javascript",
+                "application/xml",
+                "application/xhtml+xml",
+            }
+            body = payload.decode(charset, errors="replace") if textual_content else ""
+            body_format = "text" if textual_content else "binary_metadata"
+            if content_type == "text/html":
+                class VisibleTextParser(HTMLParser):
+                    _SKIP_TAGS = {"script", "style", "noscript", "svg", "template"}
+                    _BREAK_TAGS = {
+                        "br",
+                        "div",
+                        "h1",
+                        "h2",
+                        "h3",
+                        "h4",
+                        "h5",
+                        "h6",
+                        "li",
+                        "p",
+                        "section",
+                        "tr",
+                    }
 
-                        def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
-                            normalized_tag = tag.lower()
-                            if normalized_tag in self._SKIP_TAGS:
-                                self.skip_depth += 1
-                            elif not self.skip_depth and normalized_tag in self._BREAK_TAGS:
-                                self.parts.append("\n")
+                    def __init__(self) -> None:
+                        super().__init__(convert_charrefs=True)
+                        self.skip_depth = 0
+                        self.parts: list[str] = []
 
-                        def handle_endtag(self, tag: str) -> None:
-                            normalized_tag = tag.lower()
-                            if normalized_tag in self._SKIP_TAGS and self.skip_depth:
-                                self.skip_depth -= 1
-                            elif not self.skip_depth and normalized_tag in self._BREAK_TAGS:
-                                self.parts.append("\n")
+                    def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
+                        normalized_tag = tag.lower()
+                        if normalized_tag in self._SKIP_TAGS:
+                            self.skip_depth += 1
+                        elif not self.skip_depth and normalized_tag in self._BREAK_TAGS:
+                            self.parts.append("\n")
 
-                        def handle_data(self, data: str) -> None:
-                            if not self.skip_depth and data.strip():
-                                self.parts.append(data)
+                    def handle_endtag(self, tag: str) -> None:
+                        normalized_tag = tag.lower()
+                        if normalized_tag in self._SKIP_TAGS and self.skip_depth:
+                            self.skip_depth -= 1
+                        elif not self.skip_depth and normalized_tag in self._BREAK_TAGS:
+                            self.parts.append("\n")
 
-                    parser = VisibleTextParser()
-                    parser.feed(body)
-                    body = re.sub(r"[ \t\r\f\v]+", " ", "".join(parser.parts))
-                    body = re.sub(r"\n\s*\n+", "\n\n", body).strip()
-                    body_format = "visible_text"
-                return {
-                    "requested_url": url.strip(),
-                    "final_url": response.geturl(),
-                    "status": int(getattr(response, "status", 200) or 200),
-                    "content_type": content_type,
-                    "body_format": body_format,
-                    "body": body,
-                    "bytes_read": len(payload),
-                    "truncated": truncated,
-                }
+                    def handle_data(self, data: str) -> None:
+                        if not self.skip_depth and data.strip():
+                            self.parts.append(data)
+
+                parser = VisibleTextParser()
+                parser.feed(body)
+                body = re.sub(r"[ \t\r\f\v]+", " ", "".join(parser.parts))
+                body = re.sub(r"\n\s*\n+", "\n\n", body).strip()
+                body_format = "visible_text"
+            return {
+                "requested_url": url.strip(),
+                "final_url": final_url,
+                "status": status_code,
+                "content_type": content_type,
+                "body_format": body_format,
+                "body": body,
+                "bytes_read": len(payload),
+                "sha256_of_bytes_read": hashlib.sha256(payload).hexdigest(),
+                "truncated": truncated,
+                "request_attempts": attempts,
+                "retry_attempted": attempts > 1,
+            }
 
         @server.tool(
             description=(
@@ -14808,6 +16093,55 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     )
                     broker.record_result(name, arguments, invalid_result)
                     return invalid_result
+                failure_fingerprint = broker._fingerprint(name.lower(), arguments)
+                blocked_failure_key = ""
+                blocked_failure_reason = ""
+                if broker.failed_result_counts.get(failure_fingerprint, 0) >= 2:
+                    blocked_failure_key = failure_fingerprint
+                    blocked_failure_reason = (
+                        "This exact valid tool call already failed twice without verified progress."
+                    )
+                elif name == "fetch_url":
+                    canonical_url = _canonical_http_url(arguments.get("url"))
+                    host_match = re.match(r"https?://([^/?#]+)", canonical_url, re.IGNORECASE)
+                    if host_match is not None:
+                        route_prefix = f"fetch_url:{host_match.group(1).casefold()}:"
+                        matching_route = next(
+                            (
+                                key
+                                for key, count in broker.failed_route_counts.items()
+                                if key.startswith(route_prefix) and count >= 2
+                            ),
+                            "",
+                        )
+                        if matching_route:
+                            blocked_failure_key = matching_route
+                            blocked_failure_reason = (
+                                f"Two equivalent fetches from {host_match.group(1)} already failed "
+                                "with the same access or network class."
+                            )
+                if blocked_failure_key:
+                    block_count = broker.failed_result_block_counts.get(blocked_failure_key, 0) + 1
+                    broker.failed_result_block_counts[blocked_failure_key] = block_count
+                    broker._emit(
+                        f"Blocked repeated no-progress {name} call; use a materially different "
+                        "tool route or report the exact blocker."
+                    )
+                    blocked_result = self._error_result(
+                        {
+                            "status": "repeated_failed_result",
+                            "tool": name,
+                            "reason": blocked_failure_reason,
+                            "instruction": (
+                                "Do not repeat this call or an equivalent request to the same failed route. "
+                                "Use a different authoritative route or report the unresolved postcondition."
+                            ),
+                        }
+                    )
+                    broker.record_result(name, arguments, blocked_result)
+                    if block_count > 1 and broker.stop_callback is not None:
+                        broker.stop_callback("repeated equivalent failed tool results")
+                    return blocked_result
                 if name == "apply_text_patches":
                     arguments, staged_payload = broker.stage_text_patch_arguments(arguments)
                     if staged_payload is not None:
@@ -15139,6 +16473,165 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 "is intended."
             )
 
+        async def _dependency_install_preflight(
+            self,
+            prompt: str,
+            callback: Callable[[str, str], None] | None,
+        ) -> str | None:
+            manifest = self._tool_permission_broker.dependency_manifest
+            if manifest is None:
+                return None
+            if manifest.errors:
+                details = " ".join(manifest.errors)
+                return (
+                    "The explicit dependency request was not executed because its install manifest is "
+                    f"ambiguous: {details} Name each package, artifact URL, or requirements file explicitly."
+                )
+            mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN}:
+                return (
+                    f"{_access_mode_label(mode)} does not permit package installation. "
+                    "No environment, dependency manifest, or file was changed."
+                )
+            if not _network_mode_is_online() and _tool_arguments_request_external_network(
+                "install_python_package",
+                manifest.tool_arguments(),
+            ):
+                return (
+                    "Network mode is Offline, but the explicit install manifest contains remote package "
+                    "sources. No installation was attempted."
+                )
+            if callback is not None:
+                target = manifest.environment or "the single detected project-local environment"
+                callback(
+                    "status",
+                    "Wrapper route: dependency_install. Installing the exact deduplicated manifest "
+                    f"({len(manifest.packages)} package artifact(s)) into {target}; retrieval and model loading were skipped.",
+                )
+            async with base.MCPHost(self.workspace) as host:
+                await host.list_tools()
+                result = await host.call_tool(
+                    "install_python_package",
+                    manifest.tool_arguments(),
+                )
+            structured = getattr(result, "structuredContent", None) or {}
+            package_results = structured.get("packages")
+            entries = package_results if isinstance(package_results, list) else []
+            verified_entries = [
+                item for item in entries if isinstance(item, dict) and item.get("verified") is True
+            ]
+            already_present_entries = [
+                item for item in verified_entries if item.get("status") == "already_present"
+            ]
+            installed_entries = [
+                item for item in verified_entries if item.get("status") == "installed"
+            ]
+            other_verified_entries = [
+                item
+                for item in verified_entries
+                if item not in already_present_entries and item not in installed_entries
+            ]
+            failed_entries = [
+                item for item in entries if not isinstance(item, dict) or item.get("verified") is not True
+            ]
+            lines = [
+                f"Dependency install manifest: {manifest.manifest_id}",
+                f"Environment: {structured.get('environment') or manifest.environment or 'unresolved'}",
+                f"Interpreter: {structured.get('python') or 'unresolved'}",
+            ]
+
+            def render_packages(package_entries: list[dict[str, Any]]) -> str:
+                return ", ".join(
+                    f"{item.get('distribution') or item.get('requirement')}=={item.get('version_after') or 'present'}"
+                    for item in package_entries
+                )
+
+            def render_seconds(value: Any) -> str:
+                try:
+                    return f"{max(0.0, float(value)):.3f}s"
+                except (TypeError, ValueError):
+                    return "unavailable"
+
+            if already_present_entries:
+                lines.append(f"Already present: {render_packages(already_present_entries)}")
+            if installed_entries:
+                lines.append(f"Installed: {render_packages(installed_entries)}")
+            if other_verified_entries:
+                lines.append(f"Verified: {render_packages(other_verified_entries)}")
+            if failed_entries:
+                rendered_failed = ", ".join(
+                    str(item.get("requirement") or item.get("distribution") or "unknown")
+                    + (
+                        f" ({item.get('failure_class') or item.get('status')})"
+                        if isinstance(item, dict)
+                        else " (invalid result)"
+                    )
+                    for item in failed_entries
+                )
+                lines.append(f"Not verified: {rendered_failed}")
+            timed_entries = [
+                item
+                for item in entries
+                if isinstance(item, dict) and isinstance(item.get("timings_seconds"), dict)
+            ]
+            operation_timings = structured.get("timings_seconds")
+            if isinstance(operation_timings, dict):
+                lines.append(
+                    "Shared metadata preflight: "
+                    f"{render_seconds(operation_timings.get('metadata_preflight'))}."
+                )
+            if timed_entries:
+                lines.append("Per-package timings:")
+                for item in timed_entries:
+                    timings = item["timings_seconds"]
+                    label = str(item.get("distribution") or item.get("requirement") or "unknown")
+                    status = str(item.get("status") or "unknown").replace("_", " ")
+                    lines.append(
+                        f"- {_shorten(label, 96)} ({status}): "
+                        f"preflight={render_seconds(timings.get('preflight'))}, "
+                        f"download/install={render_seconds(timings.get('download_install'))}, "
+                        f"verification={render_seconds(timings.get('verification'))}, "
+                        f"total={render_seconds(timings.get('total'))}."
+                    )
+            dependency_check = structured.get("dependency_check")
+            if isinstance(dependency_check, dict):
+                check_status = str(dependency_check.get("status") or "").strip().casefold()
+                check_output = str(dependency_check.get("output") or "").strip()
+                check_duration = render_seconds(dependency_check.get("duration_seconds"))
+                if check_status == "passed":
+                    lines.append(f"Dependency consistency check: passed ({check_duration}).")
+                elif check_status in {"warning", "unavailable"}:
+                    label = "warning" if check_status == "warning" else "unavailable"
+                    detail = f" {check_output}" if check_output else ""
+                    lines.append(
+                        f"Dependency consistency check {label} (non-blocking, {check_duration}):{detail}"
+                    )
+            if isinstance(operation_timings, dict):
+                lines.append(
+                    f"Dependency operation total: {render_seconds(operation_timings.get('total'))}."
+                )
+            reason = str(structured.get("reason") or "").strip()
+            if reason:
+                lines.append(f"Reason: {reason}")
+            all_verified = bool(entries) and len(verified_entries) == len(entries) and bool(
+                structured.get("verified")
+            )
+            if all_verified:
+                lines.extend(
+                    [
+                        "",
+                        "[Completion status: verified]",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        "",
+                        "[Completion status: partial] Unverified postconditions: dependencies verified.",
+                    ]
+                )
+            return "\n".join(lines)
+
         def _select_task_guidance(self, prompt: str) -> str:
             guidance = super()._select_task_guidance(prompt)
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
@@ -15161,6 +16654,17 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._task_intent_for_prompt(prompt, "")
             decision = super()._decide_route(prompt)
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            dependency_manifest = _dependency_install_manifest(prompt)
+            if dependency_manifest is not None:
+                decision = base.replace(
+                    decision,
+                    selected_route="dependency_install",
+                    reason=(
+                        "The request contains an explicit dependency manifest; the wrapper owns exact parsing, "
+                        "environment binding, installation, and verification."
+                    ),
+                    fallback_routes=["ask_user_missing_info"],
+                )
             if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN} and decision.selected_route == "direct_existing_entrypoint":
                 decision = base.replace(
                     decision,
@@ -16177,6 +17681,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     for tool in tools
                     if self._tool_name(tool) in _ToolPermissionBroker._RESTRICTED_MODE_TOOLS
                 ]
+            if self._tool_permission_broker.dependency_manifest is not None:
+                return [
+                    tool
+                    for tool in tools
+                    if self._tool_name(tool)
+                    in {"inspect_python_environment", "install_python_package"}
+                ]
             if explicit_tool_selection:
                 return list(tools)
             focused_postconditions = self._tool_permission_broker.update_focused_postconditions(
@@ -16537,7 +18048,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._focused_missing_postconditions = frozenset()
             self._active_discovery_context = ""
             with suppress(Exception):
-                if self._selected_route_name(prompt) != "simple_answer":
+                if self._selected_route_name(prompt) not in {"simple_answer", "dependency_install"}:
                     self._active_discovery_context = self.discovery_memory.context_for(prompt)
             self._tool_permission_broker.begin_turn(prompt, callback)
             broker_context_token = _TOOL_CALL_CONTEXT.set(self._tool_permission_broker)
@@ -16545,6 +18056,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             progressive_budget_enabled = selected_route not in {
                 "simple_answer",
                 "direct_existing_entrypoint",
+                "dependency_install",
             }
             soft_budget, extension_block, profile_hard_ceiling = self._effort_step_budget_profile()
             effective_hard_ceiling = min(profile_hard_ceiling, self._effective_max_steps())
@@ -16580,6 +18092,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 finally:
                     last_model_pass_steps = pass_steps
                     self._tool_permission_broker.completion_interrupt_enabled = False
+                    with suppress(Exception):
+                        self.memory.turns = self.memory.turns[:memory_checkpoint]
+                    with suppress(Exception):
+                        self.history = self.history[:history_checkpoint]
 
             def verified_completion_answer() -> str | None:
                 if not (
@@ -16727,6 +18243,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             "Wrapper preflight resolved an explicit read-only external-path denial; model loading was skipped.",
                         )
                     return finalize_turn_answer(preflight_denial)
+                dependency_answer = await self._dependency_install_preflight(prompt, callback)
+                if dependency_answer is not None:
+                    return finalize_turn_answer(dependency_answer)
                 try:
                     answer = await run_progressive_model_pass(effective_prompt)
                     if (
@@ -16853,7 +18372,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     )
                     if mcp_answer is not None:
                         answer = mcp_answer
-                if self._tool_permission_broker.transaction_recovery_required:
+                if (
+                    self._tool_permission_broker.transaction_recovery_required
+                    and "changed_files" in self._tool_permission_broker.required_postconditions
+                ):
                     recovery_context = self._tool_permission_broker.transaction_recovery_context()
                     focused = set(self._tool_permission_broker.required_postconditions)
                     if not self._tool_permission_broker.transaction_changed_hashes:
@@ -17051,6 +18573,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 lines.append(
                     "- This access mode permits inspection only; do not invoke mutation, command, process-launch, installation, or external side-effect tools."
                 )
+            elif route == "dependency_install":
+                lines.append(
+                    "- The wrapper parsed and bound the explicit dependency manifest. Use only exact environment "
+                    "inspection and install_python_package; do not read, edit, or install from repository dependency "
+                    "files unless the user explicitly named that file as the install source."
+                )
             elif route == "read_only_workspace":
                 lines.append(
                     "- Use focused read-only context first and widen inspection only when essential context is still missing."
@@ -17062,6 +18590,34 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             else:
                 lines.append(
                     "- The visible tools are a bounded task-relevant subset; use search_tools only when a required capability is missing."
+                )
+            dependency_action = task_intent.semantic.requests("install", "uninstall", "upgrade")
+            dependency_state_question = bool(
+                re.search(
+                    r"\b(?:dependency|dependencies|package|packages|requirements|torch|triton|xformers|"
+                    r"flashattention|flash[_ -]?attn|faiss|cuvs|cuda)\b",
+                    user_prompt,
+                    re.IGNORECASE,
+                )
+                and re.search(
+                    r"\b(?:available|compatible|current|installed|requirements|stack|version|versions)\b",
+                    user_prompt,
+                    re.IGNORECASE,
+                )
+            )
+            if dependency_action:
+                lines.extend(
+                    [
+                        "- Treat every user-specified package, version, wheel, URL, index, constraint, extra, marker, and hash as a binding install target. Pass it unchanged to install_python_package; do not replace it with a guessed or merely newer alternative.",
+                        "- The explicit current-turn install manifest is authoritative. Do not merge it with requirements.txt, requirements-ci.txt, pyproject.toml, lockfiles, or retrieved dependency context unless the user explicitly requested that manifest file.",
+                        "- Inspect the exact active-workspace interpreter first. A wheel or index URL supplied for installation is direct installer input, so do not call fetch_url merely to test whether it exists; the installer result is the authoritative availability and compatibility evidence.",
+                        "- Resolve dependencies normally for ordinary package requests. Use --no-deps only when the user requested it or the wrapper identified an explicit fully pinned curated stack; never add --no-deps merely as a resolver-failure fallback.",
+                        "- If an exact requested target is unavailable or incompatible, stop that installation, preserve the current stack, report the verified failure, and offer compatible alternatives without installing a substitute until the user approves it.",
+                    ]
+                )
+            elif dependency_state_question:
+                lines.append(
+                    "- Before stating current package, requirements, CUDA-stack, or interpreter facts, inspect the active workspace and exact target interpreter in this turn. Do not infer current state from memory, model knowledge, or a failed web request."
                 )
             if task in {"coding_repair_task", "edit_or_refactor_task"}:
                 lines.extend(
@@ -17157,6 +18713,118 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     os.environ.get(NETWORK_MODE_ENV_NAME, DEFAULT_NETWORK_MODE),
                 )
             super().__init__(config)
+
+            def paste_prompt_text(_event: Any) -> str:
+                try:
+                    clipboard_text = self.root.clipboard_get()
+                except self.tk.TclError:
+                    return "break"
+                normalized = (
+                    str(clipboard_text)
+                    .replace("\r\n", "\n")
+                    .replace("\n\r", "\n")
+                    .replace("\r", "\n")
+                    .replace("\x00", "")
+                )
+                try:
+                    self.prompt_box.delete("sel.first", "sel.last")
+                except self.tk.TclError:
+                    pass
+                self.prompt_box.insert("insert", normalized)
+                self.prompt_box.see("insert")
+                return "break"
+
+            self.prompt_box.bind("<<Paste>>", paste_prompt_text, add="+")
+            runtime_workspace = Path(
+                getattr(config, "runtime_workspace", None)
+                or getattr(config, "workspace", Path.cwd())
+            ).resolve()
+            gui_log_directory = runtime_workspace / LOCAL_ONLY_DIR_NAME / "gui_logs"
+            gui_log_directory.mkdir(parents=True, exist_ok=True)
+            safe_variant_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(__file__).stem)
+            gui_log_stamp = time.strftime("%Y%m%d_%H%M%S")
+            self._qubitz_gui_log_path = (
+                gui_log_directory / f"{gui_log_stamp}_{safe_variant_name}_{os.getpid()}.jsonl"
+            )
+            self._qubitz_gui_log_queue: Any = base.queue.Queue(maxsize=4096)
+            self._qubitz_gui_watchdog_stop = threading.Event()
+            self._qubitz_gui_last_poll_at = time.monotonic()
+
+            def enqueue_gui_log(event_name: str, **details: Any) -> None:
+                payload = {
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "event": event_name,
+                    "variant": Path(__file__).name,
+                    "pid": os.getpid(),
+                    **details,
+                }
+                try:
+                    self._qubitz_gui_log_queue.put_nowait(payload)
+                except base.queue.Full:
+                    pass
+
+            self._qubitz_gui_log_event = enqueue_gui_log
+
+            def write_gui_log() -> None:
+                try:
+                    with self._qubitz_gui_log_path.open("a", encoding="utf-8", buffering=1) as handle:
+                        while True:
+                            item = self._qubitz_gui_log_queue.get()
+                            if item is None:
+                                return
+                            handle.write(json.dumps(item, ensure_ascii=True, default=str) + "\n")
+                except OSError:
+                    return
+
+            threading.Thread(
+                target=write_gui_log,
+                name="qubitz-gui-log",
+                daemon=True,
+            ).start()
+
+            def watch_gui_heartbeat() -> None:
+                stalled = False
+                while not self._qubitz_gui_watchdog_stop.wait(2.0):
+                    lag_seconds = max(0.0, time.monotonic() - self._qubitz_gui_last_poll_at)
+                    if lag_seconds >= 8.0 and not stalled:
+                        stalled = True
+                        enqueue_gui_log(
+                            "gui_heartbeat_stalled",
+                            lag_seconds=round(lag_seconds, 3),
+                            busy=bool(getattr(self, "busy", False)),
+                            queued_events=self.event_queue.qsize(),
+                        )
+                    elif stalled and lag_seconds < 4.0:
+                        stalled = False
+                        enqueue_gui_log(
+                            "gui_heartbeat_recovered",
+                            lag_seconds=round(lag_seconds, 3),
+                            busy=bool(getattr(self, "busy", False)),
+                            queued_events=self.event_queue.qsize(),
+                        )
+
+            threading.Thread(
+                target=watch_gui_heartbeat,
+                name="qubitz-gui-watchdog",
+                daemon=True,
+            ).start()
+
+            def stop_gui_diagnostics(event: Any) -> None:
+                if getattr(event, "widget", None) is not self.root:
+                    return
+                self._qubitz_gui_watchdog_stop.set()
+                with suppress(base.queue.Full):
+                    self._qubitz_gui_log_queue.put_nowait(None)
+
+            self.root.bind("<Destroy>", stop_gui_diagnostics, add="+")
+            initial_transcript = ""
+            with suppress(Exception):
+                initial_transcript = self.transcript.get("1.0", "end-1c")
+            enqueue_gui_log(
+                "gui_started",
+                log_path=str(self._qubitz_gui_log_path),
+                initial_transcript=initial_transcript,
+            )
             self._install_variant_selector()
             self.access_mode_var = self.tk.StringVar(
                 master=self.root,
@@ -17441,21 +19109,42 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 self.event_queue.put((run_id, "done", ""))
 
         def _poll_events(self) -> None:
-            while True:
+            self._qubitz_gui_last_poll_at = time.monotonic()
+            processed = 0
+            stream_deltas: list[str] = []
+
+            def flush_stream_deltas() -> None:
+                if not stream_deltas:
+                    return
+                self.status_var.set("Generating")
+                self._append_stream_delta(_normalize_terminal_display_text("".join(stream_deltas)))
+                stream_deltas.clear()
+
+            while processed < 64:
                 try:
                     item = self.event_queue.get_nowait()
                 except base.queue.Empty:
                     break
+                processed += 1
                 if len(item) == 3:
                     run_id, kind, message = item
                     if run_id != getattr(self, "_active_gui_run_id", run_id):
                         continue
                 else:
+                    run_id = getattr(self, "_active_gui_run_id", 0)
                     kind, message = item
                 if kind == "assistant_delta":
-                    self.status_var.set("Generating")
-                    self._append_stream_delta(message)
+                    stream_deltas.append(message)
                     continue
+                message = _normalize_terminal_display_text(message)
+                flush_stream_deltas()
+                with suppress(Exception):
+                    self._qubitz_gui_log_event(
+                        "gui_event",
+                        run_id=run_id,
+                        kind=kind,
+                        message=message,
+                    )
                 self._clear_stream_preview()
                 if kind == "status":
                     self.status_var.set(message)
@@ -17473,7 +19162,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         next_prompt = self.pending_prompts.pop(0)
                         self._update_send_button()
                         self._start_prompt(next_prompt, queued=True)
-            self.root.after(100, self._poll_events)
+                    else:
+                        with suppress(self.tk.TclError):
+                            self.root.after_idle(self.prompt_box.focus_set)
+            flush_stream_deltas()
+            self._qubitz_gui_last_poll_at = time.monotonic()
+            next_delay_ms = 16 if not self.event_queue.empty() else 100
+            with suppress(self.tk.TclError):
+                self.root.after(next_delay_ms, self._poll_events)
 
         def send_prompt(self) -> None:
             raw_prompt = self.prompt_box.get("1.0", "end").strip()
@@ -17970,13 +19666,7 @@ exit 3
                 self._handle_wslg_copy_mode()
 
         def _append_status_from_thread(self, message: str) -> None:
-            try:
-                self.root.after(
-                    0,
-                    lambda text=message: self._append_transcript("status", text),
-                )
-            except self.tk.TclError:
-                pass
+            self.event_queue.put(("status", message))
 
         def _wslg_auto_recovery_enabled(self) -> bool:
             enabled_values = {"1", "enabled", "on", "true", "yes"}
