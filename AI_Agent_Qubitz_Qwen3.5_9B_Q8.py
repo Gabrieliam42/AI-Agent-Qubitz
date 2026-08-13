@@ -19576,8 +19576,22 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
         def _schedule_startup_visibility_recovery(self) -> None:
             for delay_ms in (0, 250, 900):
                 self.root.after(delay_ms, self._raise_gui_window)
-            if sys.platform.startswith("linux") and base.in_wsl():
+            skip_probe = os.environ.get(
+                "QUBITZ_SKIP_WSLG_VISIBILITY_PROBE",
+                "",
+            ).strip().casefold() in {"1", "on", "true", "yes"}
+            if sys.platform.startswith("linux") and base.in_wsl() and not skip_probe:
                 self.root.after(350, self._start_wslg_visibility_probe)
+
+        def _poll_events(self) -> None:
+            if getattr(self, "_qubitz_wslg_destroy_requested", False):
+                self._qubitz_wslg_destroy_requested = False
+                try:
+                    self.root.destroy()
+                except self.tk.TclError:
+                    pass
+                return
+            super()._poll_events()
 
         def _raise_gui_window(self) -> None:
             try:
@@ -19805,10 +19819,7 @@ if ($null -ne $process) {{
                 f"{recovery_mode} WSLg recovery started; WSL will restart and this "
                 "variant will relaunch once."
             )
-            try:
-                self.root.after(100, self.root.destroy)
-            except self.tk.TclError:
-                pass
+            self._qubitz_wslg_destroy_requested = True
             return True
 
         def _update_run_control_buttons(self) -> None:
