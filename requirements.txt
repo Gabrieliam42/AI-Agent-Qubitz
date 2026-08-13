@@ -2,25 +2,27 @@
 # The project venv should be a Linux venv created inside WSL2 and run under WSL2, not a native Windows venv.
 # The runtime is intended to operate on Windows-hosted workspaces through a WSL-to-Windows bridge rather than only inside Linux paths.
 # The PowerShell CLI examples in the repository launch that WSL2 venv from the Windows project directory.
---extra-index-url https://download.pytorch.org/whl/cu129
+--extra-index-url https://download.pytorch.org/whl/cu130
 --extra-index-url https://pypi.nvidia.com
 accelerate>=1.0
 cryptography>=42
 einops>=0.8.0
-faiss-gpu-cuvs==1.14.1.post1; platform_system == "Linux"
-flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; platform_system == "Linux"
+faiss-gpu-cu13-cuvs @ https://files.pythonhosted.org/packages/7c/31/1e95564aef401bd07c80e02017a2fc87533f7d4fe7341c0ed6920f403a5c/faiss_gpu_cu13_cuvs-1.15.0-cp312-cp312-manylinux_2_39_x86_64.whl#sha256=2954f14bef772a206841898c429911a6b28dba589a1912f541785396e7e9cb28; platform_system == "Linux"
+flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu13torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl; platform_system == "Linux"
 huggingface-hub>=0.34,<1.0
 httpx>=0.28.1
 mcp[cli]>=1.27.0
-numpy>=1.26
-rmm-cu12==25.10.0; platform_system == "Linux"
-# Required by rmm-cu12==25.10.0; keep direct so uv can resolve cuda-python>=12.9.2,<13.0a0 without global --prerelease=allow.
-cuda-python>=12.9.2,<13.0a0; platform_system == "Linux"
+numpy>=2,<3
+python-docx>=1.1.2
+rmm-cu13==26.6.0; platform_system == "Linux"
+# Required by rmm-cu13==26.6.0; pin the Python CUDA bindings to the CUDA 13.0 generation.
+cuda-python==13.0.3; platform_system == "Linux"
 sentencepiece>=0.2.0
-torch==2.9.1+cu129
+torch==2.9.1+cu130
+triton @ https://files.pythonhosted.org/packages/f2/50/9a8358d3ef58162c0a415d173cfb45b67de60176e1024f71fbc4d24c0b6d/triton-3.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl; platform_system == "Linux"
 transformers>=4.46,<5.0
-# Verified against the current torch 2.9.1+cu129 WSL stack.
+# CUDA 13 xFormers wheel matched to torch 2.9.1+cu130.
 # Official sources:
 # - https://github.com/facebookresearch/xformers/releases
-# - https://download.pytorch.org/whl/cu129/xformers/
-xformers @ https://files.pythonhosted.org/packages/7d/c8/2957d8a8bf089a4e57f046867d4c9b31fc2e1d16013bc57cd7ae651a65b5/xformers-0.0.33.post2-cp39-abi3-manylinux_2_28_x86_64.whl#sha256=9ea6032defa60395559b6a446c2ae945236707e98daabd88fea57cd08671c174; platform_system == "Linux"
+# - https://download.pytorch.org/whl/cu130/xformers/
+xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.33.post2-cp39-abi3-manylinux_2_28_x86_64.whl#sha256=8dd477e3ef372a0b45631c12d016ca0a08c25edfb4c6067530718a2ad602261a; platform_system == "Linux"
