@@ -18880,37 +18880,30 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self.agent.set_access_mode(mode)
 
         def _install_variant_selector(self) -> None:
-            variant_groups = (
-                (
-                    "12 GB VRAM",
-                    (
-                        "AI_Agent_Qubitz_Granite-4.1-8B_Q5_12G.py",
-                        "AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py",
-                        "AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py",
-                    ),
-                ),
-                (
-                    "24 GB VRAM",
-                    (
-                        "AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py",
-                        "AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py",
-                        "AI_Agent_Qubitz_Ornith-1.0-35B-A3B-Q4.py",
-                        "AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py",
-                        "AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py",
-                        "AI_Agent_Qubitz_GPT-OSS-20B_F16.py",
-                        "AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py",
-                        "AI_Agent_Qubitz_Nemotron-3-Nano-30B-A3B-IQ4.py",
-                        "AI_Agent_Qubitz_Qwen3.6-27B_Q4.py",
-                        "AI_Agent_Qubitz_Qwen3.6-35B-A3B_Q4.py",
-                        "AI_Agent_Qubitz_Granite-4.1-8B_Q8.py",
-                        "AI_Agent_Qubitz_Qwen3.5_9B_Q8.py",
-                        "AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py",
-                        "AI_Agent_Qubitz_AgenticQwen-8B-F16.py",
-                    ),
-                ),
-            )
             runtime_root = Path(__file__).resolve().parent
             current_filename = Path(__file__).name
+            # Derived from the variants actually present so a newly added one appears
+            # here instead of being silently unreachable. Tier follows the _12G suffix
+            # the 12 GB builds already use; override only where that naming does not.
+            variant_tier_overrides: dict[str, str] = {}
+            grouped: dict[str, list[str]] = {"12 GB VRAM": [], "24 GB VRAM": []}
+            for variant_path in sorted(
+                runtime_root.glob("AI_Agent_Qubitz_*.py"),
+                key=lambda item: item.name.casefold(),
+            ):
+                if not variant_path.is_file():
+                    continue
+                tier = variant_tier_overrides.get(variant_path.name)
+                if tier is None:
+                    tier = (
+                        "12 GB VRAM"
+                        if variant_path.stem.casefold().endswith("_12g")
+                        else "24 GB VRAM"
+                    )
+                grouped.setdefault(tier, []).append(variant_path.name)
+            variant_groups = tuple(
+                (tier, tuple(names)) for tier, names in grouped.items() if names
+            )
             panel_color = getattr(base, "UI_PANEL", "#1b1c1f")
             panel_alt_color = getattr(base, "UI_PANEL_ALT", "#23252a")
             text_color = getattr(base, "UI_TEXT", "#ffffff")
