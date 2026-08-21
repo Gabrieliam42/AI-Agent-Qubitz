@@ -7808,6 +7808,53 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
     retriever_cls.release_gpu_resources = _release_gpu_resources
     retriever_cls._qubitz_cuda_stack_patched = True
 
+def _install_pinned_llamacpp_runtime(base: Any) -> None:
+    """Select a versioned shared llama.cpp runtime while preserving rollback."""
+    if getattr(base, "_QUBITZ_PINNED_LLAMACPP_RUNTIME_INSTALLED", False):
+        return
+    if ("NORTH_" + "LLAMACPP_RUNTIME_DIR_NAME") in globals():
+        base._QUBITZ_PINNED_LLAMACPP_RUNTIME_INSTALLED = True
+        return
+
+    stable_release = "v0.2.0"
+    pinned_tag = "b10566"
+    previous_tag = "b10549"
+    channel_name = "QUBITZ_LLAMA_CPP_RUNTIME_CHANNEL"
+    channel = os.environ.get(channel_name, "pinned").strip().lower()
+    legacy_runtime_dir = base.llamacpp_runtime_dir
+    base._QUBITZ_LEGACY_LLAMACPP_RUNTIME_DIR = legacy_runtime_dir
+
+    if channel in {"legacy", "shared", "b9193"}:
+        base.QUBITZ_LLAMACPP_RUNTIME_CHANNEL = "legacy"
+        base.QUBITZ_LLAMACPP_RUNTIME_TAG = "b9193"
+        base._QUBITZ_PINNED_LLAMACPP_RUNTIME_INSTALLED = True
+        return
+    if channel in {"previous", previous_tag}:
+        selected_channel = "previous"
+        selected_tag = previous_tag
+        selected_release = previous_tag
+    elif channel in {"", "pinned", "stable", stable_release, pinned_tag}:
+        selected_channel = "pinned"
+        selected_tag = pinned_tag
+        selected_release = stable_release
+    else:
+        raise RuntimeError(
+            f"Unsupported {channel_name}={channel!r}; use 'pinned', {stable_release!r}, "
+            f"{pinned_tag!r}, 'previous', {previous_tag!r}, or 'legacy'."
+        )
+
+    def _pinned_runtime_dir(workspace: Path) -> Path:
+        return workspace / ".cache" / f"llama.cpp-{selected_tag}"
+
+    base.DEFAULT_LLAMACPP_RELEASE_API_URL = (
+        f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{selected_tag}"
+    )
+    base.llamacpp_runtime_dir = _pinned_runtime_dir
+    base.QUBITZ_LLAMACPP_RUNTIME_CHANNEL = selected_channel
+    base.QUBITZ_LLAMACPP_RUNTIME_RELEASE = selected_release
+    base.QUBITZ_LLAMACPP_RUNTIME_TAG = selected_tag
+    base._QUBITZ_PINNED_LLAMACPP_RUNTIME_INSTALLED = True
+
 def _patch_llamacpp_launch_fit(base: Any) -> None:
     """Size the llama.cpp server GPU-first: model weights before KV cache.
 
@@ -8010,6 +8057,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
 
 def _patch_harness_loader(base: Any) -> None:
     _patch_cuda_retrieval_runtime(base)
+    _install_pinned_llamacpp_runtime(base)
     _patch_llamacpp_launch_fit(base)
 
     def _load_harness_text(workspace: Path) -> str:
