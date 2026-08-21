@@ -15537,6 +15537,13 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
 
     class DailyMemoryStore(original_memory_store):
         _ENTRY_PATTERN = re.compile(r"<!-- qubitz-memory-entry:([0-9a-f]{64}) -->")
+        _LEGACY_ARCHIVE_PATTERN = re.compile(r"^MEMORY_(\d{8})_(\d{6})\.md$")
+        _LEGACY_NOTE_PATTERN = re.compile(
+            r"^-\s+\[([^\]]+)\]\s+\(([^)]+)\)\s+(.+)$"
+        )
+        _LEGACY_TURN_PATTERN = re.compile(
+            r"(?ms)^###\s+([^\[\n]+?)\s+\[([^\]\n]+)\]\s*\n(.*?)(?=^###\s+|\Z)"
+        )
 
         def __init__(self, workspace: Path) -> None:
             self.workspace = workspace
@@ -15547,10 +15554,11 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
             self.archive_path = self._daily_archive_path()
             self.notes: list[dict[str, str]] = []
             self.turns: list[dict[str, str]] = []
+            self._migrate_legacy_archives()
             self.flush()
 
-        def _daily_archive_path(self) -> Path:
-            date_stamp = base.datetime.now().strftime("%Y%m%d")
+        def _daily_archive_path(self, date_stamp: str | None = None) -> Path:
+            date_stamp = date_stamp or base.datetime.now().strftime("%Y%m%d")
             return self.memory_dir / f"{base.ARCHIVE_MEMORY_PREFIX}{date_stamp}.md"
 
         @staticmethod
@@ -15571,12 +15579,13 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
                 with suppress(OSError):
                     temporary.unlink()
 
-        def _daily_header(self) -> str:
+        def _daily_header(self, date_stamp: str) -> str:
+            date_text = f"{date_stamp[:4]}-{date_stamp[4:6]}-{date_stamp[6:8]}"
             return "\n".join(
                 (
                     "# Qubitz Daily Memory",
                     "",
-                    f"Date: {base.datetime.now().strftime('%Y-%m-%d')}",
+                    f"Date: {date_text}",
                     f"Updated: {base.now_stamp()}",
                     f"Workspace: {self.workspace.as_posix()}",
                     "",
@@ -15584,14 +15593,19 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
                 )
             )
 
-        def _merge_daily_archive(self) -> None:
-            self.archive_path = self._daily_archive_path()
-            if self.archive_path.exists():
-                existing = self.archive_path.read_text(encoding="utf-8", errors="ignore").strip()
+        def _merge_entries_into_daily(
+            self,
+            date_stamp: str,
+            notes: list[dict[str, str]],
+            turns: list[dict[str, str]],
+        ) -> None:
+            daily_path = self._daily_archive_path(date_stamp)
+            if daily_path.exists():
+                existing = daily_path.read_text(encoding="utf-8", errors="ignore").strip()
             else:
                 existing = ""
             if not existing:
-                existing = self._daily_header()
+                existing = self._daily_header(date_stamp)
             elif re.search(r"(?m)^Updated: .*$", existing):
                 existing = re.sub(
                     r"(?m)^Updated: .*$",
@@ -15602,7 +15616,7 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
 
             known = set(self._ENTRY_PATTERN.findall(existing))
             additions: list[str] = []
-            for note in self.notes:
+            for note in notes:
                 category = note.get("category", "note").strip() or "note"
                 content = note.get("text", "").strip()
                 if not content:
@@ -15617,9 +15631,9 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
                             f"<!-- qubitz-memory-entry:{digest} -->",
                             f"- [{note.get('timestamp', base.now_stamp())}] ({category}) {content}",
                         )
+                        )
                     )
-                )
-            for turn in self.turns:
+            for turn in turns:
                 role = turn.get("role", "unknown").strip().lower() or "unknown"
                 content = turn.get("content", "").strip()
                 if not content:
@@ -15636,10 +15650,68 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
                             content,
                         )
                     )
-                )
+                    )
             if additions:
                 existing = f"{existing.rstrip()}\n\n{'\n\n'.join(additions)}"
-            self._write_atomic(self.archive_path, f"{existing.rstrip()}\n")
+            self._write_atomic(daily_path, f"{existing.rstrip()}\n")
+
+        def _parse_legacy_archive(
+            self,
+            legacy_path: Path,
+        ) -> tuple[list[dict[str, str]], list[dict[str, str]]] | None:
+            text = legacy_path.read_text(encoding="utf-8", errors="ignore")
+            if not text.lstrip().startswith("# Qubitz Memory"):
+                return None
+
+            notes: list[dict[str, str]] = []
+            notes_section = text.partition("## Notes")[2].partition("## Recent Turns")[0]
+            for raw_line in notes_section.splitlines():
+                line = raw_line.strip()
+                if not line or line == "- No notes recorded yet.":
+                    continue
+                match = self._LEGACY_NOTE_PATTERN.fullmatch(line)
+                if match is None:
+                    return None
+                timestamp, category, content = match.groups()
+                notes.append(
+                    {
+                        "timestamp": timestamp.strip(),
+                        "category": category.strip(),
+                        "text": content.strip(),
+                    }
+                )
+
+            turns: list[dict[str, str]] = []
+            turns_section = text.partition("## Recent Turns")[2]
+            for match in self._LEGACY_TURN_PATTERN.finditer(turns_section):
+                role, timestamp, content = match.groups()
+                turns.append(
+                    {
+                        "timestamp": timestamp.strip(),
+                        "role": role.strip().lower(),
+                        "content": content.strip(),
+                    }
+                )
+            if turns_section.strip() and not turns:
+                return None
+            return notes, turns
+
+        def _migrate_legacy_archives(self) -> None:
+            for legacy_path in sorted(self.memory_dir.glob("MEMORY_*.md")):
+                match = self._LEGACY_ARCHIVE_PATTERN.fullmatch(legacy_path.name)
+                if match is None:
+                    continue
+                parsed = self._parse_legacy_archive(legacy_path)
+                if parsed is None:
+                    continue
+                notes, turns = parsed
+                self._merge_entries_into_daily(match.group(1), notes, turns)
+                legacy_path.unlink()
+
+        def _merge_daily_archive(self) -> None:
+            date_stamp = base.datetime.now().strftime("%Y%m%d")
+            self.archive_path = self._daily_archive_path(date_stamp)
+            self._merge_entries_into_daily(date_stamp, self.notes, self.turns)
 
         def flush(self) -> None:
             self._write_atomic(self.current_path, self.render())
