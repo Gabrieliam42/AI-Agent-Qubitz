@@ -12531,6 +12531,7 @@ class _ToolPermissionBroker:
         if count > 1:
             transactional_patch = name.lower() in {
                 "apply_docx_text_patch",
+                "apply_notebook_text_patch",
                 "apply_text_patch",
                 "apply_text_patches",
             }
@@ -12776,7 +12777,7 @@ class _ToolPermissionBroker:
             values = arguments.get("urls")
             if not isinstance(values, list) or not _validated_external_urls(values, SCRIPT_PREFLIGHT_MAX_URLS):
                 return "open_urls_in_browser requires at least one concrete absolute HTTP or HTTPS URL."
-        if normalized in {"apply_text_patch", "apply_docx_text_patch"}:
+        if normalized in {"apply_text_patch", "apply_docx_text_patch", "apply_notebook_text_patch"}:
             replacements = arguments.get("replacements")
             if isinstance(replacements, list):
                 for index, replacement in enumerate(replacements, start=1):
@@ -12943,7 +12944,7 @@ class _ToolPermissionBroker:
 
     def record_result(self, name: str, arguments: dict[str, Any], result: Any) -> None:
         normalized = name.lower()
-        mutation_tools = self._MUTATION_TOOLS | {"apply_docx_text_patch"}
+        mutation_tools = self._MUTATION_TOOLS | {"apply_docx_text_patch", "apply_notebook_text_patch"}
         structured = self._structured_result(result)
         status = str(structured.get("status", "")).strip().lower()
         return_code = structured.get("returncode", structured.get("return_code", structured.get("exit_code")))
@@ -13104,7 +13105,11 @@ class _ToolPermissionBroker:
                 categories.add("changed_files")
                 if normalized in {"copy_path", "write_file", "make_directory"}:
                     categories.add("created_outputs")
-                if normalized in {"apply_text_patch", "apply_docx_text_patch"} and target is not None:
+                if normalized in {
+                    "apply_text_patch",
+                    "apply_docx_text_patch",
+                    "apply_notebook_text_patch",
+                } and target is not None:
                     new_hash = str(structured.get("new_sha256", "")).strip().lower()
                     if str(target) in self.transaction_originals and re.fullmatch(r"[a-f0-9]{64}", new_hash):
                         self.transaction_changed_hashes[str(target)] = new_hash
@@ -13945,7 +13950,7 @@ class _ToolPermissionBroker:
 
     def authorize(self, name: str, arguments: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         normalized = name.lower()
-        mutation_tools = self._MUTATION_TOOLS | {"apply_docx_text_patch"}
+        mutation_tools = self._MUTATION_TOOLS | {"apply_docx_text_patch", "apply_notebook_text_patch"}
         fingerprint = self._fingerprint(normalized, arguments)
         if self._references_protected_harness(normalized, arguments):
             reason = (
@@ -14079,13 +14084,13 @@ class _ToolPermissionBroker:
                         "process_started": False,
                     }
         if (
-            normalized in {"apply_text_patch", "apply_docx_text_patch"}
+            normalized in {"apply_text_patch", "apply_docx_text_patch", "apply_notebook_text_patch"}
             and len(self.transaction_explicit_file_targets) >= 2
             and not self.transaction_changed_hashes
         ):
-            if normalized == "apply_docx_text_patch":
+            if normalized in {"apply_docx_text_patch", "apply_notebook_text_patch"}:
                 reason = (
-                    "The user named multiple existing files, but apply_docx_text_patch is a one-document transaction. "
+                    f"The user named multiple existing files, but {normalized} is a one-document transaction. "
                     "Do not mutate only one target; report that one atomic mixed-format batch is unavailable."
                 )
             else:
@@ -14167,7 +14172,8 @@ class _ToolPermissionBroker:
         }:
             reason = (
                 "Direct file mutation through command tools bypasses transactional edit verification. "
-                "Use read_file_snapshot plus apply_text_patch for UTF-8 text, or apply_docx_text_patch for DOCX."
+                "Use read_file_snapshot plus apply_text_patch for UTF-8 text, apply_docx_text_patch for "
+                "DOCX, or apply_notebook_text_patch for .ipynb notebooks."
             )
             self.mark_transaction_recovery_required()
             self._audit("transaction_required", normalized, arguments, fingerprint, reason)
@@ -14294,7 +14300,7 @@ class _ToolPermissionBroker:
                     "unexpected_paths": unexpected,
                     "file_unchanged": True,
                 }
-        if normalized in {"apply_text_patch", "apply_docx_text_patch"}:
+        if normalized in {"apply_text_patch", "apply_docx_text_patch", "apply_notebook_text_patch"}:
             recorded_hash = self.transaction_snapshot_hashes.get(str(target)) if target is not None else None
             if recorded_hash is None:
                 reason = (
@@ -14327,10 +14333,14 @@ class _ToolPermissionBroker:
             # Snapshot identity is wrapper-owned. The tool still re-hashes the live
             # file before commit, so concurrent changes remain protected.
             arguments["expected_sha256"] = recorded_hash
-            if normalized == "apply_docx_text_patch" and (
-                target is None or target.suffix.lower() != ".docx"
+            required_suffix = {
+                "apply_docx_text_patch": ".docx",
+                "apply_notebook_text_patch": ".ipynb",
+            }.get(normalized)
+            if required_suffix is not None and (
+                target is None or target.suffix.lower() != required_suffix
             ):
-                reason = "apply_docx_text_patch accepts only an existing .docx target."
+                reason = f"{normalized} accepts only an existing {required_suffix} target."
                 self._audit("invalid", normalized, arguments, fingerprint, reason)
                 return False, {
                     "status": "unsupported_format",
@@ -14547,7 +14557,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         lines = text.splitlines(keepends=True)
         first = max(1, int(start_line))
         last = min(max(first, int(end_line)), len(lines))
-        return {
+        text_snapshot: dict[str, Any] = {
             **snapshot,
             "status": "text_snapshot",
             "binary": False,
@@ -14556,6 +14566,14 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             "end_line": last,
             "content": "".join(lines[first - 1 : last]),
         }
+        if target.suffix.lower() == ".ipynb":
+            # A notebook stays a readable text snapshot so read_file and search_text keep
+            # working on it; only the raw patch tools refuse it.
+            text_snapshot["recommended_tool"] = "apply_notebook_text_patch"
+            text_snapshot["notice"] = (
+                "A Jupyter notebook is JSON: raw replacements can corrupt its cell structure or silently rewrite recorded outputs. Use read_file_snapshot plus apply_notebook_text_patch, which edits cell source only and preserves the notebook's existing formatting."
+            )
+        return text_snapshot
 
     @server.tool(
         description=(
@@ -15183,6 +15201,416 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
 
     @server.tool(
         description=(
+            "Transactionally replace exact text inside the source cells of one existing .ipynb notebook. "
+            "The tool requires a current-turn read_file_snapshot SHA-256, edits only cell source and never "
+            "outputs, metadata, or execution counts, and splices each replacement into the original JSON "
+            "bytes instead of re-serializing the notebook, so existing indentation, key order, escaping "
+            "style, and unaffected content are preserved exactly. The original is left unchanged if "
+            "validation, verification, or commit fails."
+        ),
+        annotations=annotations("apply_notebook_text_patch"),
+        structured_output=True,
+    )
+    def apply_notebook_text_patch(
+        path: str,
+        expected_sha256: str,
+        replacements: list[_TextReplacement],
+    ) -> dict[str, Any]:
+        target = base.resolve_workspace_path(
+            workspace,
+            path,
+            allow_missing=False,
+            allow_external=_full_access_enabled(),
+        )
+        relative_target = base.relative_path(target, workspace)
+        if not target.is_file():
+            return {"status": "not_found", "path": relative_target, "file_unchanged": True}
+        if target.suffix.lower() != ".ipynb":
+            return {
+                "status": "unsupported_format",
+                "path": relative_target,
+                "required_format": "ipynb",
+                "file_unchanged": True,
+            }
+        submitted_sha256 = str(expected_sha256)
+        expected_sha256 = re.sub(r"[\s-]", "", submitted_sha256).lower()
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+            return {
+                "status": "invalid_expected_sha256",
+                "path": relative_target,
+                "reason": (
+                    "expected_sha256 contained unsupported characters or did not normalize to "
+                    "exactly 64 hexadecimal characters."
+                ),
+                "file_unchanged": True,
+            }
+        if not 1 <= len(replacements) <= TRANSACTIONAL_PATCH_MAX_REPLACEMENTS:
+            return {
+                "status": "invalid",
+                "path": relative_target,
+                "reason": f"Provide 1-{TRANSACTIONAL_PATCH_MAX_REPLACEMENTS} replacements.",
+                "file_unchanged": True,
+            }
+        normalized_replacements: list[dict[str, str]] = []
+        for index, replacement in enumerate(replacements, start=1):
+            if set(replacement) != {"old_text", "new_text"}:
+                return {
+                    "status": "invalid",
+                    "path": relative_target,
+                    "reason": f"Replacement {index} must contain only old_text and new_text.",
+                    "file_unchanged": True,
+                }
+            old_text = str(replacement["old_text"])
+            new_text = str(replacement["new_text"])
+            if not old_text:
+                return {
+                    "status": "invalid",
+                    "path": relative_target,
+                    "reason": f"Replacement {index} old_text cannot be empty.",
+                    "file_unchanged": True,
+                }
+            if old_text == new_text:
+                return {
+                    "status": "no_change",
+                    "path": relative_target,
+                    "reason": f"Replacement {index} old_text and new_text are identical.",
+                    "file_unchanged": True,
+                }
+            normalized_replacements.append({"old_text": old_text, "new_text": new_text})
+
+        original_bytes = target.read_bytes()
+        if len(original_bytes) > TRANSACTIONAL_PATCH_MAX_BYTES:
+            return {
+                "status": "blocked",
+                "path": relative_target,
+                "reason": f"File exceeds the {TRANSACTIONAL_PATCH_MAX_BYTES}-byte transactional edit limit.",
+                "file_unchanged": True,
+            }
+        original_hash = hashlib.sha256(original_bytes).hexdigest()
+        if original_hash.lower() != expected_sha256.lower():
+            return {
+                "status": "stale_snapshot",
+                "path": relative_target,
+                "expected_sha256": expected_sha256.lower(),
+                "current_sha256": original_hash,
+                "file_unchanged": True,
+            }
+        try:
+            raw_text = original_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return {
+                "status": "invalid_notebook",
+                "path": relative_target,
+                "reason": f"The notebook is not valid UTF-8: {exc}",
+                "file_unchanged": True,
+            }
+        try:
+            original_document = json.loads(raw_text)
+        except ValueError as exc:
+            return {
+                "status": "invalid_notebook",
+                "path": relative_target,
+                "reason": f"The notebook is not valid JSON: {exc}",
+                "file_unchanged": True,
+            }
+        if not isinstance(original_document, dict) or not isinstance(original_document.get("cells"), list):
+            return {
+                "status": "invalid_notebook",
+                "path": relative_target,
+                "reason": "The file has no top-level cells array, so it is not a Jupyter notebook.",
+                "file_unchanged": True,
+            }
+
+        def scan_source_spans(text: str) -> list[tuple[tuple, int, int, str]]:
+            """Every cell-source string literal as (path, start, end, value), in document order.
+
+            Offsets index into the raw JSON so a replacement can be spliced into the
+            original bytes. Re-serializing instead would rewrite the whole notebook:
+            only about a fifth of real notebooks reproduce byte-exactly from json.dumps.
+            """
+            whitespace = " \t\n\r"
+            scan_string = json.decoder.scanstring
+            found: list[tuple[tuple, int, int, str]] = []
+
+            def skip(index: int) -> int:
+                while index < len(text) and text[index] in whitespace:
+                    index += 1
+                return index
+
+            def scan(index: int, node_path: tuple) -> int:
+                index = skip(index)
+                char = text[index]
+                if char == "{":
+                    index += 1
+                    while True:
+                        index = skip(index)
+                        if text[index] == "}":
+                            return index + 1
+                        key, index = scan_string(text, index + 1)
+                        index = skip(index)
+                        if text[index] != ":":
+                            raise ValueError(f"Malformed JSON object at offset {index}.")
+                        index = scan(index + 1, node_path + (key,))
+                        index = skip(index)
+                        if text[index] == ",":
+                            index += 1
+                        elif text[index] == "}":
+                            return index + 1
+                if char == "[":
+                    index += 1
+                    position = 0
+                    while True:
+                        index = skip(index)
+                        if text[index] == "]":
+                            return index + 1
+                        index = scan(index, node_path + (position,))
+                        position += 1
+                        index = skip(index)
+                        if text[index] == ",":
+                            index += 1
+                        elif text[index] == "]":
+                            return index + 1
+                if char == '"':
+                    start = index
+                    value, end = scan_string(text, index + 1)
+                    if len(node_path) >= 3 and node_path[0] == "cells" and node_path[2] == "source":
+                        found.append((node_path, start, end, value))
+                    return end
+                for literal, size in (("true", 4), ("false", 5), ("null", 4)):
+                    if text.startswith(literal, index):
+                        return index + size
+                end = index
+                while end < len(text) and text[end] not in ",]} \t\n\r":
+                    end += 1
+                float(text[index:end])
+                return end
+
+            scan(0, ())
+            return found
+
+        try:
+            spans = scan_source_spans(raw_text)
+        except (IndexError, ValueError) as exc:
+            return {
+                "status": "invalid_notebook",
+                "path": relative_target,
+                "reason": f"The notebook JSON could not be scanned for editable cell source: {exc}",
+                "file_unchanged": True,
+            }
+        if not spans:
+            return {
+                "status": "invalid",
+                "path": relative_target,
+                "reason": "The notebook has no editable cell source.",
+                "file_unchanged": True,
+            }
+
+        cell_spans: dict[int, list[tuple[tuple, int, int, str]]] = {}
+        for span in spans:
+            cell_spans.setdefault(span[0][1], []).append(span)
+        ascii_only = raw_text.isascii()
+
+        def encode_source(value: str) -> str:
+            return json.dumps(value, ensure_ascii=ascii_only)
+
+        def element_separator(cell_index: int) -> str:
+            group = cell_spans[cell_index]
+            if len(group) >= 2:
+                return raw_text[group[0][2]:group[1][1]]
+            for other in cell_spans.values():
+                if len(other) >= 2:
+                    return raw_text[other[0][2]:other[1][1]]
+            raise LookupError(
+                "this notebook has no multi-line source array to copy the exact element "
+                "separator from, so new lines cannot be added without reformatting the file"
+            )
+
+        edits: list[tuple[int, int, str]] = []
+        edit_details: list[dict[str, Any]] = []
+        for index, replacement in enumerate(normalized_replacements, start=1):
+            old_text = replacement["old_text"]
+            new_text = replacement["new_text"]
+            matches: list[tuple[int, int]] = []
+            for cell_index, group in cell_spans.items():
+                joined = "".join(item[3] for item in group)
+                at = joined.find(old_text)
+                while at != -1:
+                    matches.append((cell_index, at))
+                    at = joined.find(old_text, at + 1)
+            if len(matches) != 1:
+                return {
+                    "status": "invalid",
+                    "path": relative_target,
+                    "reason": (
+                        f"Replacement {index} expected one exact match in notebook cell source, "
+                        f"found {len(matches)}. Cell outputs and metadata are never searched or edited."
+                    ),
+                    "file_unchanged": True,
+                }
+            cell_index, offset = matches[0]
+            group = cell_spans[cell_index]
+            joined = "".join(item[3] for item in group)
+            bounds: list[tuple[int, int]] = []
+            cursor = 0
+            for item in group:
+                bounds.append((cursor, cursor + len(item[3])))
+                cursor += len(item[3])
+            end_offset = offset + len(old_text)
+            first = next(k for k, (low, high) in enumerate(bounds) if low <= offset < high or offset == high == cursor)
+            last = next(k for k, (low, high) in reversed(list(enumerate(bounds))) if low < end_offset <= high)
+            rebuilt = joined[bounds[first][0]:offset] + new_text + joined[end_offset:bounds[last][1]]
+            # `source` is either a list of line strings or one whole string. A scalar
+            # source stays scalar: splitting it into lines would change the notebook's
+            # structure rather than only its text.
+            if len(group[first][0]) == 3:
+                pieces = [rebuilt]
+                encoded = encode_source(rebuilt)
+            else:
+                pieces = rebuilt.splitlines(keepends=True) or [""]
+                if len(pieces) == 1:
+                    encoded = encode_source(pieces[0])
+                else:
+                    try:
+                        separator = element_separator(cell_index)
+                    except LookupError as exc:
+                        return {
+                            "status": "format_not_preservable",
+                            "path": relative_target,
+                            "reason": f"Replacement {index} would add lines, but {exc}.",
+                            "file_unchanged": True,
+                        }
+                    encoded = separator.join(encode_source(piece) for piece in pieces)
+            edits.append((group[first][1], group[last][2], encoded))
+            edit_details.append(
+                {
+                    "cell_index": cell_index,
+                    "elements_replaced": last - first + 1,
+                    "elements_written": len(pieces),
+                }
+            )
+
+        edits.sort(key=lambda item: item[0])
+        for position in range(len(edits) - 1):
+            if edits[position][1] > edits[position + 1][0]:
+                return {
+                    "status": "invalid",
+                    "path": relative_target,
+                    "reason": "Two replacements overlap in the same notebook source region.",
+                    "file_unchanged": True,
+                }
+        rebuilt_parts: list[str] = []
+        previous = 0
+        for start, end, encoded in edits:
+            rebuilt_parts.append(raw_text[previous:start])
+            rebuilt_parts.append(encoded)
+            previous = end
+        rebuilt_parts.append(raw_text[previous:])
+        updated_text = "".join(rebuilt_parts)
+        updated_bytes = updated_text.encode("utf-8")
+        if updated_bytes == original_bytes:
+            return {
+                "status": "no_change",
+                "path": relative_target,
+                "reason": "The requested replacements produce no file change.",
+                "file_unchanged": True,
+            }
+
+        try:
+            updated_document = json.loads(updated_text)
+        except ValueError as exc:
+            return {
+                "status": "verification_failed",
+                "path": relative_target,
+                "reason": f"The edited notebook did not parse as JSON: {exc}",
+                "file_unchanged": True,
+            }
+        original_cells = original_document["cells"]
+        updated_cells = updated_document.get("cells")
+        if not isinstance(updated_cells, list) or len(updated_cells) != len(original_cells):
+            return {
+                "status": "verification_failed",
+                "path": relative_target,
+                "reason": "The edit changed the notebook cell count.",
+                "file_unchanged": True,
+            }
+        for cell_index, (before_cell, after_cell) in enumerate(zip(original_cells, updated_cells)):
+            for section in ("cell_type", "execution_count"):
+                if before_cell.get(section) != after_cell.get(section):
+                    return {
+                        "status": "verification_failed",
+                        "path": relative_target,
+                        "reason": f"The edit changed {section} on cell {cell_index}.",
+                        "file_unchanged": True,
+                    }
+            for section in ("outputs", "metadata", "attachments"):
+                before_field = json.dumps(before_cell.get(section), sort_keys=True)
+                after_field = json.dumps(after_cell.get(section), sort_keys=True)
+                if before_field != after_field:
+                    return {
+                        "status": "verification_failed",
+                        "path": relative_target,
+                        "reason": f"The edit changed cell {cell_index} {section}, which this tool never modifies.",
+                        "file_unchanged": True,
+                    }
+        for section in ("metadata", "nbformat", "nbformat_minor"):
+            before_field = json.dumps(original_document.get(section), sort_keys=True)
+            after_field = json.dumps(updated_document.get(section), sort_keys=True)
+            if before_field != after_field:
+                return {
+                    "status": "verification_failed",
+                    "path": relative_target,
+                    "reason": f"The edit changed notebook {section}, which this tool never modifies.",
+                    "file_unchanged": True,
+                }
+
+        broker = _TOOL_CALL_CONTEXT.get()
+        if broker is not None:
+            broker.register_transaction_original(target, original_bytes, target.stat().st_mode)
+        temporary = target.with_name(f".{target.name}.qubitz-{os.getpid()}-{threading.get_ident()}.tmp")
+        try:
+            temporary.write_bytes(updated_bytes)
+            with suppress(OSError):
+                temporary.chmod(target.stat().st_mode)
+            try:
+                os.replace(temporary, target)
+            except PermissionError as exc:
+                return {
+                    "status": "commit_denied",
+                    "path": relative_target,
+                    "reason": (
+                        "The operating system denied the atomic notebook replacement. The notebook may be "
+                        "open in Jupyter or another application, or the directory may not be writable."
+                    ),
+                    "os_error": f"{type(exc).__name__}: {exc}",
+                    "file_unchanged": True,
+                }
+        finally:
+            with suppress(FileNotFoundError):
+                temporary.unlink()
+        diff = "".join(
+            difflib.unified_diff(
+                raw_text.splitlines(keepends=True),
+                updated_text.splitlines(keepends=True),
+                fromfile=f"a/{relative_target}",
+                tofile=f"b/{relative_target}",
+            )
+        )
+        return {
+            "status": "committed",
+            "path": relative_target,
+            "old_sha256": original_hash,
+            "new_sha256": hashlib.sha256(updated_bytes).hexdigest(),
+            "replacement_count": len(normalized_replacements),
+            "bytes_written": len(updated_bytes),
+            "cells_edited": sorted({item["cell_index"] for item in edit_details}),
+            "outputs_preserved": True,
+            "formatting_preserved": True,
+            "atomic_commit": True,
+            "diff": diff,
+        }
+
+    @server.tool(
+        description=(
             "Atomically apply unique exact-text replacements to a UTF-8 or BOM-marked UTF-16/UTF-32 workspace file "
             "after verifying its SHA-256 snapshot. The original encoding, byte order, BOM, and line endings are "
             "preserved; bytes outside the exact replacements and surrounding syntax remain unchanged."
@@ -15203,6 +15631,10 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         if binary_notice:
             raise ValueError(
                 f"Raw text patch refused for {path}. {binary_notice}"
+            )
+        if target.suffix.lower() == ".ipynb":
+            raise ValueError(
+                f"Raw text patch refused for {path}. A Jupyter notebook is JSON: raw replacements can corrupt its cell structure or silently rewrite recorded outputs. Use read_file_snapshot plus apply_notebook_text_patch, which edits cell source only and preserves the notebook's existing formatting."
             )
         submitted_sha256 = str(expected_sha256)
         expected_sha256 = re.sub(r"[\s-]", "", submitted_sha256).lower()
@@ -15299,6 +15731,10 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             if binary_notice:
                 raise ValueError(
                     f"Raw text patch refused for {patch['path']}. {binary_notice}"
+                )
+            if target.suffix.lower() == ".ipynb":
+                raise ValueError(
+                    f"Raw text patch refused for {patch['path']}. A Jupyter notebook is JSON: raw replacements can corrupt its cell structure or silently rewrite recorded outputs. Use read_file_snapshot plus apply_notebook_text_patch, which edits cell source only and preserves the notebook's existing formatting."
                 )
             replacements = patch["replacements"]
             if not 1 <= len(replacements) <= TRANSACTIONAL_PATCH_MAX_REPLACEMENTS:
