@@ -14551,6 +14551,11 @@ class _ToolPermissionBroker:
 _ORIGINAL_LOCAL_MCP_SERVER_BUILDER = _build_local_mcp_server
 
 
+class _SpreadsheetCellEdit(TypedDict):
+    sheet: str
+    cell: str
+    value: str
+
 def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path, launch_script: Path) -> Any:
     server = _ORIGINAL_LOCAL_MCP_SERVER_BUILDER(base, workspace, runtime_workspace, launch_script)
     workspace = workspace.resolve()
@@ -15919,10 +15924,6 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             "diff": diff,
         }
 
-    class _SpreadsheetCellEdit(TypedDict):
-        sheet: str
-        cell: str
-        value: str
 
     @server.tool(
         description=(
