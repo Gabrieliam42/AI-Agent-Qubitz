@@ -3392,6 +3392,102 @@ class LocalCodeIntel:
 
     def _parse_generic(self, path: Path, text: str) -> dict[str, Any]:
         symbols: list[dict[str, Any]] = []
+        if path.suffix.lower() in {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}:
+            # TypeScript and JavaScript get declaration-aware parsing. The generic line
+            # patterns below drop 86 percent of a real module into one untyped "symbol"
+            # bucket and cannot see class members at all, because they miss `export`,
+            # `default`, `async`, arrow-function consts, enums, and every method.
+            modifiers = r"(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?"
+            identifier = r"([A-Za-z_$][A-Za-z0-9_$]*)"
+            declarations = [
+                (re.compile(rf"^\s*{modifiers}class\s+{identifier}"), "class"),
+                (re.compile(rf"^\s*{modifiers}interface\s+{identifier}"), "interface"),
+                (re.compile(rf"^\s*{modifiers}enum\s+{identifier}"), "enum"),
+                (re.compile(rf"^\s*{modifiers}namespace\s+{identifier}"), "namespace"),
+                (re.compile(rf"^\s*{modifiers}type\s+{identifier}\s*[=<]"), "type"),
+                (re.compile(rf"^\s*{modifiers}function\s*\*?\s*{identifier}"), "function"),
+                (
+                    re.compile(
+                        rf"^\s*{modifiers}(?:const|let|var)\s+{identifier}\s*(?::[^=]+?)?=\s*"
+                        r"(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+?)?=>"
+                    ),
+                    "function",
+                ),
+                (
+                    re.compile(
+                        rf"^\s*{modifiers}(?:const|let|var)\s+{identifier}\s*(?::[^=]+?)?=\s*"
+                        r"(?:async\s+)?function\b"
+                    ),
+                    "function",
+                ),
+                (re.compile(rf"^\s*{modifiers}(?:const|let|var)\s+{identifier}"), "variable"),
+            ]
+            member_pattern = re.compile(
+                r"^\s*(?:public\s+|private\s+|protected\s+|readonly\s+|static\s+|abstract\s+"
+                r"|override\s+|async\s+|get\s+|set\s+)*"
+                r"([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\([^;{]*\)\s*(?::[^{;]+?)?\{"
+            )
+            keywords = {"if", "for", "while", "switch", "catch", "return", "function", "do", "else", "try"}
+            container_stack: list[tuple[str, int]] = []
+            depth = 0
+            in_block_comment = False
+            for index, raw_line in enumerate(text.splitlines(), start=1):
+                line = raw_line
+                if in_block_comment:
+                    closing = line.find("*/")
+                    if closing == -1:
+                        continue
+                    line, in_block_comment = line[closing + 2:], False
+                while True:
+                    opening = line.find("/*")
+                    if opening == -1:
+                        break
+                    closing = line.find("*/", opening + 2)
+                    if closing == -1:
+                        line, in_block_comment = line[:opening], True
+                        break
+                    line = line[:opening] + " " + line[closing + 2:]
+                inline_comment = line.find("//")
+                if inline_comment != -1:
+                    line = line[:inline_comment]
+                if line.strip():
+                    container = container_stack[-1][0] if container_stack else "<module>"
+                    matched = False
+                    for pattern, kind in declarations:
+                        found = pattern.match(line)
+                        if found:
+                            name = found.group(1)
+                            symbols.append(
+                                {
+                                    "name": name,
+                                    "qualified_name": f"{container}.{name}" if container_stack else name,
+                                    "kind": kind,
+                                    "line": index,
+                                    "end_line": index,
+                                    "container": container,
+                                }
+                            )
+                            if kind in {"class", "interface", "namespace", "enum"}:
+                                container_stack.append((name, depth))
+                            matched = True
+                            break
+                    if not matched and container_stack:
+                        found = member_pattern.match(line)
+                        if found and found.group(1) not in keywords:
+                            symbols.append(
+                                {
+                                    "name": found.group(1),
+                                    "qualified_name": f"{container}.{found.group(1)}",
+                                    "kind": "method",
+                                    "line": index,
+                                    "end_line": index,
+                                    "container": container,
+                                }
+                            )
+                depth += line.count("{") - line.count("}")
+                while container_stack and depth <= container_stack[-1][1]:
+                    container_stack.pop()
+            return {"symbols": symbols, "references": [], "calls": [], "type_hints": []}
         patterns = [
             (re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)"), "class"),
             (re.compile(r"^\s*(?:def|function)\s+([A-Za-z_][A-Za-z0-9_]*)"), "function"),
@@ -5526,6 +5622,40 @@ def _extract_explicit_quoted_edit_target(prompt: str) -> str:
         ):
             continue
         return candidate
+    return ""
+
+def _structured_text_edit_error(path: Path, original: str, updated: str) -> str:
+    """Return why an edit would break a structured text file, or "" if it would not.
+
+    Gated on the state before the edit: nearly half of real `.json` config files are
+    JSONC in practice -- `tsconfig.json` and editor settings allow comments and
+    trailing commas -- and never parsed strictly to begin with. Validating those
+    unconditionally would reject correct edits, so a file that did not parse before
+    is left alone and only genuine breakage of a previously valid file is refused.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        import json as structured_json
+
+        loader, label = structured_json.loads, "JSON"
+    elif suffix == ".toml":
+        import tomllib
+
+        loader, label = tomllib.loads, "TOML"
+    else:
+        return ""
+    try:
+        loader(original)
+    except (ValueError, TypeError):
+        return ""
+    try:
+        loader(updated)
+    except (ValueError, TypeError) as exc:
+        return (
+            f"{path.name} parsed as valid {label} before this edit but would not afterwards: "
+            f"{type(exc).__name__}: {exc}. The file was left unchanged; correct the replacement "
+            f"so the {label} stays valid."
+        )
     return ""
 
 def _binary_file_notice(path: Path) -> str:
@@ -12607,6 +12737,7 @@ class _ToolPermissionBroker:
             transactional_patch = name.lower() in {
                 "apply_docx_text_patch",
                 "apply_notebook_text_patch",
+                "apply_spreadsheet_cell_patch",
                 "apply_text_patch",
                 "apply_text_patches",
             }
@@ -13019,7 +13150,11 @@ class _ToolPermissionBroker:
 
     def record_result(self, name: str, arguments: dict[str, Any], result: Any) -> None:
         normalized = name.lower()
-        mutation_tools = self._MUTATION_TOOLS | {"apply_docx_text_patch", "apply_notebook_text_patch"}
+        mutation_tools = self._MUTATION_TOOLS | {
+            "apply_docx_text_patch",
+            "apply_notebook_text_patch",
+            "apply_spreadsheet_cell_patch",
+        }
         structured = self._structured_result(result)
         status = str(structured.get("status", "")).strip().lower()
         return_code = structured.get("returncode", structured.get("return_code", structured.get("exit_code")))
@@ -13184,6 +13319,7 @@ class _ToolPermissionBroker:
                     "apply_text_patch",
                     "apply_docx_text_patch",
                     "apply_notebook_text_patch",
+                    "apply_spreadsheet_cell_patch",
                 } and target is not None:
                     new_hash = str(structured.get("new_sha256", "")).strip().lower()
                     if str(target) in self.transaction_originals and re.fullmatch(r"[a-f0-9]{64}", new_hash):
@@ -14025,7 +14161,11 @@ class _ToolPermissionBroker:
 
     def authorize(self, name: str, arguments: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         normalized = name.lower()
-        mutation_tools = self._MUTATION_TOOLS | {"apply_docx_text_patch", "apply_notebook_text_patch"}
+        mutation_tools = self._MUTATION_TOOLS | {
+            "apply_docx_text_patch",
+            "apply_notebook_text_patch",
+            "apply_spreadsheet_cell_patch",
+        }
         fingerprint = self._fingerprint(normalized, arguments)
         if self._references_protected_harness(normalized, arguments):
             reason = (
@@ -14159,11 +14299,20 @@ class _ToolPermissionBroker:
                         "process_started": False,
                     }
         if (
-            normalized in {"apply_text_patch", "apply_docx_text_patch", "apply_notebook_text_patch"}
+            normalized in {
+                "apply_text_patch",
+                "apply_docx_text_patch",
+                "apply_notebook_text_patch",
+                "apply_spreadsheet_cell_patch",
+            }
             and len(self.transaction_explicit_file_targets) >= 2
             and not self.transaction_changed_hashes
         ):
-            if normalized in {"apply_docx_text_patch", "apply_notebook_text_patch"}:
+            if normalized in {
+                "apply_docx_text_patch",
+                "apply_notebook_text_patch",
+                "apply_spreadsheet_cell_patch",
+            }:
                 reason = (
                     f"The user named multiple existing files, but {normalized} is a one-document transaction. "
                     "Do not mutate only one target; report that one atomic mixed-format batch is unavailable."
@@ -14248,7 +14397,8 @@ class _ToolPermissionBroker:
             reason = (
                 "Direct file mutation through command tools bypasses transactional edit verification. "
                 "Use read_file_snapshot plus apply_text_patch for UTF-8 text, apply_docx_text_patch for "
-                "DOCX, or apply_notebook_text_patch for .ipynb notebooks."
+                "DOCX, apply_notebook_text_patch for .ipynb notebooks, or apply_spreadsheet_cell_patch "
+                "for .xlsx and .xlsm workbooks."
             )
             self.mark_transaction_recovery_required()
             self._audit("transaction_required", normalized, arguments, fingerprint, reason)
@@ -14375,7 +14525,12 @@ class _ToolPermissionBroker:
                     "unexpected_paths": unexpected,
                     "file_unchanged": True,
                 }
-        if normalized in {"apply_text_patch", "apply_docx_text_patch", "apply_notebook_text_patch"}:
+        if normalized in {
+            "apply_text_patch",
+            "apply_docx_text_patch",
+            "apply_notebook_text_patch",
+            "apply_spreadsheet_cell_patch",
+        }:
             recorded_hash = self.transaction_snapshot_hashes.get(str(target)) if target is not None else None
             if recorded_hash is None:
                 reason = (
@@ -14408,14 +14563,16 @@ class _ToolPermissionBroker:
             # Snapshot identity is wrapper-owned. The tool still re-hashes the live
             # file before commit, so concurrent changes remain protected.
             arguments["expected_sha256"] = recorded_hash
-            required_suffix = {
-                "apply_docx_text_patch": ".docx",
-                "apply_notebook_text_patch": ".ipynb",
+            required_suffixes = {
+                "apply_docx_text_patch": {".docx"},
+                "apply_notebook_text_patch": {".ipynb"},
+                "apply_spreadsheet_cell_patch": {".xlsx", ".xlsm"},
             }.get(normalized)
-            if required_suffix is not None and (
-                target is None or target.suffix.lower() != required_suffix
+            if required_suffixes is not None and (
+                target is None or target.suffix.lower() not in required_suffixes
             ):
-                reason = f"{normalized} accepts only an existing {required_suffix} target."
+                allowed = " or ".join(sorted(required_suffixes))
+                reason = f"{normalized} accepts only an existing {allowed} target."
                 self._audit("invalid", normalized, arguments, fingerprint, reason)
                 return False, {
                     "status": "unsupported_format",
@@ -14543,9 +14700,162 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                 "end_line": 0,
                 "content": "",
                 "notice": binary_notice,
-                "recommended_tool": "apply_docx_text_patch" if suffix == ".docx" else "",
-                "required_package": "python-docx" if suffix == ".docx" else "",
+                "recommended_tool": {
+                    ".docx": "apply_docx_text_patch",
+                    ".xlsx": "apply_spreadsheet_cell_patch",
+                    ".xlsm": "apply_spreadsheet_cell_patch",
+                }.get(suffix, ""),
+                "required_package": {
+                    ".docx": "python-docx",
+                    ".xlsx": "openpyxl",
+                    ".xlsm": "openpyxl",
+                    ".xls": "xlrd",
+                    ".pdf": "pypdf",
+                }.get(suffix, ""),
             }
+            preview_limit = max(
+                1000,
+                min(16000, int(getattr(base, "MAX_DIRECT_READ_CHARS", 12000))),
+            )
+            if suffix == ".pdf":
+                try:
+                    import pypdf
+                except ImportError:
+                    binary_snapshot["text_extraction"] = "unavailable"
+                    binary_snapshot["preview_error"] = (
+                        "pypdf is not installed in the Qubitz runtime environment, so this PDF's "
+                        "text cannot be extracted. The file itself is unchanged and readable."
+                    )
+                    return binary_snapshot
+                try:
+                    reader = pypdf.PdfReader(str(target))
+                    page_count = len(reader.pages)
+                    first = max(1, int(start_line))
+                    last = min(max(first, int(end_line)), page_count)
+                    rendered_pages: list[str] = []
+                    used = 0
+                    truncated = False
+                    for page_number in range(first, last + 1):
+                        page_text = (reader.pages[page_number - 1].extract_text() or "").strip()
+                        if not page_text:
+                            continue
+                        block = f"[Page {page_number}] {page_text}"
+                        remaining = preview_limit - used
+                        if remaining <= 0:
+                            truncated = True
+                            break
+                        if len(block) + 1 > remaining:
+                            rendered_pages.append(block[: max(0, remaining - 4)].rstrip() + "...")
+                            truncated = True
+                            break
+                        rendered_pages.append(block)
+                        used += len(block) + 1
+                    binary_snapshot.update(
+                        {
+                            "text_extraction": "pypdf",
+                            "content_is_untrusted": True,
+                            "page_count": page_count,
+                            "start_page": first if page_count else 0,
+                            "end_page": last if page_count else 0,
+                            "content": "\n".join(rendered_pages),
+                            "content_truncated": truncated or last < page_count,
+                            "read_only": True,
+                            "notice": binary_notice
+                            + " Text was extracted for reading only; this wrapper does not edit PDFs.",
+                        }
+                    )
+                except (OSError, ValueError, KeyError, RecursionError, pypdf.errors.PdfReadError) as exc:
+                    binary_snapshot["text_extraction"] = "unavailable"
+                    binary_snapshot["preview_error"] = f"{type(exc).__name__}: {exc}"
+                return binary_snapshot
+            if suffix in {".xlsx", ".xlsm", ".xls"}:
+                rendered_rows: list[str] = []
+                used = 0
+                truncated = False
+
+                def render_row(label: str, values: list[object]) -> bool:
+                    """Append one rendered row. Returns False once the preview budget is spent."""
+                    nonlocal used, truncated
+                    cells = [("" if value is None else str(value)).strip() for value in values]
+                    while cells and not cells[-1]:
+                        cells.pop()
+                    if not cells:
+                        return True
+                    block = f"{label} " + " | ".join(cells)
+                    remaining = preview_limit - used
+                    if remaining <= 0:
+                        truncated = True
+                        return False
+                    if len(block) + 1 > remaining:
+                        rendered_rows.append(block[: max(0, remaining - 4)].rstrip() + "...")
+                        truncated = True
+                        return False
+                    rendered_rows.append(block)
+                    used += len(block) + 1
+                    return True
+
+                try:
+                    sheet_names: list[str] = []
+                    total_rows = 0
+                    if suffix == ".xls":
+                        import xlrd
+
+                        book = xlrd.open_workbook(str(target))
+                        for sheet in book.sheets():
+                            sheet_names.append(sheet.name)
+                            total_rows += sheet.nrows
+                            for row_index in range(sheet.nrows):
+                                values = [sheet.cell_value(row_index, col) for col in range(sheet.ncols)]
+                                if not render_row(f"[{sheet.name}!{row_index + 1}]", values):
+                                    break
+                            if truncated:
+                                break
+                    else:
+                        import openpyxl
+
+                        workbook = openpyxl.load_workbook(
+                            str(target), read_only=True, data_only=True, keep_links=False
+                        )
+                        try:
+                            for sheet in workbook.worksheets:
+                                sheet_names.append(sheet.title)
+                                for row_index, values in enumerate(
+                                    sheet.iter_rows(values_only=True), start=1
+                                ):
+                                    total_rows += 1
+                                    if not render_row(f"[{sheet.title}!{row_index}]", list(values)):
+                                        break
+                                if truncated:
+                                    break
+                        finally:
+                            workbook.close()
+                    binary_snapshot.update(
+                        {
+                            "text_extraction": "xlrd" if suffix == ".xls" else "openpyxl",
+                            "content_is_untrusted": True,
+                            "sheet_names": sheet_names,
+                            "row_count": total_rows,
+                            "content": "\n".join(rendered_rows),
+                            "content_truncated": truncated,
+                            "read_only": suffix == ".xls",
+                        }
+                    )
+                    if suffix == ".xls":
+                        binary_snapshot["notice"] = (
+                            binary_notice
+                            + " Legacy .xls is read-only here: save it as .xlsx to edit it with "
+                            "apply_spreadsheet_cell_patch."
+                        )
+                except ImportError as exc:
+                    binary_snapshot["text_extraction"] = "unavailable"
+                    binary_snapshot["preview_error"] = (
+                        f"{'xlrd' if suffix == '.xls' else 'openpyxl'} is not installed in the Qubitz "
+                        f"runtime environment: {exc}"
+                    )
+                except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+                    binary_snapshot["text_extraction"] = "unavailable"
+                    binary_snapshot["preview_error"] = f"{type(exc).__name__}: {exc}"
+                return binary_snapshot
             if suffix != ".docx":
                 return binary_snapshot
             try:
@@ -15684,6 +15994,314 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             "diff": diff,
         }
 
+    class _SpreadsheetCellEdit(TypedDict):
+        sheet: str
+        cell: str
+        value: str
+
+    @server.tool(
+        description=(
+            "Transactionally set exact cell values in one existing .xlsx or .xlsm workbook. The tool "
+            "requires a current-turn read_file_snapshot SHA-256, edits only the cells named, and "
+            "verifies before committing that every part of the workbook container still exists, so an "
+            "edit cannot silently drop charts, drawings, images, or macros. Values are written as "
+            "numbers, booleans, or formulas when they parse as such, otherwise as text. The original is "
+            "left unchanged if validation, verification, or commit fails."
+        ),
+        annotations=annotations("apply_spreadsheet_cell_patch"),
+        structured_output=True,
+    )
+    def apply_spreadsheet_cell_patch(
+        path: str,
+        expected_sha256: str,
+        edits: list[_SpreadsheetCellEdit],
+    ) -> dict[str, Any]:
+        target = base.resolve_workspace_path(
+            workspace,
+            path,
+            allow_missing=False,
+            allow_external=_full_access_enabled(),
+        )
+        relative_target = base.relative_path(target, workspace)
+        if not target.is_file():
+            return {"status": "not_found", "path": relative_target, "file_unchanged": True}
+        suffix = target.suffix.lower()
+        if suffix not in {".xlsx", ".xlsm"}:
+            return {
+                "status": "unsupported_format",
+                "path": relative_target,
+                "required_format": "xlsx or xlsm",
+                "reason": (
+                    "Legacy .xls cannot be edited here; open it and save it as .xlsx first."
+                    if suffix == ".xls"
+                    else "This tool edits only .xlsx and .xlsm workbooks."
+                ),
+                "file_unchanged": True,
+            }
+        submitted_sha256 = str(expected_sha256)
+        expected_sha256 = re.sub(r"[\s-]", "", submitted_sha256).lower()
+        if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+            return {
+                "status": "invalid_expected_sha256",
+                "path": relative_target,
+                "reason": (
+                    "expected_sha256 contained unsupported characters or did not normalize to "
+                    "exactly 64 hexadecimal characters."
+                ),
+                "file_unchanged": True,
+            }
+        if not 1 <= len(edits) <= TRANSACTIONAL_PATCH_MAX_REPLACEMENTS:
+            return {
+                "status": "invalid",
+                "path": relative_target,
+                "reason": f"Provide 1-{TRANSACTIONAL_PATCH_MAX_REPLACEMENTS} cell edits.",
+                "file_unchanged": True,
+            }
+        normalized_edits: list[dict[str, str]] = []
+        seen_cells: set[tuple[str, str]] = set()
+        for index, edit in enumerate(edits, start=1):
+            if set(edit) != {"sheet", "cell", "value"}:
+                return {
+                    "status": "invalid",
+                    "path": relative_target,
+                    "reason": f"Edit {index} must contain only sheet, cell, and value.",
+                    "file_unchanged": True,
+                }
+            sheet_name = str(edit["sheet"])
+            cell_reference = str(edit["cell"]).strip().upper()
+            if not re.fullmatch(r"[A-Z]{1,3}[1-9][0-9]{0,6}", cell_reference):
+                return {
+                    "status": "invalid",
+                    "path": relative_target,
+                    "reason": f"Edit {index} cell {edit['cell']!r} is not an A1-style reference.",
+                    "file_unchanged": True,
+                }
+            key = (sheet_name, cell_reference)
+            if key in seen_cells:
+                return {
+                    "status": "invalid",
+                    "path": relative_target,
+                    "reason": f"Edit {index} repeats cell {sheet_name}!{cell_reference}.",
+                    "file_unchanged": True,
+                }
+            seen_cells.add(key)
+            normalized_edits.append(
+                {"sheet": sheet_name, "cell": cell_reference, "value": str(edit["value"])}
+            )
+
+        original_bytes = target.read_bytes()
+        if len(original_bytes) > TRANSACTIONAL_PATCH_MAX_BYTES:
+            return {
+                "status": "blocked",
+                "path": relative_target,
+                "reason": f"File exceeds the {TRANSACTIONAL_PATCH_MAX_BYTES}-byte transactional edit limit.",
+                "file_unchanged": True,
+            }
+        original_hash = hashlib.sha256(original_bytes).hexdigest()
+        if original_hash.lower() != expected_sha256.lower():
+            return {
+                "status": "stale_snapshot",
+                "path": relative_target,
+                "expected_sha256": expected_sha256.lower(),
+                "current_sha256": original_hash,
+                "file_unchanged": True,
+            }
+        try:
+            import openpyxl
+        except ImportError as exc:
+            return {
+                "status": "capability_unavailable",
+                "path": relative_target,
+                "reason": f"openpyxl is not installed in the Qubitz runtime environment: {exc}",
+                "required_package": "openpyxl",
+                "file_unchanged": True,
+            }
+        import zipfile as spreadsheet_zipfile
+
+        try:
+            with spreadsheet_zipfile.ZipFile(target) as archive:
+                original_parts = set(archive.namelist())
+                protected_part_prefixes = (
+                    "xl/activeX/",
+                    "xl/embeddings/",
+                    "xl/media/",
+                    "xl/printerSettings/",
+                )
+                protected_part_names = {"xl/vbaProject.bin", "xl/vbaData.xml"}
+                protected_binary_parts = {
+                    name: archive.read(name)
+                    for name in original_parts
+                    if name.startswith(protected_part_prefixes) or name in protected_part_names
+                }
+        except (OSError, spreadsheet_zipfile.BadZipFile) as exc:
+            return {
+                "status": "invalid_workbook",
+                "path": relative_target,
+                "reason": f"The workbook is not a readable Office container: {type(exc).__name__}: {exc}",
+                "file_unchanged": True,
+            }
+
+        def coerce(raw: str) -> object:
+            """Write numbers, booleans, and formulas as themselves; everything else as text."""
+            if raw.startswith("="):
+                return raw
+            lowered = raw.strip().lower()
+            if lowered in {"true", "false"}:
+                return lowered == "true"
+            candidate = raw.strip()
+            if re.fullmatch(r"[+-]?\d+", candidate):
+                return int(candidate)
+            if re.fullmatch(r"[+-]?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?", candidate):
+                return float(candidate)
+            return raw
+
+        staged_path = target.with_name(f".{target.name}.qubitz-{uuid.uuid4().hex}.tmp{suffix}")
+        try:
+            try:
+                workbook = openpyxl.load_workbook(str(target), keep_vba=suffix == ".xlsm")
+            except (OSError, ValueError, KeyError, spreadsheet_zipfile.BadZipFile) as exc:
+                return {
+                    "status": "invalid_workbook",
+                    "path": relative_target,
+                    "reason": f"openpyxl could not open the workbook: {type(exc).__name__}: {exc}",
+                    "file_unchanged": True,
+                }
+            applied: list[dict[str, Any]] = []
+            try:
+                for index, edit in enumerate(normalized_edits, start=1):
+                    if edit["sheet"] not in workbook.sheetnames:
+                        return {
+                            "status": "invalid",
+                            "path": relative_target,
+                            "reason": (
+                                f"Edit {index} names sheet {edit['sheet']!r}, which does not exist. "
+                                f"Sheets present: {workbook.sheetnames}."
+                            ),
+                            "file_unchanged": True,
+                        }
+                    sheet = workbook[edit["sheet"]]
+                    previous = sheet[edit["cell"]].value
+                    new_value = coerce(edit["value"])
+                    if previous == new_value:
+                        return {
+                            "status": "no_change",
+                            "path": relative_target,
+                            "reason": (
+                                f"Edit {index} sets {edit['sheet']}!{edit['cell']} to the value it "
+                                "already holds."
+                            ),
+                            "file_unchanged": True,
+                        }
+                    sheet[edit["cell"]] = new_value
+                    applied.append(
+                        {
+                            "sheet": edit["sheet"],
+                            "cell": edit["cell"],
+                            "previous": "" if previous is None else str(previous),
+                            "value": "" if new_value is None else str(new_value),
+                        }
+                    )
+                workbook.save(staged_path)
+            finally:
+                workbook.close()
+
+            with spreadsheet_zipfile.ZipFile(staged_path) as archive:
+                staged_parts = set(archive.namelist())
+                changed_protected_parts = [
+                    name
+                    for name, original_content in protected_binary_parts.items()
+                    if name not in staged_parts or archive.read(name) != original_content
+                ]
+            lost_parts = sorted(original_parts - staged_parts)
+            if lost_parts:
+                return {
+                    "status": "verification_failed",
+                    "path": relative_target,
+                    "reason": (
+                        "Saving the workbook would drop parts of it, so the edit was abandoned: "
+                        + ", ".join(lost_parts[:8])
+                        + ("..." if len(lost_parts) > 8 else "")
+                    ),
+                    "lost_parts": lost_parts[:32],
+                    "file_unchanged": True,
+                }
+            if changed_protected_parts:
+                return {
+                    "status": "verification_failed",
+                    "path": relative_target,
+                    "reason": (
+                        "Saving the workbook would alter protected binary workbook parts, so the edit "
+                        "was abandoned: "
+                        + ", ".join(changed_protected_parts[:8])
+                        + ("..." if len(changed_protected_parts) > 8 else "")
+                    ),
+                    "changed_protected_parts": changed_protected_parts[:32],
+                    "file_unchanged": True,
+                }
+            verification = openpyxl.load_workbook(str(staged_path), data_only=False)
+            try:
+                for record in applied:
+                    written = verification[record["sheet"]][record["cell"]].value
+                    if ("" if written is None else str(written)) != record["value"]:
+                        return {
+                            "status": "verification_failed",
+                            "path": relative_target,
+                            "reason": (
+                                f"{record['sheet']}!{record['cell']} did not hold the requested value "
+                                f"when the staged workbook was reopened."
+                            ),
+                            "file_unchanged": True,
+                        }
+            finally:
+                verification.close()
+
+            current_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+            if current_hash != original_hash:
+                return {
+                    "status": "stale_snapshot",
+                    "path": relative_target,
+                    "expected_sha256": original_hash,
+                    "current_sha256": current_hash,
+                    "reason": "The workbook changed concurrently while its replacement was staged.",
+                    "file_unchanged": True,
+                }
+            broker = _TOOL_CALL_CONTEXT.get()
+            if broker is not None:
+                broker.register_transaction_original(target, original_bytes, target.stat().st_mode)
+            staged_bytes = staged_path.read_bytes()
+            with suppress(OSError):
+                staged_path.chmod(target.stat().st_mode)
+            try:
+                os.replace(staged_path, target)
+            except PermissionError as exc:
+                return {
+                    "status": "commit_denied",
+                    "path": relative_target,
+                    "reason": (
+                        "The operating system denied the atomic workbook replacement. The file may be "
+                        "open in Excel or another application, or the directory may not be writable."
+                    ),
+                    "os_error": f"{type(exc).__name__}: {exc}",
+                    "file_unchanged": True,
+                }
+            return {
+                "status": "committed",
+                "path": relative_target,
+                "old_sha256": original_hash,
+                "new_sha256": hashlib.sha256(staged_bytes).hexdigest(),
+                "edit_count": len(applied),
+                "cells": applied,
+                "bytes_written": len(staged_bytes),
+                "container_parts_preserved": True,
+                "protected_binary_parts_preserved": True,
+                "macros_preserved": suffix == ".xlsm",
+                "verified_reopen": True,
+                "atomic_commit": True,
+            }
+        finally:
+            with suppress(FileNotFoundError):
+                staged_path.unlink()
+
     @server.tool(
         description=(
             "Atomically apply unique exact-text replacements to a UTF-8 or BOM-marked UTF-16/UTF-32 workspace file "
@@ -15743,6 +16361,9 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             if occurrences != 1:
                 raise ValueError(f"Replacement {index} expected one exact match, found {occurrences}.")
             updated = updated.replace(old_text, new_text, 1)
+        structured_error = _structured_text_edit_error(target, original, updated)
+        if structured_error:
+            raise ValueError(structured_error)
         updated_bytes = _encode_text_preserving_encoding(updated, encoding_label, bom)
         if updated_bytes == original_bytes:
             raise ValueError("The requested replacements produce no file change.")
@@ -15847,6 +16468,9 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
                         f"found {occurrences}."
                     )
                 updated = updated.replace(old_text, new_text, 1)
+            structured_error = _structured_text_edit_error(target, original, updated)
+            if structured_error:
+                raise ValueError(f"Patch {patch_index}: {structured_error}")
             updated_bytes = _encode_text_preserving_encoding(updated, encoding_label, bom)
             if updated_bytes == original_bytes:
                 raise ValueError(f"Patch {patch_index} produces no file change.")
@@ -16068,10 +16692,15 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
             self.session_id = base.datetime.now().strftime("%Y%m%d_%H%M%S")
             self.current_path = self.memory_dir / base.CURRENT_MEMORY_NAME
             self.archive_path = self._daily_archive_path()
+            self.lock_path = self.memory_dir / ".daily-memory.lock"
             self.notes: list[dict[str, str]] = []
             self.turns: list[dict[str, str]] = []
-            self._migrate_legacy_archives()
-            self.flush()
+            self._acquire_daily_lock()
+            try:
+                self._migrate_legacy_archives()
+                self._flush_locked()
+            finally:
+                self._release_daily_lock()
 
         def _daily_archive_path(self, date_stamp: str | None = None) -> Path:
             date_stamp = date_stamp or base.datetime.now().strftime("%Y%m%d")
@@ -16094,6 +16723,39 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
             finally:
                 with suppress(OSError):
                     temporary.unlink()
+
+        def _acquire_daily_lock(self) -> None:
+            deadline = time.monotonic() + 20.0
+            while True:
+                try:
+                    descriptor = os.open(
+                        self.lock_path,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    )
+                except FileExistsError:
+                    try:
+                        stale = time.time() - self.lock_path.stat().st_mtime > 120.0
+                    except OSError:
+                        stale = False
+                    if stale:
+                        with suppress(OSError):
+                            self.lock_path.unlink()
+                        continue
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Timed out waiting for the daily memory lock: {self.lock_path}"
+                        )
+                    time.sleep(0.05)
+                    continue
+                try:
+                    os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
+                finally:
+                    os.close(descriptor)
+                return
+
+        def _release_daily_lock(self) -> None:
+            with suppress(FileNotFoundError):
+                self.lock_path.unlink()
 
         def _daily_header(self, date_stamp: str) -> str:
             date_text = f"{date_stamp[:4]}-{date_stamp[4:6]}-{date_stamp[6:8]}"
@@ -16229,9 +16891,16 @@ def _install_daily_memory_store(app: LocalOnlyApp) -> None:
             self.archive_path = self._daily_archive_path(date_stamp)
             self._merge_entries_into_daily(date_stamp, self.notes, self.turns)
 
-        def flush(self) -> None:
+        def _flush_locked(self) -> None:
             self._write_atomic(self.current_path, self.render())
             self._merge_daily_archive()
+
+        def flush(self) -> None:
+            self._acquire_daily_lock()
+            try:
+                self._flush_locked()
+            finally:
+                self._release_daily_lock()
 
     DailyMemoryStore._QUBITZ_DAILY_ARCHIVE_INSTALLED = True
     base.MemoryStore = DailyMemoryStore
