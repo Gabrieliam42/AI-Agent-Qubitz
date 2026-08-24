@@ -12441,6 +12441,9 @@ class _ToolPermissionBroker:
         self.failed_result_counts: dict[str, int] = {}
         self.failed_route_counts: dict[str, int] = {}
         self.failed_result_block_counts: dict[str, int] = {}
+        self.workspace_generation = 0
+        self.mcp_call_argument_memory: dict[str, dict[str, Any]] = {}
+        self.mcp_tool_schemas: dict[str, dict[str, Any]] = {}
         self.stop_callback: Callable[[str], None] | None = None
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_snapshot_hashes: dict[str, str] = {}
@@ -12494,6 +12497,9 @@ class _ToolPermissionBroker:
         self.failed_result_counts.clear()
         self.failed_route_counts.clear()
         self.failed_result_block_counts.clear()
+        self.workspace_generation = 0
+        self.mcp_call_argument_memory.clear()
+        self.mcp_tool_schemas.clear()
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -12554,6 +12560,9 @@ class _ToolPermissionBroker:
         self.failed_result_counts.clear()
         self.failed_route_counts.clear()
         self.failed_result_block_counts.clear()
+        self.workspace_generation = 0
+        self.mcp_call_argument_memory.clear()
+        self.mcp_tool_schemas.clear()
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
@@ -12738,6 +12747,14 @@ class _ToolPermissionBroker:
                         default=str,
                     )
                     for evidence in self._current_turn_evidence()
+                    if evidence.get("success")
+                    and (
+                        evidence.get("categories")
+                        or evidence.get("paths")
+                        or evidence.get("urls")
+                        or evidence.get("result_count")
+                        or evidence.get("opened_count")
+                    )
                 }
             ),
         }
@@ -13121,7 +13138,7 @@ class _ToolPermissionBroker:
             "uv_unavailable",
             "verification_failed",
         }
-        result_fingerprint = self._fingerprint(normalized, arguments)
+        result_fingerprint = self._result_fingerprint(normalized, arguments)
         untracked_failure_statuses = {
             "access_mode_denied",
             "approval_required",
@@ -13244,6 +13261,7 @@ class _ToolPermissionBroker:
                     verified_paths.append(str(target))
             if success:
                 self.transaction_recovery_required = False
+                self.workspace_generation += 1
                 categories.add("changed_files")
                 if normalized in {"copy_path", "write_file", "make_directory"}:
                     categories.add("created_outputs")
@@ -13306,11 +13324,30 @@ class _ToolPermissionBroker:
         if success and normalized == "stop_project_mcp_server" and bool(structured.get("stopped")):
             categories.add("service_stopped")
         if success and normalized == "list_project_mcp_tools":
+            listed_tools = structured.get("tools")
+            for item in listed_tools if isinstance(listed_tools, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                listed_name = str(item.get("name") or "").strip().casefold()
+                listed_schema = item.get("inputSchema") or item.get("input_schema") or {}
+                if listed_name and isinstance(listed_schema, dict):
+                    self.mcp_tool_schemas[listed_name] = listed_schema
             with suppress(TypeError, ValueError):
                 if int(structured.get("count") or 0) > 0:
                     categories.add("mcp_ready")
         if success and normalized == "call_project_mcp_tool" and structured.get("result") is not None:
-            categories.add("mcp_tool_called")
+            nested_arguments = arguments.get("arguments")
+            explicit_arguments_satisfied, expected_arguments = self._explicit_mcp_arguments_satisfied(
+                str(arguments.get("tool_name") or ""),
+                nested_arguments if isinstance(nested_arguments, dict) else {},
+            )
+            if explicit_arguments_satisfied:
+                categories.add("mcp_tool_called")
+            else:
+                self._emit(
+                    "The MCP call returned successfully but omitted or changed explicit user-specified tool arguments; "
+                    f"expected {json.dumps(expected_arguments, ensure_ascii=True, sort_keys=True, default=str)}."
+                )
         explicit_browser_evidence = bool(
             any(key in structured for key in ("opened_urls", "opened_count", "browser"))
             or (
@@ -13344,10 +13381,15 @@ class _ToolPermissionBroker:
                 or ""
             ),
             "mcp_target": str(arguments.get("tool_name") or arguments.get("server_script") or ""),
+            "mcp_arguments": (
+                arguments.get("arguments")
+                if normalized == "call_project_mcp_tool" and isinstance(arguments.get("arguments"), dict)
+                else {}
+            ),
         }
         self.evidence.append(evidence)
         self.tool_result_count += 1
-        fingerprint = self._fingerprint(normalized, arguments)
+        fingerprint = self._result_fingerprint(normalized, arguments)
         self._audit("completed" if success else "failed", normalized, arguments, fingerprint, status)
         self._track_transaction_recovery_progress()
         if (
@@ -13962,6 +14004,128 @@ class _ToolPermissionBroker:
         }
         return Path(executable).name.lower() not in allowed
 
+    def _result_fingerprint(self, name: str, arguments: dict[str, Any]) -> str:
+        return self._fingerprint(
+            name,
+            {
+                "arguments": arguments,
+                "workspace_generation": self.workspace_generation,
+            },
+        )
+
+    def preserve_mcp_call_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tool_name = str(arguments.get("tool_name") or "").strip().casefold()
+        if not tool_name:
+            return arguments
+        nested = arguments.get("arguments")
+        if isinstance(nested, dict) and nested:
+            self.mcp_call_argument_memory[tool_name] = json.loads(
+                json.dumps(nested, ensure_ascii=True, default=str)
+            )
+            return arguments
+        remembered = self.mcp_call_argument_memory.get(tool_name)
+        if not remembered:
+            return arguments
+        repaired = {
+            **arguments,
+            "arguments": json.loads(json.dumps(remembered, ensure_ascii=True, default=str)),
+        }
+        self._emit(
+            f"Preserved explicit arguments from the prior {tool_name} MCP attempt while repairing missing routing fields."
+        )
+        return repaired
+
+    def _explicit_mcp_arguments_satisfied(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any]]:
+        normalized_tool = str(tool_name or "").strip().casefold()
+        nested = arguments if isinstance(arguments, dict) else {}
+        schema = self.mcp_tool_schemas.get(normalized_tool, {})
+        properties = schema.get("properties") if isinstance(schema, dict) else {}
+        if not isinstance(properties, dict):
+            properties = {}
+
+        candidate_names = {str(name) for name in properties}
+        reserved = {
+            "cwd",
+            "python_path",
+            "server_id",
+            "server_reference",
+            "timeout_seconds",
+            "tool_name",
+        }
+        generic_patterns = (
+            (
+                r"\b(?:with|argument|parameter)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+                r"\s*(?:=|:|to)?\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)"
+            ),
+            (
+                r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:|to)\s*"
+                r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)"
+            ),
+        )
+        generic_values: dict[str, str] = {}
+        for pattern in generic_patterns:
+            for match in re.finditer(pattern, self.current_prompt, re.IGNORECASE | re.DOTALL):
+                name = match.group("name")
+                if name.casefold() in reserved:
+                    continue
+                candidate_names.add(name)
+                generic_values.setdefault(name.casefold(), match.group("value"))
+
+        expected: dict[str, Any] = {}
+        for property_name in candidate_names:
+            property_schema = properties.get(property_name)
+            if not isinstance(property_schema, dict):
+                property_schema = {}
+            quoted_match = re.search(
+                rf"\b{re.escape(property_name)}\b"
+                r"(?:\s*(?:=|:|to)\s*|\s+)"
+                r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
+                self.current_prompt,
+                re.IGNORECASE | re.DOTALL,
+            )
+            raw_value = (
+                quoted_match.group("value")
+                if quoted_match is not None
+                else generic_values.get(property_name.casefold())
+            )
+            if raw_value is None:
+                literal_match = re.search(
+                    rf"\b{re.escape(property_name)}\b\s*(?:=|:|to)\s*"
+                    r"(?P<value>true|false|null|-?\d+(?:\.\d+)?)\b",
+                    self.current_prompt,
+                    re.IGNORECASE,
+                )
+                raw_value = literal_match.group("value") if literal_match is not None else None
+            if raw_value is None:
+                continue
+            expected_type = str(property_schema.get("type") or "string")
+            try:
+                if expected_type == "integer":
+                    expected[property_name] = int(raw_value)
+                elif expected_type == "number":
+                    expected[property_name] = float(raw_value)
+                elif expected_type == "boolean":
+                    expected[property_name] = raw_value.strip().lower() in {"1", "true", "yes", "on"}
+                elif expected_type in {"array", "object"}:
+                    expected[property_name] = json.loads(raw_value)
+                else:
+                    expected[property_name] = raw_value
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+
+        def canonical(value: Any) -> str:
+            return json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
+
+        satisfied = all(
+            name in nested and canonical(nested[name]) == canonical(value)
+            for name, value in expected.items()
+        )
+        return satisfied, expected
+
     def _references_protected_harness(
         self,
         name: str,
@@ -14011,6 +14175,7 @@ class _ToolPermissionBroker:
         self.transaction_originals.clear()
         self.transaction_snapshot_hashes.clear()
         self.transaction_changed_hashes.clear()
+        self.workspace_generation += 1
         self.transaction_recovery_required = False
         self.transaction_recovery_interrupt_requested = False
         self.transaction_nonprogress_calls = 0
@@ -17365,6 +17530,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
             broker = _TOOL_CALL_CONTEXT.get()
+            if broker is not None and name == "call_project_mcp_tool":
+                arguments = broker.preserve_mcp_call_arguments(arguments)
             if (
                 name in {"inspect_python_environment", "install_python_package"}
                 and not str(arguments.get("environment") or "").strip()
@@ -17446,7 +17613,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     )
                     broker.record_result(name, arguments, invalid_result)
                     return invalid_result
-                failure_fingerprint = broker._fingerprint(name.lower(), arguments)
+                failure_fingerprint = broker._result_fingerprint(name.lower(), arguments)
                 blocked_failure_key = ""
                 blocked_failure_reason = ""
                 if broker.failed_result_counts.get(failure_fingerprint, 0) >= 2:
@@ -19587,6 +19754,27 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     )
                 return rollback
 
+            def recover_verified_wrapper_stop() -> str | None:
+                if self._cancel_source != "wrapper_policy_stop" or not self._cancel_partial_answer:
+                    return None
+                required, missing = self._tool_permission_broker.completion_report(prompt)
+                if not required or missing:
+                    return None
+                self._cancel_event.clear()
+                self._cancel_source = ""
+                self._cancel_partial_answer = ""
+                summary = self._tool_permission_broker.completion_evidence_summary(prompt)
+                if callback is not None:
+                    callback(
+                        "status",
+                        "Cleared a wrapper-only no-progress stop because later structured evidence verified every postcondition.",
+                    )
+                return (
+                    "Completed the requested task after verified wrapper recovery.\n\n"
+                    f"Verified current-turn evidence: {summary}.\n\n"
+                    "[Completion status: verified]"
+                )
+
             try:
                 preflight_denial = self._read_only_external_path_preflight(prompt)
                 if preflight_denial:
@@ -19709,13 +19897,21 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         answer = ""
                         self._cancel_source = ""
                     else:
-                        rollback_interrupted_transaction("an interrupted request")
-                        if self._cancel_partial_answer:
-                            return finalize_turn_answer(self._cancel_partial_answer)
-                        raise
+                        recovered_answer = recover_verified_wrapper_stop()
+                        if recovered_answer is not None:
+                            answer = recovered_answer
+                        else:
+                            rollback_interrupted_transaction("an interrupted request")
+                            if self._cancel_partial_answer:
+                                return finalize_turn_answer(self._cancel_partial_answer)
+                            raise
                 if self._cancel_partial_answer:
-                    rollback_interrupted_transaction("request cancellation")
-                    return finalize_turn_answer(self._cancel_partial_answer)
+                    recovered_answer = recover_verified_wrapper_stop()
+                    if recovered_answer is not None:
+                        answer = recovered_answer
+                    else:
+                        rollback_interrupted_transaction("request cancellation")
+                        return finalize_turn_answer(self._cancel_partial_answer)
                 if self._tool_permission_broker.mcp_recovery_interrupt_requested:
                     self._tool_permission_broker.mcp_recovery_interrupt_requested = False
                     mcp_answer = await self._wrapper_mcp_lifecycle_recovery(
