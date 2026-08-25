@@ -8192,11 +8192,22 @@ def _patch_harness_loader(base: Any) -> None:
     excluded = set(getattr(base, "EXCLUDED_RETRIEVAL_FILENAMES", set()))
     excluded.update(
         {
+            "CLAUDE.md",
+            "PROJECT.md",
+            "RULES.md",
             getattr(base, "DEFAULT_ENCRYPTED_HARNESS_NAME", "HARNESS.enc"),
             getattr(base, "DEFAULT_HARNESS_NAME", "HARNESS.txt"),
         }
     )
     base.EXCLUDED_RETRIEVAL_FILENAMES = excluded
+    excluded_names_casefold = {str(name).casefold() for name in excluded}
+    original_is_excluded_retrieval_file = base.is_excluded_retrieval_file
+
+    def _is_excluded_retrieval_file(path: Path) -> bool:
+        if path.name.casefold() in excluded_names_casefold:
+            return True
+        return original_is_excluded_retrieval_file(path)
+
     excluded_dirs = set(getattr(base, "EXCLUDED_DIRS", set()))
     excluded_dirs.update({".qubitz", ".ump", "backup"})
     base.EXCLUDED_DIRS = excluded_dirs
@@ -8234,6 +8245,7 @@ def _patch_harness_loader(base: Any) -> None:
                 yield root_path / filename
 
     base.is_excluded_dir_name = _is_excluded_dir_name
+    base.is_excluded_retrieval_file = _is_excluded_retrieval_file
     base.iter_workspace_files = _iter_workspace_files
     base.load_harness_text = _load_harness_text
     base.write_encrypted_harness = _write_encrypted_harness
