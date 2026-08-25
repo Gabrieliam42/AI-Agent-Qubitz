@@ -8126,6 +8126,36 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             args.extend(["--n-gpu-layers", "999"])
         return args
 
+    def _strip_replaced_cli_options(arguments: list[str], replacements: set[str]) -> list[str]:
+        """Remove earlier option values when fit supplies the authoritative value."""
+        if not replacements:
+            return arguments
+        cleaned: list[str] = []
+        index = 0
+        while index < len(arguments):
+            argument = str(arguments[index])
+            matched = next(
+                (
+                    option
+                    for option in replacements
+                    if argument == option or argument.startswith(f"{option}=")
+                ),
+                None,
+            )
+            if matched is None:
+                cleaned.append(arguments[index])
+                index += 1
+                continue
+            index += 1 if argument.startswith(f"{matched}=") else 2
+        return cleaned
+
+    def _fit_replaced_options(fit_args: list[str]) -> set[str]:
+        return {
+            option
+            for option in ("--cache-type-k", "--cache-type-v")
+            if option in fit_args
+        }
+
     def _launch_command_with_fit(self) -> list[str]:
         command = list(original_launch_command(self))
         if not command:
@@ -8159,6 +8189,12 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             new_script = script if keep_ctx else re.sub(
                 r"\s*'--ctx-size'\s+'[0-9]+'", "", script, count=1
             )
+            for option in _fit_replaced_options(fit_args):
+                new_script = re.sub(
+                    rf"\s*'{re.escape(option)}'(?:\s+'[^']*'|=[^\s]+)",
+                    "",
+                    new_script,
+                )
             new_script = new_script.rstrip() + "".join(f" '{arg}'" for arg in fit_args)
             command[encoded_index] = base64.b64encode(new_script.encode("utf-16-le")).decode("ascii")
             return command
@@ -8178,6 +8214,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
                 del command[ctx_index : ctx_index + 2]
             except ValueError:
                 pass
+        command = _strip_replaced_cli_options(command, _fit_replaced_options(fit_args))
         command.extend(fit_args)
         return command
 
@@ -8503,6 +8540,39 @@ def _patch_streaming_chat(base: Any) -> None:
         "IncompleteRead",
     )
 
+    def _wait_for_transient_retry_readiness(
+        client: Any,
+        model_name: str,
+        timeout_seconds: float = 10.0,
+    ) -> bool:
+        """Require a healthy server still advertising the requested model before retrying."""
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while time.monotonic() < deadline:
+            try:
+                health = client._probe_with_fallback("/health")
+                models_probe = client._probe_with_fallback("/v1/models")
+                models_payload = models_probe.get("json") or {}
+                advertised = {
+                    str(item.get("id") or "").strip()
+                    for item in models_payload.get("data") or []
+                    if isinstance(item, dict) and str(item.get("id") or "").strip()
+                }
+                if advertised and model_name not in advertised:
+                    return False
+                if (
+                    int(health.get("status_code") or 0) == 200
+                    and int(models_probe.get("status_code") or 0) == 200
+                    and model_name in advertised
+                ):
+                    return True
+            except Exception:
+                pass
+            process = getattr(getattr(client, "server_process", None), "process", None)
+            if process is not None and process.poll() is not None:
+                return False
+            time.sleep(0.5)
+        return False
+
     def _chat_with_transient_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
         """Retry a chat call once on a transient local-server or transport fault.
 
@@ -8523,7 +8593,12 @@ def _patch_streaming_chat(base: Any) -> None:
                 )
                 if not transient or attempt == 1:
                     raise
-                time.sleep(2.0)
+                if "503 Service Unavailable" in message:
+                    model_name = str(kwargs.get("model_name") or "")
+                    if not model_name or not _wait_for_transient_retry_readiness(self, model_name):
+                        raise
+                else:
+                    time.sleep(2.0)
         raise RuntimeError("unreachable transient retry state")
 
     _CONTEXT_GUARD_HEADROOM = 0.90
