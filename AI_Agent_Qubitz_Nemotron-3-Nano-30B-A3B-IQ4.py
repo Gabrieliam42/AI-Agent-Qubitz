@@ -4497,13 +4497,48 @@ class LocalMCPServerManager:
             env = None
         if not reference:
             raise ValueError("Provide server_id or server_reference.")
-        payload = self._probe_tools(
-            workspace,
-            server_reference=reference,
-            python_path=interpreter,
-            env=env,
-            timeout_seconds=timeout_seconds,
-        )
+        initial_timeout = max(1, int(timeout_seconds))
+        try:
+            payload = self._probe_tools(
+                workspace,
+                server_reference=reference,
+                python_path=interpreter,
+                env=env,
+                timeout_seconds=initial_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            retry_timeout = max(90, initial_timeout)
+            try:
+                payload = self._probe_tools(
+                    workspace,
+                    server_reference=reference,
+                    python_path=interpreter,
+                    env=env,
+                    timeout_seconds=retry_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "status": "mcp_startup_timeout",
+                    "terminal": True,
+                    "retriable": False,
+                    "retry_attempted": True,
+                    "reference": str(reference),
+                    "initial_timeout_seconds": initial_timeout,
+                    "retry_timeout_seconds": retry_timeout,
+                    "reason": (
+                        "MCP initialization and tool listing timed out before any tool was invoked, "
+                        "including one bounded startup retry."
+                    ),
+                    "next_action": (
+                        "Report the MCP startup failure. Do not substitute shell, entrypoint, or "
+                        "unrelated command routes for the requested MCP operation."
+                    ),
+                }
+            payload["startup_retry"] = {
+                "attempted": True,
+                "initial_timeout_seconds": initial_timeout,
+                "retry_timeout_seconds": retry_timeout,
+            }
         if server_id:
             payload["server_id"] = server_id
         return payload
@@ -13205,6 +13240,7 @@ class _ToolPermissionBroker:
             "invalid",
             "invalid_expected_sha256",
             "missing",
+            "mcp_startup_timeout",
             "network_request_failed",
             "no_change",
             "not_found",
@@ -13264,6 +13300,14 @@ class _ToolPermissionBroker:
                         "authoritative route."
                     )
         self._register_mcp_launch_result(normalized, arguments, success)
+        if normalized == "list_project_mcp_tools" and status == "mcp_startup_timeout":
+            self._emit(
+                "MCP initialization timed out after one bounded startup retry; unrelated shell, "
+                "entrypoint, and command fallbacks are blocked for this request."
+            )
+            if not self.invalid_stop_requested and self.stop_callback is not None:
+                self.invalid_stop_requested = True
+                self.stop_callback("MCP initialization timed out after one bounded startup retry")
         categories: set[str] = set()
         verified_paths: list[str] = []
 
@@ -20502,8 +20546,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             # Derived from the variants actually present so a newly added one appears
             # here instead of being silently unreachable. Tier follows the _12G suffix
             # the 12 GB builds already use; override only where that naming does not.
-            variant_tier_overrides: dict[str, str] = {}
-            grouped: dict[str, list[str]] = {"12 GB VRAM": [], "24 GB VRAM": []}
+            variant_tier_overrides = {
+                "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py": "48 GB VRAM (2 x 24 GB)",
+            }
+            grouped: dict[str, list[str]] = {
+                "12 GB VRAM": [],
+                "24 GB VRAM": [],
+                "48 GB VRAM (2 x 24 GB)": [],
+            }
             for variant_path in sorted(
                 runtime_root.glob("AI_Agent_Qubitz_*.py"),
                 key=lambda item: item.name.casefold(),
