@@ -1078,9 +1078,9 @@ def _fetch_named_source_for_grounding(
     max_bytes: int = 500000,
 ) -> dict[str, Any]:
     """Fetch bounded visible source text before a model relies on a named URL."""
-    from html.parser import HTMLParser
     import urllib.error
     import urllib.request
+    from html.parser import HTMLParser
 
     canonical_url = _canonical_http_url(url)
     if not canonical_url or not _is_external_network_url(canonical_url):
@@ -1476,9 +1476,7 @@ def _semantic_actions_for_verb(verb: str, objects: set[str]) -> set[str]:
             actions.add("start")
         else:
             actions.add("read")
-    elif verb in {"edit", "modify", "change", "replace", "fix", "refactor", "rewrite", "implement", "patch"}:
-        actions.add("edit")
-    elif verb in {"rephrase", "revise"} and "file" in objects:
+    elif verb in {"edit", "modify", "change", "replace", "fix", "refactor", "rewrite", "implement", "patch"} or verb in {"rephrase", "revise"} and "file" in objects:
         actions.add("edit")
     elif verb == "update":
         actions.add("upgrade" if "package" in objects and "file" not in objects else "edit")
@@ -2644,52 +2642,228 @@ def _rewrite_answer_urls_from_helper(answer: str, urls: Sequence[str]) -> str:
     return answer
 
 
-ROUTE_SAMPLING_PROFILES: dict[str, tuple[str, float, float, float, float]] = {
-    "simple_question": ("simple_question", 0.35, 0.92, 0.02, 1.03),
-    "mcp_tool": ("mcp_tool", 0.25, 0.90, 0.02, 1.05),
-    "coding_edit": ("coding_edit", 0.25, 0.92, 0.02, 1.04),
-    "debugging_reasoning": ("debugging_reasoning", 0.35, 0.92, 0.02, 1.02),
-    "brainstorming_explanation": ("brainstorming_explanation", 0.70, 0.98, 0.01, 1.00),
+ROUTE_SAMPLING_PROFILES: dict[str, tuple[float, float, int, float, float, float]] = {
+    "simple_question": (0.70, 0.95, 0, 0.0, 1.0, 0.0),
+    "mcp_tool": (0.70, 0.95, 0, 0.0, 1.0, 0.0),
+    "coding_edit": (0.70, 0.95, 0, 0.0, 1.0, 0.0),
+    "debugging_reasoning": (0.70, 0.95, 0, 0.0, 1.0, 0.0),
+    "brainstorming_explanation": (0.70, 0.95, 0, 0.0, 1.0, 0.0),
 }
 
 
-def _sampling_profile_for_route(prompt: str, selected_route: str) -> tuple[str, float, float, float, float]:
+def _sampling_profile_for_route(
+    prompt: str,
+    selected_route: str,
+    model_name: str | None = None,
+) -> tuple[str, float, float, int, float, float, float]:
     lowered = prompt.lower()
     if selected_route == "simple_answer":
-        if "SIMPLE_DIRECT_QUESTION_TEMPERATURE" in globals():
-            return ("deepseek_simple_question", float(globals()["SIMPLE_DIRECT_QUESTION_TEMPERATURE"]), 0.92, 0.02, 1.03)
-        return ROUTE_SAMPLING_PROFILES["simple_question"]
-    if selected_route in {"direct_existing_entrypoint", "tool_loop"}:
-        return ROUTE_SAMPLING_PROFILES["mcp_tool"]
-    if re.search(r"\b(edit|modify|change|update|fix|refactor|rewrite|implement|patch|code|coding)\b", lowered):
-        return ROUTE_SAMPLING_PROFILES["coding_edit"]
-    if re.search(r"\b(debug|diagnose|traceback|exception|failure|failed|failing|bug|regression|smoke test|verify|test)\b", lowered):
-        return ROUTE_SAMPLING_PROFILES["debugging_reasoning"]
-    if re.search(r"\b(brainstorm|ideas?|creative|explain|summary|summarize|compare|recommend|what do you think)\b", lowered):
-        return ROUTE_SAMPLING_PROFILES["brainstorming_explanation"]
-    if re.search(r"\b(mcp|tool|tools|browser|url|urls|open|tabs?|run|command|script|server)\b", lowered):
-        return ROUTE_SAMPLING_PROFILES["mcp_tool"]
-    return ROUTE_SAMPLING_PROFILES["debugging_reasoning"]
+        route_name = "simple_question"
+    elif re.search(
+        r"\b(debug|diagnose|traceback|exception|failure|failed|failing|bug|regression|smoke test|verify|test)\b",
+        lowered,
+    ):
+        route_name = "debugging_reasoning"
+    elif selected_route == "dependency_install" or re.search(
+        r"\b(install|uninstall|upgrade|dependency|dependencies|package|packages|pip|uv)\b",
+        lowered,
+    ):
+        route_name = "mcp_tool"
+    elif re.search(
+        r"\b(edit|modify|change|update|fix|refactor|rewrite|implement|patch|create|add|remove|delete|rename)\b",
+        lowered,
+    ):
+        route_name = "coding_edit"
+    elif re.search(
+        r"\b(brainstorm|ideas?|creative|explain|summary|summarize|compare|recommend|what do you think)\b",
+        lowered,
+    ):
+        route_name = "brainstorming_explanation"
+    elif selected_route in {"direct_existing_entrypoint", "tool_loop"} or re.search(
+        r"\b(mcp|tool|tools|browser|url|urls|open|tabs?|run|execute|launch|command|script|server)\b",
+        lowered,
+    ):
+        route_name = "mcp_tool"
+    else:
+        route_name = "debugging_reasoning"
+
+    resolved_model = str(model_name or "").strip().lower()
+    if not resolved_model:
+        app = globals().get("_APP")
+        resolved_model = str(
+            getattr(getattr(app, "base", None), "DEFAULT_MODEL", "")
+        ).lower()
+
+    route_names = tuple(ROUTE_SAMPLING_PROFILES)
+
+    def _uniform(
+        settings: tuple[float, float, int, float, float, float],
+    ) -> dict[str, tuple[float, float, int, float, float, float]]:
+        return {name: settings for name in route_names}
+
+    family_name = "fallback"
+    profiles = dict(ROUTE_SAMPLING_PROFILES)
+    if "agenticqwen" in resolved_model:
+        family_name = "agenticqwen"
+        profiles = _uniform((0.60, 0.95, 20, 0.0, 1.0, 0.0))
+        profiles["simple_question"] = (0.70, 0.80, 20, 0.0, 1.0, 0.0)
+        profiles["brainstorming_explanation"] = profiles["simple_question"]
+    elif "qwen3-next" in resolved_model:
+        family_name = "qwen3_next_instruct"
+        profiles = _uniform((0.70, 0.80, 20, 0.0, 1.0, 0.0))
+    elif "qwen3.8" in resolved_model:
+        family_name = "qwen3_8"
+        profiles = _uniform((1.00, 0.95, 20, 0.0, 1.0, 0.0))
+        profiles["simple_question"] = (0.70, 0.80, 20, 0.0, 1.0, 1.5)
+        profiles["brainstorming_explanation"] = profiles["simple_question"]
+    elif "qwen3.6" in resolved_model:
+        is_27b = "27b" in resolved_model
+        family_name = "qwen3_6_27" if is_27b else "qwen3_6_35"
+        general_presence = 0.0 if is_27b else 1.5
+        profiles = _uniform((1.00, 0.95, 20, 0.0, 1.0, general_presence))
+        profiles["simple_question"] = (0.70, 0.80, 20, 0.0, 1.0, 1.5)
+        profiles["coding_edit"] = (0.60, 0.95, 20, 0.0, 1.0, 0.0)
+        profiles["brainstorming_explanation"] = profiles["simple_question"]
+    elif "qwen3.5" in resolved_model:
+        family_name = "qwen3_5"
+        profiles = _uniform((1.00, 0.95, 20, 0.0, 1.0, 1.5))
+        profiles["simple_question"] = (0.70, 0.80, 20, 0.0, 1.0, 1.5)
+        profiles["coding_edit"] = (0.60, 0.95, 20, 0.0, 1.0, 0.0)
+        profiles["brainstorming_explanation"] = profiles["simple_question"]
+    elif "glm-4.7" in resolved_model:
+        family_name = "glm_4_7_huihui" if "huihui" in resolved_model else "glm_4_7"
+        profiles = _uniform((1.00, 0.95, 0, 0.0, 1.0, 0.0))
+        profiles["mcp_tool"] = (0.70, 1.00, 0, 0.0, 1.0, 0.0)
+        profiles["coding_edit"] = profiles["mcp_tool"]
+    elif "gemma-4" in resolved_model:
+        family_name = "gemma_4"
+        profiles = _uniform((1.00, 0.95, 64, 0.0, 1.0, 0.0))
+    elif "devstral" in resolved_model:
+        family_name = "devstral"
+        profiles = _uniform((0.20, 1.00, 0, 0.0, 1.0, 0.0))
+    elif "gpt-oss" in resolved_model:
+        family_name = "gpt_oss"
+        profiles = _uniform((1.00, 1.00, 0, 0.0, 1.0, 0.0))
+    elif "granite-4.2" in resolved_model:
+        family_name = "granite_4_2"
+        profiles = _uniform((1.00, 0.95, 0, 0.0, 1.0, 0.0))
+    elif "granite-4.1" in resolved_model:
+        family_name = "granite_4_1"
+        profiles = _uniform((0.70, 0.95, 0, 0.0, 1.0, 0.0))
+    elif "llama-3_3-nemotron" in resolved_model:
+        family_name = "llama_3_3_nemotron_super"
+        profiles = _uniform((0.60, 0.95, 0, 0.0, 1.0, 0.0))
+    elif "nemotron-3.5-lightning" in resolved_model:
+        family_name = "nemotron_3_5_lightning"
+        profiles = _uniform((1.00, 0.95, 0, 0.0, 1.0, 0.0))
+    elif "nemotron-cascade" in resolved_model:
+        family_name = "nemotron_cascade_2"
+        profiles = _uniform((1.00, 0.95, 0, 0.0, 1.0, 0.0))
+    elif "nemotron-3-nano" in resolved_model:
+        family_name = "nemotron_3_nano"
+        profiles = _uniform((1.00, 1.00, 0, 0.0, 1.0, 0.0))
+        profiles["simple_question"] = (0.60, 0.95, 0, 0.0, 1.0, 0.0)
+        profiles["mcp_tool"] = profiles["simple_question"]
+        profiles["coding_edit"] = profiles["simple_question"]
+    elif "north-mini" in resolved_model:
+        family_name = "north_mini_code"
+        profiles = _uniform((1.00, 0.95, 0, 0.0, 1.0, 0.0))
+    elif "ornith" in resolved_model:
+        family_name = "ornith"
+        profiles = _uniform((1.00, 0.95, 20, 0.0, 1.0, 1.5))
+        profiles["simple_question"] = (0.60, 0.95, 20, 0.0, 1.0, 0.0)
+        profiles["mcp_tool"] = profiles["simple_question"]
+        profiles["coding_edit"] = profiles["simple_question"]
+    elif "laguna" in resolved_model:
+        family_name = "laguna_xs_2_1"
+        profiles = _uniform((0.70, 1.00, 20, 0.0, 1.0, 0.0))
+    elif "hypernova" in resolved_model:
+        family_name = "hypernova"
+        profiles = _uniform((1.00, 1.00, 0, 0.0, 1.0, 0.0))
+        profiles["simple_question"] = (0.70, 1.00, 0, 0.0, 1.0, 0.0)
+        profiles["brainstorming_explanation"] = profiles["simple_question"]
+    elif "xorton" in resolved_model or "xortron" in resolved_model:
+        family_name = "xorton"
+        profiles = _uniform((0.70, 1.00, 0, 0.0, 1.0, 0.0))
+
+    temperature, top_p, top_k, min_p, repeat_penalty, presence_penalty = profiles[route_name]
+    return (
+        f"{family_name}_{route_name}",
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        repeat_penalty,
+        presence_penalty,
+    )
 
 
 def _sampling_value(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
-def _apply_sampling_profile(config: Any, profile: tuple[str, float, float, float, float]) -> None:
-    _, temperature, top_p, min_p, repeat_penalty = profile
+def _apply_sampling_profile(
+    config: Any,
+    profile: tuple[str, float, float, int, float, float, float],
+) -> tuple[str, float, float, int, float, float, float]:
+    name, temperature, top_p, top_k, min_p, repeat_penalty, presence_penalty = profile
+    manual_temperature = getattr(config, "_qubitz_manual_temperature_override", None)
+    if manual_temperature is not None:
+        temperature = float(manual_temperature)
+        name = f"{name}_manual_temperature"
     config.temperature = temperature
     config.top_p = top_p
+    config.top_k = top_k
     config.min_p = min_p
     config.repeat_penalty = repeat_penalty
+    config.presence_penalty = presence_penalty
+    return (
+        name,
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        repeat_penalty,
+        presence_penalty,
+    )
 
 
-def _sampling_profile_status(profile: tuple[str, float, float, float, float]) -> str:
-    name, temperature, top_p, min_p, repeat_penalty = profile
+def _sampling_state_snapshot(config: Any) -> dict[str, tuple[bool, Any]]:
+    return {
+        name: (hasattr(config, name), getattr(config, name, None))
+        for name in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repeat_penalty",
+            "presence_penalty",
+        )
+    }
+
+
+def _restore_sampling_state(
+    config: Any,
+    state: dict[str, tuple[bool, Any]],
+) -> None:
+    for name, (existed, value) in state.items():
+        if existed:
+            setattr(config, name, value)
+        else:
+            with suppress(AttributeError):
+                delattr(config, name)
+
+
+def _sampling_profile_status(
+    profile: tuple[str, float, float, int, float, float, float],
+) -> str:
+    name, temperature, top_p, top_k, min_p, repeat_penalty, presence_penalty = profile
     return (
         "Sampling profile: "
         f"{name} temp={_sampling_value(temperature)} top_p={_sampling_value(top_p)} "
-        f"min_p={_sampling_value(min_p)} repeat_penalty={_sampling_value(repeat_penalty)} "
+        f"top_k={top_k} min_p={_sampling_value(min_p)} "
+        f"repeat_penalty={_sampling_value(repeat_penalty)} "
+        f"presence_penalty={_sampling_value(presence_penalty)} "
         "(temporary route profile; original GUI/config values restore after this request)."
     )
 
@@ -7214,7 +7388,7 @@ def _workspace_runtime_capabilities(base: Any, workspace: Path | None = None) ->
         cached = getattr(base, "_QUBITZ_WSL_WINDOWS_EXECUTABLE_INTEROP", None)
         if cached is None:
             cached = _wsl_windows_executable_interop_probe()
-            setattr(base, "_QUBITZ_WSL_WINDOWS_EXECUTABLE_INTEROP", bool(cached))
+            base._QUBITZ_WSL_WINDOWS_EXECUTABLE_INTEROP = bool(cached)
         interop_available = bool(cached)
     workspace_is_windows_backed = bool(workspace is not None and _is_windows_backed_workspace(workspace))
     environment_candidates = _project_environment_candidates(workspace) if workspace is not None else []
@@ -8475,6 +8649,15 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             return max(safety_margin_mib, total_mib - budget + safety_margin_mib)
         return safety_margin_mib
 
+    def _fit_context_floor() -> int:
+        """Select the guaranteed fit context without changing the configured maximum."""
+        if _variant_vram_budget_mib() > 0:
+            floor = 32768
+        else:
+            floor = 131072
+        configured = int(getattr(base, "DEFAULT_NUM_CTX", floor) or floor)
+        return min(configured, floor)
+
     def _keep_configured_context(model_path: str, usable_mib: int) -> bool:
         """Whether the configured --ctx-size fits alongside all weights in VRAM."""
         size = _model_size_mib(model_path)
@@ -8488,7 +8671,14 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             return None
         total_mib = _total_vram_mib()
         margin_mib = _fit_margin_mib(total_mib) if total_mib else safety_margin_mib
-        args = ["--fit", "on", "--fit-ctx", "16384", "--fit-target", str(margin_mib)]
+        args = [
+            "--fit",
+            "on",
+            "--fit-ctx",
+            str(_fit_context_floor()),
+            "--fit-target",
+            str(margin_mib),
+        ]
         usable_mib = max(0, total_mib - margin_mib)
         size_mib = _model_size_mib(model_path)
         crowded = usable_mib > 0 and size_mib > (usable_mib * 9) // 10
@@ -8703,14 +8893,79 @@ def _patch_streaming_chat(base: Any) -> None:
     def _discard_stream_delta(_delta: str) -> None:
         return None
 
+    def _sync_loaded_context(self: Any) -> None:
+        loaded_context = _loaded_llamacpp_context_window(self)
+        if loaded_context <= 0:
+            return
+        requested_context = int(
+            getattr(
+                self.config,
+                "_qubitz_requested_num_ctx",
+                getattr(self.config, "num_ctx", loaded_context),
+            )
+            or loaded_context
+        )
+        self.config._qubitz_requested_num_ctx = requested_context
+        self.config.num_ctx = min(requested_context, loaded_context)
+
+    def _normalize_chat_response(self: Any, raw: dict[str, Any]) -> dict[str, Any]:
+        choices = raw.get("choices") or []
+        choice = choices[0] if choices else {}
+        message = choice.get("message") or {}
+        content = message.get("content") or ""
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False)
+        return {
+            "message": {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": self._normalize_tool_calls(message.get("tool_calls")),
+            },
+            "usage": raw.get("usage") or {},
+            "timings": raw.get("timings") or {},
+            "finish_reason": choice.get("finish_reason"),
+        }
+
+    def _non_streaming_chat(
+        self: Any,
+        *,
+        forced_tool_choice: dict[str, Any] | str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        _sync_loaded_context(self)
+        stream_state.forced_tool_choice = None
+        payload = {
+            "model": kwargs["model_name"],
+            "messages": kwargs["messages"],
+            "stream": False,
+            "tools": kwargs["tools"],
+            "tool_choice": forced_tool_choice or "auto",
+            "parallel_tool_calls": False,
+            "parse_tool_calls": True,
+            "max_tokens": kwargs["num_predict"],
+            "temperature": kwargs["temperature"],
+            "top_p": kwargs["top_p"],
+            "top_k": int(getattr(self.config, "top_k", 0)),
+            "min_p": kwargs["min_p"],
+            "repeat_penalty": kwargs["repeat_penalty"],
+            "presence_penalty": float(getattr(self.config, "presence_penalty", 0.0)),
+        }
+        raw = self._call_with_fallback("post_json", "/v1/chat/completions", payload)
+        return _normalize_chat_response(self, raw)
+
     def _chat(self: Any, **kwargs: Any) -> dict[str, Any]:
+        _sync_loaded_context(self)
         callback = getattr(stream_state, "callback", None)
         forced_tool_choice = getattr(stream_state, "forced_tool_choice", None)
         transport = getattr(self, "transport", None)
         if getattr(transport, "label", "") != "direct" or (
             callback is None and forced_tool_choice is None
         ):
-            return original_chat(self, **kwargs)
+            return _non_streaming_chat(
+                self,
+                forced_tool_choice=forced_tool_choice,
+                **kwargs,
+            )
         if callback is None:
             callback = _discard_stream_delta
         stream_state.forced_tool_choice = None
@@ -8726,8 +8981,10 @@ def _patch_streaming_chat(base: Any) -> None:
             "max_tokens": kwargs["num_predict"],
             "temperature": kwargs["temperature"],
             "top_p": kwargs["top_p"],
+            "top_k": int(getattr(self.config, "top_k", 0)),
             "min_p": kwargs["min_p"],
             "repeat_penalty": kwargs["repeat_penalty"],
+            "presence_penalty": float(getattr(self.config, "presence_penalty", 0.0)),
         }
         reasoning_budget = getattr(stream_state, "reasoning_budget", None)
         if reasoning_budget is not None:
@@ -8801,7 +9058,11 @@ def _patch_streaming_chat(base: Any) -> None:
         except Exception:
             if received_event:
                 raise
-            return original_chat(self, **kwargs)
+            return _non_streaming_chat(
+                self,
+                forced_tool_choice=forced_tool_choice,
+                **kwargs,
+            )
         if pending_parts:
             callback("".join(pending_parts))
         tool_calls = [tool_parts[index] for index in sorted(tool_parts)][:1]
@@ -9628,14 +9889,14 @@ class LocalOnlyApp:
             def _adaptive_step_budget(self, prompt: str) -> tuple[int, list[str]]:
                 original = int(getattr(self.config, "max_steps", getattr(base, "MAX_TOOL_STEPS", 0)))
                 prompt_ceiling = self._effective_prompt_max_steps(prompt)
-                setattr(self.config, "max_steps", prompt_ceiling)
+                self.config.max_steps = prompt_ceiling
                 try:
                     budget, reasons = super()._adaptive_step_budget(prompt)
                     if prompt_ceiling > 0:
                         budget = min(budget, prompt_ceiling)
                     return budget, reasons
                 finally:
-                    setattr(self.config, "max_steps", original)
+                    self.config.max_steps = original
 
             def _is_retryable_final_answer(self, prompt: str, answer: str) -> bool:
                 normalized = answer.strip()
@@ -11287,10 +11548,7 @@ class LocalOnlyApp:
                 original_cache = self._tool_definitions_cache
                 original_count = self._tool_count_cache
                 original_list_tools = base.MCPHost.list_tools
-                original_temperature = getattr(self.config, "temperature", None)
-                original_top_p = getattr(self.config, "top_p", None)
-                original_min_p = getattr(self.config, "min_p", None)
-                original_repeat_penalty = getattr(self.config, "repeat_penalty", None)
+                original_sampling_values = _sampling_state_snapshot(self.config)
                 if bypass_retrieval:
                     class _DisabledSkillRegistry:
                         warnings: list[str] = []
@@ -11464,8 +11722,12 @@ class LocalOnlyApp:
                     tools = await original_list_tools(host_self)
                     return self._prioritize_tools_for_prompt(prompt, tools)
 
-                sampling_profile = _sampling_profile_for_route(user_prompt, self._route_decision.selected_route)
-                _apply_sampling_profile(self.config, sampling_profile)
+                sampling_profile = _sampling_profile_for_route(
+                    user_prompt,
+                    self._route_decision.selected_route,
+                    getattr(self.config, "model_name", None),
+                )
+                sampling_profile = _apply_sampling_profile(self.config, sampling_profile)
                 self._emit(callback, "status", _sampling_profile_status(sampling_profile))
                 base.MCPHost.list_tools = _prompt_aware_list_tools
                 self._filter_cached_tool_definitions(prompt)
@@ -11526,14 +11788,7 @@ class LocalOnlyApp:
                     base.set_qubitz_reasoning_budget(None)
                     base.set_qubitz_reasoning_mode(None)
                     base.MCPHost.list_tools = original_list_tools
-                    if original_temperature is not None:
-                        self.config.temperature = original_temperature
-                    if original_top_p is not None:
-                        self.config.top_p = original_top_p
-                    if original_min_p is not None:
-                        self.config.min_p = original_min_p
-                    if original_repeat_penalty is not None:
-                        self.config.repeat_penalty = original_repeat_penalty
+                    _restore_sampling_state(self.config, original_sampling_values)
                     self._tool_definitions_cache = original_cache
                     self._tool_count_cache = original_count
                     if original_format_context is not None:
@@ -12216,15 +12471,27 @@ def _install_gui_temperature_status_patch(app: LocalOnlyApp) -> None:
 
         def __init__(self, config: Any) -> None:
             super().__init__(config)
+            default_profile = _sampling_profile_for_route(
+                "",
+                "simple_answer",
+                getattr(config, "model_name", None),
+            )
+            self._temperature_profile_default = float(default_profile[1])
+            for target in (self.config, self.agent.config):
+                target.temperature = self._temperature_profile_default
+                with suppress(AttributeError):
+                    delattr(target, "_qubitz_manual_temperature_override")
             if not hasattr(self, "temperature_var"):
                 self.temperature_var = self.tk.StringVar(
                     master=self.root,
-                    value=f"{float(getattr(self.config, 'temperature', base.DEFAULT_CHAT_TEMPERATURE)):g}",
+                    value=f"{self._temperature_profile_default:g}",
                 )
                 controls = self.num_predict_entry.master
                 self.ttk.Label(controls, text="Temperature").pack(side="left", padx=(16, 0))
                 self.temperature_entry = self.ttk.Entry(controls, textvariable=self.temperature_var, width=8)
                 self.temperature_entry.pack(side="left", padx=(6, 0))
+            else:
+                self.temperature_var.set(f"{self._temperature_profile_default:g}")
             backend_url = getattr(config, "server_url", "") or base.DEFAULT_LLAMACPP_BASE_URL
             self._append_transcript("system", f"Local llama.cpp backend: {backend_url}")
 
@@ -12310,8 +12577,14 @@ def _install_gui_temperature_status_patch(app: LocalOnlyApp) -> None:
                     raise ValueError("Temperature must be a number.") from exc
                 if temperature < 0:
                     raise ValueError("Temperature must be a non-negative number.")
-                self.config.temperature = temperature
-                self.agent.config.temperature = temperature
+                is_manual_override = abs(temperature - self._temperature_profile_default) > 1e-12
+                for target in (self.config, self.agent.config):
+                    target.temperature = temperature
+                    if is_manual_override:
+                        target._qubitz_manual_temperature_override = temperature
+                    else:
+                        with suppress(AttributeError):
+                            delattr(target, "_qubitz_manual_temperature_override")
 
     base.QubitzGUI = TemperatureStatusGUI
 
@@ -13943,9 +14216,7 @@ class _ToolPermissionBroker:
                 re.IGNORECASE,
             ):
                 categories.add("tests")
-            if normalized == "start_project_mcp_server" and status in {"ready", "running", "started"}:
-                categories.add("service_started")
-            elif re.search(r"\b(?:serve|server|service|mcp)\b", command_text, re.IGNORECASE):
+            if normalized == "start_project_mcp_server" and status in {"ready", "running", "started"} or re.search(r"\b(?:serve|server|service|mcp)\b", command_text, re.IGNORECASE):
                 categories.add("service_started")
         if success and normalized == "stop_project_mcp_server" and bool(structured.get("stopped")):
             categories.add("service_stopped")
@@ -14018,6 +14289,23 @@ class _ToolPermissionBroker:
         fingerprint = self._result_fingerprint(normalized, arguments)
         self._audit("completed" if success else "failed", normalized, arguments, fingerprint, status)
         self._track_transaction_recovery_progress()
+        if (
+            self.current_prompt
+            and self.completion_interrupt_enabled
+            and normalized in mutation_tools
+            and success
+            and status != "patch_staged"
+            and self.transaction_changed_hashes
+            and not self.transaction_recovery_interrupt_requested
+            and self.transaction_recovery_callback is not None
+        ):
+            required, missing = self.completion_report(self.current_prompt)
+            if "tests" in required and "tests" in missing:
+                self.transaction_recovery_interrupt_requested = True
+                self._emit(
+                    "Atomic edit committed; handing control to wrapper-owned test verification before another model step."
+                )
+                self.transaction_recovery_callback()
         if (
             self.current_prompt
             and self.completion_interrupt_enabled
@@ -17539,9 +17827,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             structured_output=True,
         )
         def fetch_url(url: str, timeout_seconds: int = 30, max_bytes: int = 1000000) -> dict[str, Any]:
-            from html.parser import HTMLParser
             import urllib.error
             import urllib.request
+            from html.parser import HTMLParser
             from urllib.parse import urlsplit
 
             parsed = urlsplit(url.strip())
@@ -17699,8 +17987,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             structured_output=True,
         )
         def search_web(query: str, max_results: int = 8, timeout_seconds: int = 30) -> dict[str, Any]:
-            from html.parser import HTMLParser
             import urllib.request
+            from html.parser import HTMLParser
             from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
             normalized_query = " ".join(str(query or "").split())
@@ -18318,7 +18606,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     os.environ.get(NETWORK_MODE_ENV_NAME, DEFAULT_NETWORK_MODE),
                 )
             )
-            setattr(self.config, "network_mode", self.network_mode)
+            self.config.network_mode = self.network_mode
             os.environ[NETWORK_MODE_ENV_NAME] = self.network_mode
 
         def set_access_mode(self, value: Any) -> None:
@@ -18981,7 +19269,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         add_candidate(test_file)
 
                 imported_candidates: list[Path] = []
-                for test_file in list(candidates):
+                for test_file in candidates:
                     if not (
                         test_file.name.startswith("test_")
                         or test_file.name.endswith("_test.py")
@@ -20371,7 +20659,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     transaction_recovery_blocked = False
                     if committed_verification is not None:
                         verification_passed, verification_summary = committed_verification
-                        if verification_passed is True:
+                        if verification_passed is True or verification_passed is False:
                             answer = verification_summary
                         elif verification_passed is None:
                             answer = verification_summary
@@ -20813,17 +21101,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
     class HardenedGUI(original_gui):
         def __init__(self, config: Any) -> None:
             if not hasattr(config, "access_mode"):
-                setattr(
-                    config,
-                    "access_mode",
-                    os.environ.get(ACCESS_MODE_ENV_NAME, DEFAULT_ACCESS_MODE),
-                )
+                config.access_mode = os.environ.get(ACCESS_MODE_ENV_NAME, DEFAULT_ACCESS_MODE)
             if not hasattr(config, "network_mode"):
-                setattr(
-                    config,
-                    "network_mode",
-                    os.environ.get(NETWORK_MODE_ENV_NAME, DEFAULT_NETWORK_MODE),
-                )
+                config.network_mode = os.environ.get(NETWORK_MODE_ENV_NAME, DEFAULT_NETWORK_MODE)
             super().__init__(config)
 
             def paste_prompt_text(_event: Any) -> str:
@@ -20981,6 +21261,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py": "48 GB VRAM (2 x 24 GB)",
                 "AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py": "48 GB VRAM (2 x 24 GB)",
                 "AI_Agent_Qubitz_Qwen3-Next-80B-A3B-IT-Q4.py": "48 GB VRAM (2 x 24 GB)",
+                "AI_Agent_Qubitz_Xorton.WX-Computing.LARGE.2026.3-Q4.py": "48 GB VRAM (2 x 24 GB)",
             }
             grouped: dict[str, list[str]] = {
                 "12 GB VRAM": [],
@@ -21173,8 +21454,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         def _apply_network_mode(self, _event: Any = None) -> None:
             mode = _normalize_network_mode(self.network_mode_var.get())
-            setattr(self.config, "network_mode", mode)
-            setattr(self.agent, "network_mode", mode)
+            self.config.network_mode = mode
+            self.agent.network_mode = mode
             os.environ[NETWORK_MODE_ENV_NAME] = mode
 
         def _sync_runtime_settings(self) -> None:
