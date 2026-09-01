@@ -9063,12 +9063,21 @@ def _patch_streaming_chat(base: Any) -> None:
         if fenced is not None:
             rendered = fenced.group(1).strip()
         start = rendered.find("{")
-        end = rendered.rfind("}")
-        if start < 0 or end < start:
+        if start < 0:
             raise ValueError("The model did not return a JSON object.")
-        parsed = json.loads(rendered[start : end + 1])
+        decoder = json.JSONDecoder()
+        parsed, consumed = decoder.raw_decode(rendered[start:])
         if not isinstance(parsed, dict):
             raise ValueError("The model JSON response must be an object.")
+        trailing = rendered[start + consumed :].strip()
+        for index, character in enumerate(trailing):
+            if character not in "[{":
+                continue
+            try:
+                decoder.raw_decode(trailing[index:])
+            except json.JSONDecodeError:
+                continue
+            raise ValueError("The model returned multiple JSON values.")
         return parsed
 
     def _json_chat(
