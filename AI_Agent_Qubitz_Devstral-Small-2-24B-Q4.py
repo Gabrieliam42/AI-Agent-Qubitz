@@ -8863,6 +8863,69 @@ def _patch_streaming_chat(base: Any) -> None:
         self.config._qubitz_requested_num_ctx = requested_context
         self.config.num_ctx = min(requested_context, loaded_context)
 
+    @staticmethod
+    def _positive_metric(value: Any) -> float:
+        if isinstance(value, bool):
+            return 0.0
+        try:
+            resolved = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, resolved)
+
+    def _reset_generation_metrics(self: Any) -> None:
+        self._qubitz_generation_model_calls = 0
+        self._qubitz_generation_measured_calls = 0
+        self._qubitz_generation_tokens = 0.0
+        self._qubitz_generation_seconds = 0.0
+
+    def _record_generation_metrics(
+        self: Any,
+        response: dict[str, Any],
+        observed_seconds: float,
+    ) -> None:
+        self._qubitz_generation_model_calls = int(
+            getattr(self, "_qubitz_generation_model_calls", 0)
+        ) + 1
+        usage = response.get("usage") if isinstance(response, dict) else None
+        timings = response.get("timings") if isinstance(response, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        timings = timings if isinstance(timings, dict) else {}
+
+        predicted_tokens = _positive_metric(timings.get("predicted_n"))
+        completion_tokens = _positive_metric(usage.get("completion_tokens"))
+        tokens = predicted_tokens or completion_tokens
+        generation_seconds = _positive_metric(timings.get("predicted_ms")) / 1000.0
+        if generation_seconds <= 0.0:
+            tokens_per_second = _positive_metric(timings.get("predicted_per_second"))
+            if tokens > 0.0 and tokens_per_second > 0.0:
+                generation_seconds = tokens / tokens_per_second
+        if generation_seconds <= 0.0 and tokens > 0.0:
+            generation_seconds = max(0.0, float(observed_seconds))
+        if tokens <= 0.0 or generation_seconds <= 0.0:
+            return
+
+        self._qubitz_generation_measured_calls = int(
+            getattr(self, "_qubitz_generation_measured_calls", 0)
+        ) + 1
+        self._qubitz_generation_tokens = float(
+            getattr(self, "_qubitz_generation_tokens", 0.0)
+        ) + tokens
+        self._qubitz_generation_seconds = float(
+            getattr(self, "_qubitz_generation_seconds", 0.0)
+        ) + generation_seconds
+
+    def _generation_metrics(self: Any) -> dict[str, Any]:
+        tokens = float(getattr(self, "_qubitz_generation_tokens", 0.0))
+        seconds = float(getattr(self, "_qubitz_generation_seconds", 0.0))
+        return {
+            "model_calls": int(getattr(self, "_qubitz_generation_model_calls", 0)),
+            "measured_calls": int(getattr(self, "_qubitz_generation_measured_calls", 0)),
+            "completion_tokens": round(tokens),
+            "generation_seconds": seconds,
+            "tokens_per_second": tokens / seconds if tokens > 0.0 and seconds > 0.0 else None,
+        }
+
     def _normalize_chat_response(self: Any, raw: dict[str, Any]) -> dict[str, Any]:
         choices = raw.get("choices") or []
         choice = choices[0] if choices else {}
@@ -8953,6 +9016,7 @@ def _patch_streaming_chat(base: Any) -> None:
         last_emit_at = time.monotonic()
         tool_parts: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
+        timings: dict[str, Any] = {}
         finish_reason: str | None = None
         received_event = False
         try:
@@ -8967,12 +9031,16 @@ def _patch_streaming_chat(base: Any) -> None:
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
-                        if not data or data == "[DONE]":
+                        if not data:
                             continue
+                        if data == "[DONE]":
+                            break
                         event = json.loads(data)
                         received_event = True
                         if isinstance(event.get("usage"), dict):
                             usage = event["usage"]
+                        if isinstance(event.get("timings"), dict):
+                            timings = event["timings"]
                         choices = event.get("choices") or []
                         if not choices:
                             continue
@@ -9008,8 +9076,6 @@ def _patch_streaming_chat(base: Any) -> None:
                                 current["function"]["name"] += str(function["name"])
                             if function.get("arguments"):
                                 current["function"]["arguments"] += str(function["arguments"])
-                        if choice.get("finish_reason") is not None:
-                            break
         except Exception:
             if received_event:
                 raise
@@ -9028,7 +9094,7 @@ def _patch_streaming_chat(base: Any) -> None:
                 "tool_calls": base.LlamaCppClient._normalize_tool_calls(tool_calls),
             },
             "usage": usage,
-            "timings": {},
+            "timings": timings,
             "finish_reason": finish_reason,
         }
 
@@ -9079,6 +9145,7 @@ def _patch_streaming_chat(base: Any) -> None:
     ) -> dict[str, Any]:
         transport = getattr(self, "transport", None)
         if getattr(transport, "label", "") != "direct":
+            started_at = time.perf_counter()
             response = original_chat(
                 self,
                 model_name=model_name,
@@ -9090,6 +9157,7 @@ def _patch_streaming_chat(base: Any) -> None:
                 min_p=0.01,
                 repeat_penalty=1.02,
             )
+            _record_generation_metrics(self, response, time.perf_counter() - started_at)
             return _parse_json_object((response.get("message") or {}).get("content"))
         payload = {
             "model": model_name,
@@ -9122,12 +9190,19 @@ def _patch_streaming_chat(base: Any) -> None:
                 if response_format is not None:
                     request_payload["response_format"] = response_format
                 try:
+                    started_at = time.perf_counter()
                     response = client.post(
                         f"{transport.base_url}/v1/chat/completions",
                         json=request_payload,
                     )
                     response.raise_for_status()
                     raw = response.json()
+                    normalized = _normalize_chat_response(self, raw)
+                    _record_generation_metrics(
+                        self,
+                        normalized,
+                        time.perf_counter() - started_at,
+                    )
                     choices = raw.get("choices") or []
                     message = (choices[0] if choices else {}).get("message") or {}
                     return _parse_json_object(message.get("content"))
@@ -9198,7 +9273,10 @@ def _patch_streaming_chat(base: Any) -> None:
         _fit_messages_to_window(self, kwargs)
         for attempt in range(2):
             try:
-                return _chat(self, **kwargs)
+                started_at = time.perf_counter()
+                response = _chat(self, **kwargs)
+                _record_generation_metrics(self, response, time.perf_counter() - started_at)
+                return response
             except RuntimeError as exc:
                 message = str(exc)
                 transient = any(
@@ -9294,6 +9372,8 @@ def _patch_streaming_chat(base: Any) -> None:
 
     base.LlamaCppClient.chat = _chat_with_transient_retry
     base.LlamaCppClient._qubitz_streaming_patched = True
+    base.LlamaCppClient.qubitz_reset_generation_metrics = _reset_generation_metrics
+    base.LlamaCppClient.qubitz_generation_metrics = _generation_metrics
     base.set_qubitz_stream_callback = _set_stream_callback
     base.set_qubitz_reasoning_budget = _set_reasoning_budget
     base.set_qubitz_reasoning_mode = _set_reasoning_mode
@@ -18371,13 +18451,35 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             )
             super().request_cancel()
 
+        def _format_completion_telemetry(self, elapsed_seconds: float) -> str:
+            rounded_elapsed = max(0, round(elapsed_seconds))
+            minutes, seconds = divmod(rounded_elapsed, 60)
+            metrics = getattr(self, "_last_generation_metrics", {})
+            speed = metrics.get("tokens_per_second") if isinstance(metrics, dict) else None
+            if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0.0:
+                speed_text = f"{speed:.2f} tokens/s"
+            elif isinstance(metrics, dict) and int(metrics.get("model_calls", 0) or 0) > 0:
+                speed_text = "unavailable"
+            else:
+                speed_text = "n/a"
+            return f"(Elapsed time: {minutes:02d}:{seconds:02d} | Token speed: {speed_text})"
+
         def run_sync(self, prompt: str, callback: Any = None) -> str:
             self.set_access_mode(getattr(self.config, "access_mode", self.access_mode))
+            existing_llm = getattr(self, "_llm", None)
+            reset_metrics = getattr(existing_llm, "qubitz_reset_generation_metrics", None)
+            if callable(reset_metrics):
+                reset_metrics()
+            self._last_generation_metrics: dict[str, Any] = {}
             started_at = base.time.perf_counter()
             answer = super().run_sync(prompt, callback)
-            elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
-            minutes, seconds = divmod(elapsed_seconds, 60)
-            return f"{str(answer).rstrip()}\n\n({minutes:02d}:{seconds:02d})"
+            active_llm = getattr(self, "_llm", None)
+            read_metrics = getattr(active_llm, "qubitz_generation_metrics", None)
+            if callable(read_metrics):
+                self._last_generation_metrics = read_metrics()
+            elapsed_seconds = base.time.perf_counter() - started_at
+            telemetry = self._format_completion_telemetry(elapsed_seconds)
+            return f"{str(answer).rstrip()}\n\n{telemetry}"
 
         def __init__(self, config: Any) -> None:
             super().__init__(config)
@@ -20172,7 +20274,109 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 ]
             )
 
+        def _social_fast_path_response(self, prompt: str) -> tuple[str, str] | None:
+            normalized = re.sub(r"\s+", " ", str(prompt or "").strip()).casefold()
+            normalized = re.sub(r"[.!?]+$", "", normalized).strip()
+            greetings = {
+                "good afternoon",
+                "good evening",
+                "good morning",
+                "greetings",
+                "hello",
+                "hello again",
+                "hello there",
+                "hey",
+                "hey again",
+                "hey there",
+                "hi",
+                "hi again",
+                "hi there",
+                "howdy",
+            }
+            courtesy_prompts = {"thanks", "thank you"}
+            farewell_prompts = {"bye", "goodbye", "see you"}
+            check_in_prompts = {"how are you"}
+            identity_questions = {
+                "are you qubitz",
+                "can you tell me who you are",
+                "identify yourself",
+                "please tell me who you are",
+                "tell me who you are",
+                "what are you",
+                "what is your name",
+                "what should i call you",
+                "what's your name",
+                "who are you",
+            }
+            ai_identity_questions = {"are you ai", "are you an ai"}
+            human_identity_questions = {"are you human", "are you a human"}
+            model_questions = {
+                "what model are you using",
+                "what model is this",
+                "which model are you using",
+                "which qubitz variant is this",
+            }
+            model_label = str(
+                getattr(base, "DEFAULT_GGUF_MODEL_LABEL", "")
+                or getattr(self.config, "model_name", "")
+                or "a local model"
+            ).strip()
+            if normalized in greetings:
+                return (
+                    "greeting",
+                    "Hello. I am Qubitz, a local-first AI coding and tool agent. "
+                    f"This variant is configured to use {model_label} as its generation model. How can I help?",
+                )
+            if normalized in courtesy_prompts:
+                return "courtesy message", "You're welcome."
+            if normalized in farewell_prompts:
+                return "farewell", "Goodbye."
+            if normalized in check_in_prompts:
+                return "social check-in", "I'm ready to help."
+            if normalized in identity_questions:
+                return (
+                    "identity question",
+                    "I am Qubitz, a local-first AI coding and tool agent. "
+                    f"This variant is configured to use {model_label} as its generation model.",
+                )
+            if normalized in ai_identity_questions:
+                return (
+                    "AI identity question",
+                    "Yes. I am Qubitz, a local-first AI coding and tool agent. "
+                    f"This variant is configured to use {model_label} as its generation model.",
+                )
+            if normalized in human_identity_questions:
+                return (
+                    "human identity question",
+                    "No. I am Qubitz, a local-first AI coding and tool agent, not a human. "
+                    f"This variant is configured to use {model_label} as its generation model.",
+                )
+            if normalized in model_questions:
+                return (
+                    "model identity question",
+                    f"This Qubitz variant is configured to use {model_label} as its local generation model.",
+                )
+            return None
+
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
+            social_response = self._social_fast_path_response(prompt)
+            if social_response is not None:
+                response_kind, answer = social_response
+                if callback is not None:
+                    callback(
+                        "status",
+                        f"Wrapper fast path: standalone {response_kind}; skipped retrieval, embeddings, tools, "
+                        "and model generation.",
+                    )
+                with suppress(Exception):
+                    self.history.extend(
+                        [
+                            {"role": "user", "content": prompt},
+                            {"role": "assistant", "content": answer},
+                        ]
+                    )
+                    self._compact_history()
+                return answer
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
             effective_prompt = prompt
             if (
@@ -21277,10 +21481,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         def _finalize_elapsed_message(self, message: str) -> str:
             started_at = getattr(self, "_qubitz_prompt_started_at", base.time.perf_counter())
-            elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
-            minutes, seconds = divmod(elapsed_seconds, 60)
-            rendered = re.sub(r"\n\n\(\d+:\d{2}\)\s*$", "", str(message).rstrip())
-            return f"{rendered}\n\n({minutes:02d}:{seconds:02d})"
+            elapsed_seconds = base.time.perf_counter() - started_at
+            rendered = re.sub(
+                r"\n\n\((?:Elapsed time:\s*)?\d+:\d{2}(?:\s*\|\s*Token speed:[^)]*)?\)\s*$",
+                "",
+                str(message).rstrip(),
+            )
+            telemetry = self.agent._format_completion_telemetry(elapsed_seconds)
+            return f"{rendered}\n\n{telemetry}"
 
         def _start_prompt(self, prompt: str, *, queued: bool = False) -> None:
             if not getattr(self, "_qubitz_prompt_timer_armed", False):
@@ -21300,10 +21508,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 details = "".join(base.traceback.format_exception(exc))
                 self.event_queue.put((run_id, "error", details))
             else:
-                elapsed_seconds = max(0, int(round(base.time.perf_counter() - started_at)))
-                minutes, seconds = divmod(elapsed_seconds, 60)
-                rendered = re.sub(r"\n\n\(\d+:\d{2}\)\s*$", "", str(answer).rstrip())
-                self.event_queue.put((run_id, "answer", f"{rendered}\n\n({minutes:02d}:{seconds:02d})"))
+                elapsed_seconds = base.time.perf_counter() - started_at
+                rendered = re.sub(
+                    r"\n\n\((?:Elapsed time:\s*)?\d+:\d{2}(?:\s*\|\s*Token speed:[^)]*)?\)\s*$",
+                    "",
+                    str(answer).rstrip(),
+                )
+                telemetry = self.agent._format_completion_telemetry(elapsed_seconds)
+                self.event_queue.put((run_id, "answer", f"{rendered}\n\n{telemetry}"))
             finally:
                 self.event_queue.put((run_id, "done", ""))
 
