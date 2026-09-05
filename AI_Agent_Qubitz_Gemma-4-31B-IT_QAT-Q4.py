@@ -359,6 +359,263 @@ class TaskIntent:
 
 
 @dataclass(frozen=True)
+class TurnRelation:
+    kind: str
+    reason: str
+    previous_user: str = ""
+    previous_assistant: str = ""
+    prior_turn_unfinished: bool = False
+
+    @property
+    def depends_on_prior(self) -> bool:
+        return self.kind in {"follow_up", "mixed"}
+
+    def to_trace_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "reason": self.reason,
+            "depends_on_prior": self.depends_on_prior,
+            "prior_turn_unfinished": self.prior_turn_unfinished,
+        }
+
+
+_TURN_RELATION_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "again",
+        "also",
+        "answer",
+        "before",
+        "could",
+        "current",
+        "does",
+        "from",
+        "have",
+        "into",
+        "just",
+        "make",
+        "more",
+        "project",
+        "question",
+        "request",
+        "should",
+        "that",
+        "their",
+        "there",
+        "these",
+        "thing",
+        "this",
+        "those",
+        "using",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+        "would",
+    }
+)
+
+
+def _turn_relation_tokens(value: Any) -> set[str]:
+    tokens = {
+        token.strip("._:/\\-")
+        for token in re.findall(r"[A-Za-z0-9_.:/\\-]{4,}", str(value or "").casefold())
+    }
+    return {
+        token
+        for token in tokens
+        if token and token not in _TURN_RELATION_STOPWORDS and not token.isdigit()
+    }
+
+
+def _independent_request_routing_prompt(prompt: str) -> str:
+    normalized = " ".join(str(prompt or "").strip().split())
+    match = re.match(
+        r"^(?:new|separate|unrelated|different)\s+(?:question|request|task|topic)\b"
+        r"\s*[:;,\-]?\s*(?P<body>.*)$",
+        normalized,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return normalized
+    return str(match.group("body") or "").strip() or normalized
+
+
+def _classify_turn_relation(
+    prompt: str,
+    history: Sequence[dict[str, Any]],
+    history_summary: str = "",
+) -> TurnRelation:
+    """Classify whether the current turn semantically depends on recent completed turns."""
+    normalized = " ".join(str(prompt or "").strip().split())
+    lowered = normalized.casefold()
+    previous_user = ""
+    previous_assistant = ""
+    for item in reversed(list(history)):
+        role = str(item.get("role") or "").casefold()
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "assistant" and not previous_assistant:
+            previous_assistant = content
+        elif role == "user" and not previous_user:
+            previous_user = content
+        if previous_user and previous_assistant:
+            break
+    if not previous_user and not previous_assistant and not str(history_summary or "").strip():
+        return TurnRelation("new_request", "No earlier conversation state is available.")
+
+    prior_turn_unfinished = bool(
+        re.search(
+            r"\[Completion status:\s*(?:partial|cancelled)\]|unverified postconditions|"
+            r"stopped (?:after|before|without)|interrupted by user",
+            previous_assistant,
+            re.IGNORECASE,
+        )
+    )
+    if re.match(
+        r"^(?:new|separate|unrelated|different)\s+(?:question|request|task|topic)\b",
+        lowered,
+    ):
+        return TurnRelation(
+            "new_request",
+            "The user explicitly introduced an independent topic or objective.",
+            previous_user,
+            previous_assistant,
+            prior_turn_unfinished,
+        )
+
+    exact_follow_up = bool(
+        re.fullmatch(
+            r"(?:yes|no|ok(?:ay)?|approved|continue|resume|proceed|go on|keep going|"
+            r"retry|try again|why|why not|how so|are you sure|what do you mean|"
+            r"tell me more|explain more|elaborate|"
+            r"do (?:it|that|those|this|the fixes?)|apply (?:it|that|those|this|the fixes?)|"
+            r"use (?:it|that|those|this))(?:\s+(?:then|please|now))?[.!?]*",
+            lowered,
+        )
+    )
+    leading_follow_up = bool(
+        re.match(
+            r"^(?:yes|no|ok(?:ay)?|approved|and|but|also|instead|actually|however|"
+            r"i mean|so|then|continue|resume|proceed|retry|try again|what about|how about)\b",
+            lowered,
+        )
+    )
+    reference_text = re.sub(
+        r"\b(?:this|the current)\s+(?:project|workspace|repository|repo)\b",
+        " ",
+        lowered,
+    )
+    contextual_reference = bool(
+        re.search(
+            r"\b(?:it|that|these|those|they|them|former|latter|above|previous|earlier|"
+            r"(?:your\s+)?(?:last|latest|previous)\s+(?:answer|reply|response|output|result)|"
+            r"same (?:one|file|task|request|answer|approach|model|result))\b|"
+            r"\bthe\s+(?:first|second|third|fourth|other|last)\s+one\b",
+            reference_text,
+        )
+    )
+    prior_context = "\n".join(
+        part for part in (previous_user, previous_assistant, str(history_summary or "")) if part
+    )
+    shared_targets = _turn_relation_tokens(normalized).intersection(
+        _turn_relation_tokens(prior_context)
+    )
+    retrospective_related_question = bool(
+        shared_targets
+        and len(normalized.split()) <= 24
+        and re.match(r"^(?:how|why|what|which|did|does|is|are|was|were|can|could|should|would)\b", lowered)
+        and re.search(
+            r"\b(?:result|perform|performed|fail|failed|failure|work|worked|compare|compared|"
+            r"slow|slower|fast|faster|better|worse|finish|finished|happen|happened|change|"
+            r"changed|installed|running|stopped)\b",
+            lowered,
+        )
+    )
+    depends_on_prior = (
+        exact_follow_up
+        or leading_follow_up
+        or contextual_reference
+        or retrospective_related_question
+    )
+    if not depends_on_prior:
+        return TurnRelation(
+            "new_request",
+            "The prompt is self-contained and has no material reference to recent turns.",
+            previous_user,
+            previous_assistant,
+            prior_turn_unfinished,
+        )
+
+    mixed = bool(
+        re.search(r"\b(?:also|separately|in addition|after that|then)\b", lowered)
+        and bool(re.search(r"[;\n]|[.!?]\s+", str(prompt or "")))
+    )
+    if exact_follow_up:
+        reason = "The prompt is a direct continuation, confirmation, correction, or challenge."
+    elif contextual_reference:
+        reason = "The prompt contains a reference whose antecedent is in recent conversation state."
+    elif leading_follow_up:
+        reason = "The prompt explicitly modifies or extends the preceding turn."
+    else:
+        reason = "The prompt asks retrospectively about a distinctive recent target or result."
+    return TurnRelation(
+        "mixed" if mixed else "follow_up",
+        reason,
+        previous_user,
+        previous_assistant,
+        prior_turn_unfinished,
+    )
+
+
+def _conversation_only_follow_up(prompt: str, relation: TurnRelation) -> bool:
+    """Return whether recent dialogue alone can answer this follow-up safely."""
+    if relation.kind != "follow_up" or relation.prior_turn_unfinished:
+        return False
+    normalized = " ".join(str(prompt or "").strip().split())
+    lowered = normalized.casefold()
+    if not lowered or len(normalized) > 320:
+        return False
+    if re.search(r"https?://|\b(?:file|folder|directory|path|project|workspace|repo(?:sitory)?|script|"
+                 r"package|dependency|server|service|process|browser|url|mcp|tool)\b", lowered):
+        return False
+    if re.search(
+        r"^(?:(?:yes|no|ok(?:ay)?|approved|but|also|then|and|please)[,.:;!]?\s+)*"
+        r"(?:do|apply|implement|fix|edit|modify|update|create|delete|remove|rename|move|copy|"
+        r"run|execute|start|stop|cancel|install|uninstall|upgrade|continue|resume|retry|try again)\b",
+        lowered,
+    ):
+        return False
+    if re.search(
+        r"\b(?:can|could|would|will)\s+you\s+(?:do|apply|implement|fix|edit|modify|update|create|"
+        r"delete|remove|rename|move|copy|run|execute|start|stop|install|uninstall|upgrade)\b",
+        lowered,
+    ):
+        return False
+    if re.search(
+        r"\b(?:now|currently|still\s+(?:running|working|installed|open)|did\s+(?:it|that|they)\s+"
+        r"(?:finish|complete|change)|has\s+(?:it|that)\s+(?:finished|completed|changed))\b",
+        lowered,
+    ):
+        return False
+    return bool(
+        re.match(
+            r"^(?:why|why not|how|how so|what|which|who|where|when|is|are|was|were|did|does|"
+            r"can|could|should|would|regarding|about|tell me|explain|clarify|elaborate|"
+            r"your\s+(?:last|latest|previous))\b",
+            lowered,
+        )
+        or re.search(
+            r"\b(?:your\s+)?(?:last|latest|previous)\s+(?:answer|reply|response|output|result)\b",
+            lowered,
+        )
+    )
+
+
+@dataclass(frozen=True)
 class DependencyInstallManifest:
     environment: str | None
     packages: tuple[str, ...]
@@ -1370,6 +1627,8 @@ def _semantic_clause_speech_act(clause: str) -> str:
         "",
         imperative_text,
     )
+    imperative_text = re.sub(r"^(?:also|and)\s*,?\s+", "", imperative_text)
+    imperative_text = _independent_request_routing_prompt(imperative_text)
     imperative_text = re.sub(r"^(?:attempt|try)\s+to\s+", "", imperative_text)
     imperative = _SEMANTIC_ACTION_PATTERN.match(imperative_text) is not None
     if not imperative:
@@ -12034,21 +12293,47 @@ class LocalOnlyApp:
                 self.transcript.mark_set("insert", "1.0")
                 return "break"
 
-            def _handle_copy_shortcut(self, event: Any) -> str | None:
-                def _selected_text(widget: Any) -> str:
-                    try:
-                        ranges = widget.tag_ranges("sel")
-                        if ranges:
-                            return widget.get(ranges[0], ranges[-1])
-                    except Exception:
-                        pass
-                    try:
-                        if hasattr(widget, "selection_present") and not widget.selection_present():
-                            return ""
-                        return widget.selection_get()
-                    except Exception:
+            @staticmethod
+            def _selected_text_for_copy(widget: Any) -> str:
+                try:
+                    ranges = widget.tag_ranges("sel")
+                    if ranges:
+                        return widget.get(ranges[0], ranges[-1])
+                except Exception:
+                    pass
+                try:
+                    if hasattr(widget, "selection_present") and not widget.selection_present():
                         return ""
+                    return widget.selection_get()
+                except Exception:
+                    return ""
 
+            def _copy_selected_text(self, widget: Any) -> bool:
+                selected_text = self._selected_text_for_copy(widget)
+                if not selected_text:
+                    return False
+                self.root.clipboard_clear()
+                self.root.clipboard_append(selected_text)
+                self.root.update_idletasks()
+                return True
+
+            def _copy_context_selection(self) -> None:
+                widget = getattr(self, "_copy_context_widget", None)
+                if widget is not None:
+                    self._copy_selected_text(widget)
+
+            def _show_copy_context_menu(self, event: Any) -> str | None:
+                widget = getattr(event, "widget", None)
+                if widget is None or not self._selected_text_for_copy(widget):
+                    return None
+                self._copy_context_widget = widget
+                try:
+                    self._copy_context_menu.tk_popup(event.x_root, event.y_root)
+                finally:
+                    self._copy_context_menu.grab_release()
+                return "break"
+
+            def _handle_copy_shortcut(self, event: Any) -> str | None:
                 candidates: list[Any] = []
                 event_widget = getattr(event, "widget", None)
                 if event_widget is not None:
@@ -12061,13 +12346,8 @@ class LocalOnlyApp:
                     if widget not in candidates:
                         candidates.append(widget)
                 for widget in candidates:
-                    selected_text = _selected_text(widget)
-                    if not selected_text:
-                        continue
-                    self.root.clipboard_clear()
-                    self.root.clipboard_append(selected_text)
-                    self.root.update_idletasks()
-                    return "break"
+                    if self._copy_selected_text(widget):
+                        return "break"
                 return None
 
             def _start_prompt(self, prompt: str, *, queued: bool = False) -> None:
@@ -12163,11 +12443,23 @@ class LocalOnlyApp:
                 self.root.after(100, self._poll_events)
 
             def _ensure_transcript_tags(self) -> None:
+                if not hasattr(self, "_copy_context_menu"):
+                    self._copy_context_widget: Any | None = None
+                    self._copy_context_menu = self.tk.Menu(self.root, tearoff=False)
+                    self._copy_context_menu.add_command(label="Copy", command=self._copy_context_selection)
+                    self.root.unbind_all("<Control-c>")
+                    self.root.unbind_all("<Control-C>")
+                    self.transcript.bind("<Control-c>", self._handle_copy_shortcut)
+                    self.transcript.bind("<Control-C>", self._handle_copy_shortcut)
+                    self.transcript.bind("<Button-3>", self._show_copy_context_menu)
+                    self.prompt_box.bind("<Control-c>", self._handle_copy_shortcut)
+                    self.prompt_box.bind("<Control-C>", self._handle_copy_shortcut)
+                    self.prompt_box.bind("<Button-3>", self._show_copy_context_menu)
                 if getattr(self, "_transcript_tags_ready", False):
                     return
                 self.transcript.tag_configure("role_assistant", foreground="#ffffff")
                 self.transcript.tag_configure("role_process", foreground="#7fdc8b")
-                self.transcript.tag_configure("role_user", foreground="#ffffff")
+                self.transcript.tag_configure("role_user", foreground="#ff9a3c")
                 self.transcript.tag_configure("role_link", foreground="#7cc9ff", underline=True)
                 self.transcript.tag_bind("role_link", "<Enter>", lambda _event: self.transcript.configure(cursor="hand2"))
                 self.transcript.tag_bind("role_link", "<Leave>", lambda _event: self.transcript.configure(cursor="xterm"))
@@ -12180,7 +12472,7 @@ class LocalOnlyApp:
             def _append_transcript(self, role: str, message: str) -> None:
                 self._ensure_transcript_tags()
                 role_tag = "role_process"
-                if role == "user":
+                if role in {"user", "queued", "btw", "steer"}:
                     role_tag = "role_user"
                 elif role == "assistant":
                     role_tag = "role_assistant"
@@ -18656,13 +18948,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             minutes, seconds = divmod(rounded_elapsed, 60)
             metrics = getattr(self, "_last_generation_metrics", {})
             speed = metrics.get("tokens_per_second") if isinstance(metrics, dict) else None
+            telemetry_parts = [f"Elapsed time: {minutes:02d}:{seconds:02d}"]
             if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0.0:
-                speed_text = f"{speed:.2f} tokens/s"
+                telemetry_parts.append(f"Token speed: {speed:.2f} tokens/s")
             elif isinstance(metrics, dict) and int(metrics.get("model_calls", 0) or 0) > 0:
-                speed_text = "unavailable"
-            else:
-                speed_text = "n/a"
-            return f"(Elapsed time: {minutes:02d}:{seconds:02d} | Token speed: {speed_text})"
+                telemetry_parts.append("Token speed: unavailable")
+            return f"({' | '.join(telemetry_parts)})"
 
         def run_sync(self, prompt: str, callback: Any = None) -> str:
             self.set_access_mode(getattr(self.config, "access_mode", self.access_mode))
@@ -18684,6 +18975,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
         def __init__(self, config: Any) -> None:
             super().__init__(config)
             self._cancel_source = ""
+            self._turn_relation = TurnRelation(
+                "new_request",
+                "No current prompt has been classified yet.",
+            )
             self._tool_permission_broker = _ToolPermissionBroker(
                 base,
                 self.workspace,
@@ -19037,7 +19332,38 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         def _decide_route(self, prompt: str) -> Any:
             self._task_intent_for_prompt(prompt, "")
-            decision = super()._decide_route(prompt)
+            relation = getattr(self, "_turn_relation", None)
+            routing_prompt = (
+                _independent_request_routing_prompt(prompt)
+                if isinstance(relation, TurnRelation) and relation.kind == "new_request"
+                else prompt
+            )
+            decision = super()._decide_route(routing_prompt)
+            if isinstance(relation, TurnRelation):
+                decision = base.replace(
+                    decision,
+                    features={**decision.features, "turn_relation": relation.to_trace_dict()},
+                )
+                if _conversation_only_follow_up(prompt, relation):
+                    decision = base.replace(
+                        decision,
+                        selected_route="simple_answer",
+                        reason=(
+                            "This is a conversation-only follow-up whose antecedent is available in recent history; "
+                            "repository retrieval and tools are unnecessary."
+                        ),
+                        fallback_routes=["retrieval_plus_model", "tool_loop", "ask_user_missing_info"],
+                    )
+                elif relation.depends_on_prior and decision.selected_route == "ask_user_missing_info":
+                    decision = base.replace(
+                        decision,
+                        selected_route="retrieval_plus_model",
+                        reason=(
+                            "The current prompt depends on recent conversation state, so available history should "
+                            "be resolved before asking the user to repeat it."
+                        ),
+                        fallback_routes=["tool_loop", "ask_user_missing_info"],
+                    )
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
             dependency_manifest = _dependency_install_manifest(prompt)
             if dependency_manifest is not None:
@@ -20559,6 +20885,11 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             return None
 
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
+            self._turn_relation = _classify_turn_relation(
+                prompt,
+                getattr(self, "history", []),
+                getattr(self, "history_summary", ""),
+            )
             social_response = self._social_fast_path_response(prompt)
             if social_response is not None:
                 response_kind, answer = social_response
@@ -21153,11 +21484,35 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             route = str(route_name or "").strip().lower()
             task_intent = self._task_intent_for_prompt(user_prompt, route)
             task = task_intent.task_kind
+            relation = getattr(self, "_turn_relation", None)
+            relation_lines = ["Turn relation contract:"]
+            if isinstance(relation, TurnRelation) and relation.kind == "follow_up":
+                relation_lines.extend(
+                    [
+                        "- This prompt is a follow-up. Resolve references against the narrowest compatible recent antecedent and treat the current prompt as a delta, not a replacement for the whole prior task.",
+                        "- References to your last, latest, or previous answer, reply, response, output, or result bind to the most recent completed assistant output.",
+                        "- Preserve only relevant goals, constraints, approvals, and verified progress. Do not repeat completed work; re-verify mutable external or workspace state before relying on it.",
+                    ]
+                )
+            elif isinstance(relation, TurnRelation) and relation.kind == "mixed":
+                relation_lines.extend(
+                    [
+                        "- This prompt combines a follow-up with an additional objective. Resolve the referenced prior point first, then handle each explicit new objective separately.",
+                        "- Preserve relevant verified progress, but do not extend prior authorization or assumptions beyond what the current prompt actually references.",
+                    ]
+                )
+            else:
+                relation_lines.extend(
+                    [
+                        "- This prompt is a new request. Treat its objective independently from earlier task-specific goals, targets, approvals, plans, and assumptions.",
+                        "- Keep durable user preferences and applicable project/runtime rules, but do not import irrelevant earlier task state.",
+                    ]
+                )
             if route in {"simple_answer", "ask_user_missing_info"} or getattr(
                 self, "_simple_direct_mode", False
             ):
-                return ""
-            lines = ["Runtime route contract:"]
+                return "\n".join(relation_lines)
+            lines = [*relation_lines, "", "Runtime route contract:"]
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
             network_mode = _normalize_network_mode(
                 getattr(self, "network_mode", DEFAULT_NETWORK_MODE)
