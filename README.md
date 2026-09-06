@@ -13,14 +13,14 @@ Qubitz is unusual compared to most AI agents because it is strongly local-first,
 
 Most agents out there are one of these:
 
-- Cloud/API agents: faster setup, stronger frontier models, but dependent on APIs, subscriptions, cloud state, and vendor limits.
+- Cloud/API paid agents: faster setup, stronger frontier models, but dependent on paid APIs, subscriptions, cloud state, and vendor limits.
 - IDE agents: good UX and repo integration, but usually tied to a hosted model or editor ecosystem.
 - Local chat wrappers: private/local, but often weak as real agents because tool routing, workspace handling, and recovery paths are thin.
 - Research agent frameworks: flexible, but often overcomplicated, brittle, and not optimized for one real workstation.
 
 Qubitz is closer to a local style agent with a strong harness. Its stronger points are:
 
-- Fully local orientation: no API, no cloud, no subscription dependency.
+- Fully local orientation: no paid API, no cloud, no subscription dependency.
 - Multiple model variants: lets you compare behavior across 8B-35B-class local models.
 - The LLMs's retrieval source is mostly `Unsloth Dynamic`, on `HuggingFace.co`.
 - Wrapper-owned routing: simple questions, direct existing scripts, read-only workspace tasks, and tool/MCP paths are not left entirely to the model.
