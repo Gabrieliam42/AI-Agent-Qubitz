@@ -83,6 +83,10 @@ Its strong focus on routing and task execution creates a more seamless interacti
 - `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB VRAM GPU `Mistral AI's` Devstral-Small-2 24B Q4 Dense
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q8.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q8 Dense
 - `AI_Agent_Qubitz_AgenticQwen-8B-F16.py` - 24 GB VRAM GPU `Qwen Team's` AgenticQwen-8B F16 Dense
+*****
+- `AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` - 48 GB VRAM GPU `NVIDIA's` Llama-3_3-Nemotron-Super-49B Q6 Dense
+- `AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py` - 48 GB VRAM GPU `Multiverse Computing` Hypernova-60B-2605 A4.8B MoE Q5 Dense
+- `AI_Agent_Qubitz_Qwen3-Next-80B-A3B-IT-Q4.py` - 48 GB VRAM GPU `Qwen Team's` Qwen3-Next-80B-A3B-IT A3B MoE Q4
 
 Legend:
 - MoE = Mixture of Experts
