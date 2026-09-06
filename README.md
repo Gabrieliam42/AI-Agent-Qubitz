@@ -20,17 +20,17 @@ Most agents out there are one of these:
 
 Qubitz is closer to a local style agent with a strong harness. Its stronger points are:
 
-- Fully local orientation: no paid API, no cloud, no subscription dependency.
+- Fully local orientation: no paid API, no paid cloud, no subscription dependency.
 - Multiple model variants: lets you compare behavior across 8B-35B-class local models.
 - The LLMs's retrieval source is mostly `Unsloth Dynamic`, on `HuggingFace.co`.
 - Wrapper-owned routing: simple questions, direct existing scripts, read-only workspace tasks, and tool/MCP paths are not left entirely to the model.
 - Good WSL2/Windows awareness: this is a real advantage because many agents handle mixed Windows/WSL workspaces badly.
 - Strong direct-entrypoint path: this is better than many agents that overthink and rewrite instead of running what already exists.
 - Harness plus wrapper separation: useful because small models need both persistent policy and runtime facts.
-- Local retrieval/embeddings: gives project context without cloud retrieval.
+- Local retrieval/embeddings: gives project context without paid cloud retrieval.
 - Agentic Behavioral Contracts based.
 
-A realistical view: For its purposes Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is not better than frontier cloud coding agents on raw intelligence, but it is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
+A realistical view: For its purposes Qubitz is better than most local hobby agents and many generic framework agents for practical local repository work. It is much better if your priorities are privacy, no paid services, local control, WSL/Windows operation, and predictable wrapper-owned behavior.
 
 The most valuable design choice is that Qubitz does not let small models decide everything. The wrapper owns routing, execution facts, and fast paths; the model handles language/reasoning where needed. That is the right architecture for 7B-35B local agents.
 
