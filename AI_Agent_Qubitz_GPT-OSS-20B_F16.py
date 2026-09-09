@@ -9385,6 +9385,15 @@ def _patch_streaming_chat(base: Any) -> None:
     original_user_message = base.AgentRunner._user_message
     stream_state = threading.local()
 
+    def _check_user_cancellation() -> None:
+        import asyncio
+
+        context = globals().get("_TOOL_CALL_CONTEXT")
+        broker = context.get() if context is not None else None
+        owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
+        if getattr(owner, "_cancel_source", "") == "user":
+            raise asyncio.CancelledError("Request cancelled before another model call")
+
     class ContextCapacityError(RuntimeError):
         """A protected request cannot fit; no generation or tool replay is allowed."""
 
@@ -9510,6 +9519,20 @@ def _patch_streaming_chat(base: Any) -> None:
             "truncated_tool_call": bool(truncated and message.get("tool_calls")),
         }
 
+    def _apply_file_creation_schema(payload: dict[str, Any], kwargs: dict[str, Any]) -> None:
+        schema = kwargs.get("_qubitz_file_creation_schema")
+        if schema is None:
+            return
+        payload.update(
+            tools=[], tool_choice="none", parse_tool_calls=False,
+            response_format={"type": "json_schema", "json_schema": {
+                "name": "qubitz_new_text_file", "strict": True, "schema": schema,
+            }},
+            chat_template_kwargs={"enable_thinking": False}, reasoning_effort="none",
+        )
+        payload.pop("reasoning_budget", None)
+        payload.pop("reasoning", None)
+
     def _non_streaming_chat(
         self: Any,
         *,
@@ -9534,6 +9557,7 @@ def _patch_streaming_chat(base: Any) -> None:
             "repeat_penalty": kwargs["repeat_penalty"],
             "presence_penalty": float(getattr(self.config, "presence_penalty", 0.0)),
         }
+        _apply_file_creation_schema(payload, kwargs)
         raw = self._call_with_fallback("post_json", "/v1/chat/completions", payload)
         return _normalize_chat_response(self, raw)
 
@@ -9551,6 +9575,8 @@ def _patch_streaming_chat(base: Any) -> None:
                 **kwargs,
             )
         if callback is None:
+            callback = _discard_stream_delta
+        if kwargs.get("_qubitz_file_creation_schema") is not None:
             callback = _discard_stream_delta
         stream_state.forced_tool_choice = None
         payload = {
@@ -9576,6 +9602,7 @@ def _patch_streaming_chat(base: Any) -> None:
         reasoning_mode = getattr(stream_state, "reasoning_mode", None)
         if reasoning_mode is not None:
             payload["reasoning"] = reasoning_mode
+        _apply_file_creation_schema(payload, kwargs)
         content_parts: list[str] = []
         pending_parts: list[str] = []
         pending_chars = 0
@@ -9594,6 +9621,14 @@ def _patch_streaming_chat(base: Any) -> None:
                 ) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
+                        if kwargs.get("_qubitz_file_creation_schema") is not None:
+                            context = globals().get("_TOOL_CALL_CONTEXT")
+                            broker = context.get() if context is not None else None
+                            owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
+                            cancel = getattr(owner, "_cancel_event", None)
+                            if cancel is not None and cancel.is_set():
+                                finish_reason = "cancelled"
+                                break
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
@@ -9710,6 +9745,7 @@ def _patch_streaming_chat(base: Any) -> None:
         schema: dict[str, Any],
         num_predict: int,
     ) -> dict[str, Any]:
+        _check_user_cancellation()
         request = {"messages": messages, "tools": [], "num_predict": num_predict}
         _fit_messages_to_window(self, request)
         messages = request["messages"]
@@ -9757,6 +9793,7 @@ def _patch_streaming_chat(base: Any) -> None:
         last_error: Exception | None = None
         with httpx.Client(timeout=600.0) as client:
             for response_format in response_formats:
+                _check_user_cancellation()
                 request_payload = dict(payload)
                 if response_format is not None:
                     request_payload["response_format"] = response_format
@@ -9841,8 +9878,10 @@ def _patch_streaming_chat(base: Any) -> None:
         usually gone a moment later. Any other failure re-raises immediately so
         genuine model and protocol errors keep their existing behavior.
         """
+        _check_user_cancellation()
         _fit_messages_to_window(self, kwargs)
         for attempt in range(2):
+            _check_user_cancellation()
             try:
                 started_at = time.perf_counter()
                 response = _chat(self, **kwargs)
@@ -9863,6 +9902,95 @@ def _patch_streaming_chat(base: Any) -> None:
                 else:
                     time.sleep(2.0)
         raise RuntimeError("unreachable transient retry state")
+
+    def _file_creation_chat(self: Any, **kwargs: Any) -> dict[str, Any]:
+        """Generate validated arguments; only the ordinary broker may execute them."""
+        context = globals().get("_TOOL_CALL_CONTEXT")
+        broker = context.get() if context is not None else None
+        owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
+        cancel = getattr(owner, "_cancel_event", None)
+
+        def eligible() -> bool:
+            return (owner is not None and not (cancel is not None and cancel.is_set())
+                    and _direct_text_creation_choice(broker, kwargs.get("tools") or [], simple_only=False) is not None)
+
+        def blocked(reason: str) -> dict[str, Any]:
+            return {"message": {"role": "assistant", "content": (
+                "File creation remains unverified: " + reason
+            ), "tool_calls": []}, "finish_reason": "stop"}
+
+        if not eligible() or getattr(broker, "_content_tool_recovery_used", False):
+            return blocked("no eligible new-file operation or the constrained attempt was already used.")
+        broker._content_tool_recovery_used = True
+        target = next(iter(broker.creation_targets))
+        schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {"path": {"type": "string", "const": target},
+                           "content": {"type": "string", "minLength": 1}},
+            "required": ["path", "content"],
+        }
+        tool_schema = next(item["function"].get("parameters", {}) for item in kwargs["tools"]
+                           if (item.get("function") or {}).get("name") == "write_file")
+        request = dict(kwargs)
+        ceiling = int(getattr(self.config, "num_predict", kwargs["num_predict"]))
+        request["num_predict"] = _file_content_output_budget(broker, ceiling)
+        request["tools"] = []
+        request["_qubitz_file_creation_schema"] = schema
+        request["messages"] = list(kwargs["messages"]) + [{"role": "user", "content": (
+            "Wrapper file-generation adapter: return exactly one JSON object with path and content. "
+            f"The path must be {json.dumps(target)}. Put the complete requested file text in content. "
+            "Preserve the original task and constraints. No Markdown fences, commentary or tool-call tags. "
+            "This JSON is only a proposal: the wrapper will validate it and submit it to write_file "
+            "through the normal permission and verification checks; do not claim the file exists."
+        )}]
+        if broker.callback is not None:
+            broker.callback("status", "Generating schema-constrained new-file content; normal write permissions and verification still apply.")
+
+        def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON field")
+                result[key] = value
+            return result
+
+        saved_choice = getattr(stream_state, "forced_tool_choice", None)
+        try:
+            stream_state.forced_tool_choice = None
+            for attempt in range(2):
+                if not eligible():
+                    return blocked("cancelled, permissions changed, or the destination now exists.")
+                response = _chat_with_transport_retry(self, **request)
+                if not eligible():
+                    return blocked("cancelled, permissions changed, or the destination now exists.")
+                if response.get("finish_reason") in {"length", "max_tokens"}:
+                    larger = _file_content_output_budget(broker, ceiling, request["num_predict"])
+                    if attempt == 0 and larger > request["num_predict"]:
+                        request["num_predict"] = larger
+                        continue
+                    return blocked("the complete file content did not fit the output budget; nothing was written.")
+                if response.get("finish_reason") != "stop":
+                    return blocked("the structured response did not finish normally.")
+                try:
+                    arguments = json.loads((response.get("message") or {}).get("content", ""),
+                                           object_pairs_hook=unique_pairs)
+                    if (not isinstance(arguments, dict) or set(arguments) != {"path", "content"}
+                            or arguments["path"] != target or not isinstance(arguments["content"], str)
+                            or not arguments["content"]):
+                        raise ValueError("wrong path, fields or empty content")
+                    if _json_schema_errors(arguments, tool_schema):
+                        raise ValueError("arguments do not match the registered write_file schema")
+                except (ValueError, TypeError):
+                    return blocked("invalid structured file arguments; no prose or reasoning was executed.")
+                return {**response, "finish_reason": "tool_calls", "message": {
+                    "role": "assistant", "content": "", "tool_calls": [{
+                        "id": f"qubitz_create_{time.monotonic_ns()}", "type": "function",
+                        "function": {"name": "write_file", "arguments": arguments},
+                    }],
+                }}
+        finally:
+            stream_state.forced_tool_choice = saved_choice
+        return blocked("structured generation did not produce complete arguments.")
 
     def _chat_with_transient_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
         response = _chat_with_transport_retry(self, **kwargs)
@@ -9890,6 +10018,8 @@ def _patch_streaming_chat(base: Any) -> None:
             "write_file", "read_file_snapshot", "apply_text_patch", "apply_text_patches", "apply_docx_text_patch",
         }:
             return response
+        if name == "write_file":
+            return _file_creation_chat(self, **kwargs)
         broker._content_tool_recovery_used = True
         retry = dict(kwargs)
         ceiling = int(getattr(self.config, "num_predict", kwargs["num_predict"]))
@@ -10079,6 +10209,7 @@ def _patch_streaming_chat(base: Any) -> None:
     base.set_qubitz_reasoning_mode = _set_reasoning_mode
     base.set_qubitz_forced_tool_choice = _set_forced_tool_choice
     base.LlamaCppClient.qubitz_json_chat = _json_chat
+    base.LlamaCppClient.qubitz_file_creation_chat = _file_creation_chat
     base.LlamaCppClient.qubitz_context_launch_command = staticmethod(_context_launch_command)
 
 
@@ -21633,6 +21764,17 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             last_model_pass_steps = 0
             progress_checkpoint = self._tool_permission_broker.progress_token()
 
+            def check_user_cancellation() -> None:
+                # Internal recovery interrupts remain eligible; explicit cancellation does not.
+                if self._cancel_source == "user":
+                    raise asyncio.CancelledError("Request cancelled before recovery")
+
+            async def checked_operation(operation: Any, *args: Any, **kwargs: Any) -> Any:
+                check_user_cancellation()
+                result = await operation(*args, **kwargs)
+                check_user_cancellation()
+                return result
+
             def reserve_step_budget(requested: int) -> int:
                 nonlocal allocated_step_budget
                 remaining = max(0, effective_hard_ceiling - allocated_step_budget)
@@ -21642,6 +21784,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
             async def run_model_pass(pass_prompt: str, step_cap: int | None = None) -> str:
                 nonlocal last_model_pass_steps
+                check_user_cancellation()
                 pass_steps = 0
 
                 def pass_callback(kind: str, message: str) -> None:
@@ -21656,7 +21799,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 self._prompt_step_retry_override = None if step_cap is None else max(1, int(step_cap))
                 self._tool_permission_broker.completion_interrupt_enabled = True
                 try:
-                    return await super(HardenedAgentRunner, self)._run_async(pass_prompt, pass_callback)
+                    return await checked_operation(
+                        super(HardenedAgentRunner, self)._run_async, pass_prompt, pass_callback,
+                    )
                 finally:
                     last_model_pass_steps = pass_steps
                     self._tool_permission_broker.completion_interrupt_enabled = False
@@ -21666,6 +21811,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         self.history = self.history[:history_checkpoint]
 
             def verified_completion_answer() -> str | None:
+                check_user_cancellation()
                 if not (
                     self._cancel_source == "wrapper_verified_completion"
                     or self._tool_permission_broker.verified_completion_requested
@@ -21703,6 +21849,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 requested_budget: int | None = None,
             ) -> str:
                 nonlocal progress_checkpoint
+                check_user_cancellation()
                 if not progressive_budget_enabled:
                     answer_text = await run_model_pass(pass_prompt)
                     return verified_completion_answer() or answer_text
@@ -21863,10 +22010,11 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             "Wrapper preflight resolved an explicit read-only external-path denial; model loading was skipped.",
                         )
                     return finalize_turn_answer(preflight_denial)
-                dependency_answer = await self._dependency_install_preflight(prompt, callback)
+                dependency_answer = await checked_operation(self._dependency_install_preflight, prompt, callback)
                 if dependency_answer is not None:
                     return finalize_turn_answer(dependency_answer)
-                mcp_preflight_answer = await self._wrapper_mcp_lifecycle_recovery(
+                mcp_preflight_answer = await checked_operation(
+                    self._wrapper_mcp_lifecycle_recovery,
                     prompt,
                     "",
                     callback,
@@ -21894,7 +22042,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             f"Verified current-turn evidence: {evidence_summary}.\n\n"
                             "[Completion status: verified]"
                         )
-                source_context = await self._prefetch_named_source_context(prompt, callback)
+                source_context = await checked_operation(self._prefetch_named_source_context, prompt, callback)
                 if source_context:
                     effective_prompt = f"{effective_prompt.rstrip()}\n\n{source_context}"
                 try:
@@ -21911,7 +22059,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     ):
                         answer = ""
                         self._cancel_source = ""
-                    committed_verification = await self._wrapper_verify_committed_transaction(
+                    committed_verification = await checked_operation(
+                        self._wrapper_verify_committed_transaction,
                         prompt,
                         callback,
                     )
@@ -21926,7 +22075,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     docx_answer = (
                         None
                         if transaction_recovery_blocked
-                        else await self._wrapper_docx_edit_recovery(
+                        else await checked_operation(
+                            self._wrapper_docx_edit_recovery,
                             prompt,
                             answer,
                             callback,
@@ -21939,7 +22089,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         transaction_answer = (
                             None
                             if transaction_recovery_blocked
-                            else await self._wrapper_transaction_proposal_recovery(
+                            else await checked_operation(
+                                self._wrapper_transaction_proposal_recovery,
                                 prompt,
                                 answer,
                                 callback,
@@ -21949,7 +22100,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         answer = transaction_answer
                     else:
                         self._tool_permission_broker.mcp_recovery_interrupt_requested = False
-                        mcp_answer = await self._wrapper_mcp_lifecycle_recovery(
+                        mcp_answer = await checked_operation(
+                            self._wrapper_mcp_lifecycle_recovery,
                             prompt,
                             answer,
                             callback,
@@ -21957,6 +22109,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         if mcp_answer is not None:
                             answer = mcp_answer
                         else:
+                            check_user_cancellation()
                             forced_tool_choice = self._wrapper_no_progress_tool_choice(prompt, answer)
                             if forced_tool_choice is not None:
                                 tool_name = str(forced_tool_choice["function"]["name"])
@@ -22024,7 +22177,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         return finalize_turn_answer(self._cancel_partial_answer)
                 if self._tool_permission_broker.mcp_recovery_interrupt_requested:
                     self._tool_permission_broker.mcp_recovery_interrupt_requested = False
-                    mcp_answer = await self._wrapper_mcp_lifecycle_recovery(
+                    mcp_answer = await checked_operation(
+                        self._wrapper_mcp_lifecycle_recovery,
                         prompt,
                         answer,
                         callback,
@@ -22035,6 +22189,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     self._tool_permission_broker.transaction_recovery_required
                     and "changed_files" in self._tool_permission_broker.required_postconditions
                 ):
+                    check_user_cancellation()
                     recovery_context = self._tool_permission_broker.transaction_recovery_context()
                     focused = set(self._tool_permission_broker.required_postconditions)
                     if not self._tool_permission_broker.transaction_changed_hashes:
@@ -22181,6 +22336,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         )
                     rendered_answer = f"{rendered_answer}\n\n[Completion status: verified]"
                 return finalize_turn_answer(rendered_answer)
+            except asyncio.CancelledError:
+                if self._cancel_source != "user":
+                    raise
+                rollback_interrupted_transaction("request cancellation")
+                return finalize_turn_answer(
+                    self._cancel_partial_answer or "The task was cancelled before another recovery pass."
+                )
             except base.QubitzContextCapacityError as exc:
                 broker = self._tool_permission_broker
                 _required, missing = broker.completion_report(prompt)
