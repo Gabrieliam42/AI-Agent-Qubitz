@@ -443,6 +443,188 @@ def _independent_request_routing_prompt(prompt: str) -> str:
     return str(match.group("body") or "").strip() or normalized
 
 
+def _creation_tool_name(prompt: str) -> str | None:
+    semantic = _analyze_semantic_intent(prompt)
+    if not semantic.requests("create"):
+        return None
+    if re.search(r"\.(?:docx?|xlsx?|xlsm|pptx?|pdf|png|jpe?g|zip|exe|gguf)\b", prompt, re.IGNORECASE):
+        return None
+    if re.search(r"\b(?:directory|folder)\b", prompt, re.IGNORECASE) and not re.search(r"\.[a-zA-Z0-9]{1,9}\b", prompt):
+        return "make_directory"
+    return "write_file"
+
+
+def _direct_text_creation_choice(
+    broker: Any, tools: Sequence[dict[str, Any]], *, simple_only: bool = True,
+) -> dict[str, Any] | None:
+    """Select only a simple, self-contained new text file; never grant permission."""
+    if broker is None or broker.access_mode != ACCESS_MODE_FULL:
+        return None
+    prompt = broker.current_prompt
+    semantic = broker.task_intent.semantic
+    if (semantic.speech_act != "request" or not semantic.requests("create")
+            or semantic.prohibited_actions.intersection({"create", "edit"})
+            or semantic.requested_actions - {"create", "edit"}
+            or _creation_tool_name(prompt) != "write_file"
+            or broker.transaction_explicit_file_targets or broker.provenance_urls):
+        return None
+    targets = sorted(broker.creation_targets)
+    if len(targets) != 1 or os.path.lexists(targets[0]):
+        return None
+    target = Path(targets[0])
+    if not target.is_relative_to(broker.workspace.resolve()):
+        return None
+    description = r"\b(?:basic|simple|containing|with (?:the )?content)\b" if simple_only else r"\b(?:basic|simple|containing|that|which|with|to|for)\b"
+    if (not re.search(description, prompt, re.IGNORECASE)
+            or re.search(r"\b(?:first|before|after|if|unless|read|inspect|search|research|download|install|existing|according)\b|https?://",
+                         prompt, re.IGNORECASE)):
+        return None
+    if not any((tool.get("function") or {}).get("name") == "write_file" for tool in tools):
+        return None
+    return {"type": "function", "function": {"name": "write_file"}}
+
+
+def _file_content_output_budget(broker: Any, configured: int, previous: int = 0) -> int:
+    """Size an initial content response, or grow once after truncation, within the ceiling."""
+    if configured <= 0:
+        configured = 4096  # An unlimited setting is not an instruction to allocate unlimited output.
+    prompt = str(getattr(broker, "current_prompt", ""))
+    estimate = max(1024, 256 + len(prompt.encode("utf-8")))
+    estimate = min(4096, estimate)
+    return min(configured, max(estimate, previous * 2))
+
+
+def _current_file_hashes(paths: Sequence[str]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for path in paths:
+        with suppress(OSError), Path(path).open("rb") as handle:
+            hashes[path] = hashlib.file_digest(handle, "sha256").hexdigest()
+    return hashes
+
+
+def _requested_browser_name(prompt: str) -> str | None:
+    aliases = {"microsoft edge": "edge", "msedge": "edge", "edge": "edge",
+               "mozilla firefox": "firefox", "firefox": "firefox",
+               "google chrome": "chrome", "chrome": "chrome"}
+    names = r"microsoft\s+edge|mozilla\s+firefox|google\s+chrome|msedge|firefox|chrome|edge"
+    matches = list(re.finditer(
+        rf"\b(?:in|using|with)\s+(?:(?:a|an|the)\s+)?({names})\b", prompt, re.IGNORECASE
+    ))
+    if matches:
+        return aliases[" ".join(matches[-1].group(1).lower().split())]
+    found = {aliases[" ".join(m.group().lower().split())]
+             for m in re.finditer(rf"\b(?:{names})\b", prompt, re.IGNORECASE)
+             if not re.search(r"\b(?:not|instead of)\s*$", prompt[:m.start()], re.IGNORECASE)}
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _windows_browser_open_script(urls: Sequence[str], browser: str = "default") -> str:
+    if browser == "default":
+        return "$ErrorActionPreference = 'Stop'; " + "; ".join(
+            f"Start-Process {_powershell_single_quote(url)}" for url in urls
+        )
+    executables = {"edge": "msedge.exe", "firefox": "firefox.exe", "chrome": "chrome.exe"}
+    folders = {"edge": "Microsoft\\Edge\\Application", "firefox": "Mozilla Firefox",
+               "chrome": "Google\\Chrome\\Application"}
+    if browser not in executables:
+        raise ValueError("browser must be default, firefox, chrome, or edge.")
+    exe = executables[browser]
+    folder = folders[browser]
+    paths = ", ".join(f'"{root}\\{folder}\\{exe}"' for root in (
+        "$env:ProgramFiles", "${env:ProgramFiles(x86)}", "$env:LOCALAPPDATA"
+    ))
+    keys = ", ".join(_powershell_single_quote(f"{root}:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe}")
+                     for root in ("HKCU", "HKLM"))
+    return (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$command = Get-Command '{exe}' -ErrorAction SilentlyContinue | Select-Object -First 1; "
+        "$browserPath = if ($command) { $command.Source } else { $null }; "
+        f"if (-not $browserPath) {{ $browserPath = @({keys}) | ForEach-Object {{ "
+        "$item = Get-ItemProperty -LiteralPath $_ -ErrorAction SilentlyContinue; "
+        "if ($item) { $item.'(default)' } } | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1 }; "
+        f"if (-not $browserPath) {{ $browserPath = @({paths}) | Where-Object {{ Test-Path -LiteralPath $_ }} | Select-Object -First 1 }}; "
+        f"if (-not $browserPath) {{ throw '{browser} browser executable was not found.' }}; "
+        "Start-Process -FilePath $browserPath -ArgumentList @("
+        + ", ".join(_powershell_single_quote(url) for url in urls) + ")"
+    )
+
+
+def _entrypoint_browser_name(entrypoint: dict[str, Any]) -> str | None:
+    with suppress(OSError, ValueError):
+        path = Path(str(entrypoint.get("path") or ""))
+        if not path.is_file() or path.stat().st_size > 2_000_000:
+            return None
+        source = path.read_text(encoding="utf-8", errors="replace")
+        matches = re.findall(
+            r"(?:Start-Process\s+(?:-FilePath\s+)?[\"']?|webbrowser\.get\([\"']|\[\s*[\"'])"
+            r"(firefox|msedge|chrome)(?:\.exe)?[\"'\s]", source, re.IGNORECASE,
+        )
+        browsers = {"edge" if name.lower() == "msedge" else name.lower() for name in matches}
+        if len(browsers) == 1:
+            return next(iter(browsers))
+    return None
+
+
+def _resolve_corrective_task_prompt(
+    prompt: str, previous_prompt: str, previous_answer: str = "",
+) -> str | None:
+    """Resolve a narrow correction, never a new request or a fresh authorization."""
+    quoted_reply = re.fullmatch(
+        r'\s*you\s+(?:said|replied|answered)\s*"(?P<quoted>.*?)"\s*(?P<remainder>.+)',
+        prompt, re.IGNORECASE | re.DOTALL,
+    )
+    if quoted_reply is not None:
+        quoted = re.sub(r"^\s*\[assistant\]\s*", "", quoted_reply.group("quoted"), flags=re.IGNORECASE)
+        quoted = " ".join(quoted.split())
+        if not quoted or quoted not in " ".join(previous_answer.split()):
+            return None
+        prompt = quoted_reply.group("remainder")
+    previous = _analyze_semantic_intent(previous_prompt)
+    # In an unfinished authorized task this is a reminder, not a new prohibition.
+    reminder = re.fullmatch(
+        r"\s*why\s+(?:don't|do\s+not|didn't|did\s+not)\s+you\s+"
+        r"(?P<verb>create|write|save|edit|modify|update)\s+(?:it|the\s+(?:file|script|document))\s*[?!.]*",
+        prompt, re.IGNORECASE,
+    )
+    if reminder is not None and previous.speech_act == "request":
+        actions = _semantic_actions_for_verb(reminder.group("verb").lower(), {"file"})
+        if actions.issubset(previous.requested_actions):
+            return previous_prompt
+    if not previous_prompt or re.search(
+        r"\?|\b(?:explain|why|hypothetical|suppose|do not|don't|never|without)\b"
+        r"|\b(?:new|unrelated|separate)\s+(?:task|request|question)\b", prompt, re.IGNORECASE
+    ):
+        return None
+    current = _analyze_semantic_intent(prompt)
+    if previous.speech_act != "request" or current.requested_actions or current.prohibited_actions:
+        return None
+    # A reminder binds only to a stored explicit task, never to a model's suggestion.
+    if re.fullmatch(
+        r"(?:but\s+)?(?:actually\s+)?i\s+(?:already\s+)?(?:explicitly\s+)?asked\s+you\s+to\s+do\s+(?:that|it)[.!]*",
+        prompt.strip(), re.IGNORECASE,
+    ):
+        return previous_prompt
+    if previous.requests("create", "edit") and re.search(
+        r"\byou\s+(?:did\s+not|didn't|have\s+not|haven't)\s+(?:actually\s+)?"
+        r"(?:create|write|save|edit|modify|update)\b", prompt, re.IGNORECASE
+    ):
+        file_pattern = r"[\w./\\-]+\.[a-zA-Z][a-zA-Z0-9]{0,9}\b"
+        targets = {p.casefold() for p in re.findall(file_pattern, previous_prompt)}
+        mentioned = {p.casefold() for p in re.findall(file_pattern, prompt)}
+        if len(targets) == 1 and (mentioned == targets or (
+            not mentioned and re.search(r"\b(?:it|the file|the script|the document)\b", prompt, re.IGNORECASE)
+        )):
+            return previous_prompt
+    if previous.requests("open_browser") and re.search(
+        r"\byou\s+opened\b.*\binstead\s+of\b|\bi\s+asked\s+you\s+to\s+open\b",
+        prompt, re.IGNORECASE | re.DOTALL,
+    ):
+        requested = _requested_browser_name(previous_prompt)
+        if requested and _requested_browser_name(prompt) == requested:
+            return previous_prompt
+    return None
+
+
 def _classify_turn_relation(
     prompt: str,
     history: Sequence[dict[str, Any]],
@@ -1554,7 +1736,7 @@ def _fence_untrusted_external_content(text: str) -> str:
 
 def _loaded_llamacpp_context_window(client: Any) -> int:
     cached = getattr(client, "_qubitz_server_context_window", None)
-    if cached is not None:
+    if cached is not None and int(cached) > 0:
         return int(cached)
     window = 0
     try:
@@ -1575,7 +1757,9 @@ def _loaded_llamacpp_context_window(client: Any) -> int:
                     break
     except Exception:
         window = 0
-    client._qubitz_server_context_window = window
+    # A failed startup probe is not evidence of a zero-sized context.
+    if window > 0:
+        client._qubitz_server_context_window = window
     return window
 
 
@@ -1585,6 +1769,8 @@ def _tool_arguments_request_external_network(name: str, arguments: dict[str, Any
         return True
     if normalized == "fetch_url":
         return _is_external_network_url(arguments.get("url"))
+    if normalized in {"list_project_mcp_tools", "call_project_mcp_tool", "start_project_mcp_server"}:
+        return any(_is_external_network_url(arguments.get(key)) for key in ("server_reference", "connection_uri"))
     if normalized == "open_urls_in_browser":
         return any(_is_external_network_url(value) for value in arguments.get("urls", []))
     if normalized == "install_python_package":
@@ -1697,6 +1883,10 @@ def _semantic_objects(text: str) -> set[str]:
 
 def _semantic_action_is_negated(clause: str, action_start: int) -> bool:
     prefix = clause[:action_start]
+    prefix = re.sub(
+        r"^\s*why\s+(?:don't|do\s+not|didn't|did\s+not|haven't|have\s+not)\s+you\b\s*",
+        "", prefix, flags=re.IGNORECASE,
+    )
     return bool(
         re.search(
             r"(?:\bdo\s+not|\bdon't|\bnever|\bmust\s+not|\bshould\s+not|"
@@ -2612,18 +2802,28 @@ def _run_inline_browser_open(
     workspace: Path,
     urls: Sequence[str],
     timeout_seconds: int,
+    browser: str = "default",
 ) -> dict[str, Any]:
-    validated_urls = _validated_external_urls(urls, DIRECT_SCRIPT_COMPLETION_MAX_URLS)
-    commands = [
-        f"Start-Process {_powershell_single_quote(url)}"
-        for url in validated_urls
-    ]
-    if not commands:
+    broker = _TOOL_CALL_CONTEXT.get()
+    if browser == "default" and broker is not None:
+        browser = _requested_browser_name(broker.current_prompt) or "default"
+    validated_urls = _validated_external_urls(urls, SCRIPT_PREFLIGHT_MAX_URLS)
+    if not validated_urls:
         return {"return_code": 1, "stderr": "No URLs were available for browser opening."}
-    result = _run_powershell_command(base, workspace, "; ".join(commands), timeout_seconds)
+    result = _run_powershell_command(
+        base, workspace, _windows_browser_open_script(validated_urls, browser), timeout_seconds
+    )
+    result["browser"] = browser
     if int(result.get("return_code", result.get("returncode", 0))) == 0:
         result["opened_urls"] = validated_urls
         result["opened_count"] = len(validated_urls)
+        if broker is not None:
+            broker.evidence.append({
+                "turn_id": broker.turn_id, "tool": "wrapper_browser_open", "success": True,
+                "categories": ["opened_urls"], "browser": browser,
+                "urls": validated_urls, "opened_count": len(validated_urls),
+                "verification": "browser_launch_command_succeeded",
+            })
     return result
 
 
@@ -6642,13 +6842,34 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             "content": excerpt,
         }
 
-    @server.tool(description="Write or overwrite a file inside the active workspace.")
+    @server.tool(description="Create a new text file with complete content; existing files must use snapshot-based patch tools.")
     def write_file(path: str, content: str, make_parents: bool = True) -> dict[str, Any]:
         target = _resolve(path, allow_external=True)
+        if target.suffix.casefold() in {".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".pdf", ".png", ".jpg", ".jpeg", ".zip", ".exe", ".gguf"}:
+            raise ValueError("write_file creates text files only; use a format-aware creation workflow for this file type.")
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(f"Creation refused: {path} already exists; inspect and patch it instead.")
+        payload = content.encode("utf-8")
+        if target.suffix.casefold() == ".py":
+            ast.parse(content, filename=str(target))
         if make_parents:
             target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return {"path": base.relative_path(target, workspace), "bytes_written": target.stat().st_size}
+        staged = target.with_name(f".{target.name}.{uuid.uuid4().hex}.creating")
+        try:
+            with staged.open("xb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # Publish atomically without replacing a destination created concurrently.
+            os.link(staged, target)
+        finally:
+            with suppress(FileNotFoundError):
+                staged.unlink()
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        if hashlib.sha256(target.read_bytes()).hexdigest() != expected_hash:
+            raise OSError(f"Creation could not be verified: {path}; inspect the current file.")
+        return {"path": base.relative_path(target, workspace), "bytes_written": len(payload),
+                "new_sha256": expected_hash, "created": True}
 
     @server.tool(description="Replace exact text inside a file in the active workspace.")
     def replace_text(path: str, old_text: str, new_text: str, count: int = 0) -> dict[str, Any]:
@@ -9388,7 +9609,14 @@ def _patch_streaming_chat(base: Any) -> None:
     import httpx
 
     original_chat = base.LlamaCppClient.chat
+    original_ensure_model = base.LlamaCppClient.ensure_model
+    original_user_message = base.AgentRunner._user_message
     stream_state = threading.local()
+
+    class ContextCapacityError(RuntimeError):
+        """A protected request cannot fit; no generation or tool replay is allowed."""
+
+    base.QubitzContextCapacityError = ContextCapacityError
 
     def _discard_stream_delta(_delta: str) -> None:
         return None
@@ -9397,16 +9625,34 @@ def _patch_streaming_chat(base: Any) -> None:
         loaded_context = _loaded_llamacpp_context_window(self)
         if loaded_context <= 0:
             return
-        requested_context = int(
-            getattr(
-                self.config,
-                "_qubitz_requested_num_ctx",
-                getattr(self.config, "num_ctx", loaded_context),
-            )
-            or loaded_context
-        )
+        configured = int(getattr(self.config, "num_ctx", loaded_context) or loaded_context)
+        previous_effective = getattr(self.config, "_qubitz_effective_num_ctx", None)
+        requested_context = int(getattr(self.config, "_qubitz_requested_num_ctx", configured))
+        if previous_effective is None or configured != previous_effective:
+            requested_context = configured
         self.config._qubitz_requested_num_ctx = requested_context
         self.config.num_ctx = min(requested_context, loaded_context)
+        self.config._qubitz_effective_num_ctx = self.config.num_ctx
+
+    def _ensure_model_with_context(self: Any, *args: Any, **kwargs: Any) -> str:
+        # Restore the requested launch ceiling, not a previous server's fit result.
+        configured = getattr(self.config, "num_ctx", None)
+        if configured == getattr(self.config, "_qubitz_effective_num_ctx", None):
+            self.config.num_ctx = getattr(self.config, "_qubitz_requested_num_ctx", configured)
+        self._qubitz_server_context_window = None
+        stream_state.retrieval_message = None
+        resolved = original_ensure_model(self, *args, **kwargs)
+        _sync_loaded_context(self)
+        return resolved
+
+    def _user_message_with_context(self: Any, prompt: str, repo_context: str, active_skills: Any = None) -> str:
+        rendered = original_user_message(self, prompt, repo_context, active_skills)
+        # Match the exact wrapper-created message, never search inside arbitrary user text.
+        stream_state.retrieval_message = (
+            rendered,
+            original_user_message(self, prompt, base.shorten(repo_context, 512), active_skills),
+        ) if len(repo_context) > 512 else None
+        return rendered
 
     @staticmethod
     def _positive_metric(value: Any) -> float:
@@ -9419,6 +9665,7 @@ def _patch_streaming_chat(base: Any) -> None:
         return max(0.0, resolved)
 
     def _reset_generation_metrics(self: Any) -> None:
+        self._qubitz_context_reload_attempted = False
         self._qubitz_generation_model_calls = 0
         self._qubitz_generation_measured_calls = 0
         self._qubitz_generation_tokens = 0.0
@@ -9478,15 +9725,17 @@ def _patch_streaming_chat(base: Any) -> None:
         content = message.get("content") or ""
         if not isinstance(content, str):
             content = json.dumps(content, ensure_ascii=False)
+        truncated = choice.get("finish_reason") in {"length", "max_tokens"}
         return {
             "message": {
                 "role": "assistant",
                 "content": content,
-                "tool_calls": self._normalize_tool_calls(message.get("tool_calls")),
+                "tool_calls": [] if truncated else self._normalize_tool_calls(message.get("tool_calls")),
             },
             "usage": raw.get("usage") or {},
             "timings": raw.get("timings") or {},
             "finish_reason": choice.get("finish_reason"),
+            "truncated_tool_call": bool(truncated and message.get("tool_calls")),
         }
 
     def _non_streaming_chat(
@@ -9636,11 +9885,12 @@ def _patch_streaming_chat(base: Any) -> None:
             "message": {
                 "role": "assistant",
                 "content": "".join(content_parts),
-                "tool_calls": base.LlamaCppClient._normalize_tool_calls(tool_calls),
+                "tool_calls": [] if finish_reason in {"length", "max_tokens"} else base.LlamaCppClient._normalize_tool_calls(tool_calls),
             },
             "usage": usage,
             "timings": timings,
             "finish_reason": finish_reason,
+            "truncated_tool_call": bool(tool_calls and finish_reason in {"length", "max_tokens"}),
         }
 
     def _set_stream_callback(callback: Callable[[str], None] | None) -> None:
@@ -9688,6 +9938,10 @@ def _patch_streaming_chat(base: Any) -> None:
         schema: dict[str, Any],
         num_predict: int,
     ) -> dict[str, Any]:
+        request = {"messages": messages, "tools": [], "num_predict": num_predict}
+        _fit_messages_to_window(self, request)
+        messages = request["messages"]
+        num_predict = request["num_predict"]
         transport = getattr(self, "transport", None)
         if getattr(transport, "label", "") != "direct":
             started_at = time.perf_counter()
@@ -9807,7 +10061,7 @@ def _patch_streaming_chat(base: Any) -> None:
             time.sleep(0.5)
         return False
 
-    def _chat_with_transient_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
+    def _chat_with_transport_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
         """Retry a chat call once on a transient local-server or transport fault.
 
         The transport fallback raises RuntimeError once every transport fails,
@@ -9838,49 +10092,152 @@ def _patch_streaming_chat(base: Any) -> None:
                     time.sleep(2.0)
         raise RuntimeError("unreachable transient retry state")
 
+    def _chat_with_transient_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
+        response = _chat_with_transport_retry(self, **kwargs)
+        context = globals().get("_TOOL_CALL_CONTEXT")
+        broker = context.get() if context is not None else None
+        if (broker is None or not kwargs.get("tools")
+                or (response.get("message") or {}).get("tool_calls")
+                or getattr(broker, "_content_tool_recovery_used", False)
+                or broker.access_mode != ACCESS_MODE_FULL):
+            return response
+        owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
+        cancel = getattr(owner, "_cancel_event", None)
+        if owner is None or (cancel is not None and cancel.is_set()):
+            return response
+        semantic = broker.task_intent.semantic
+        if (semantic.speech_act != "request" or not semantic.requests("create", "edit")
+                or semantic.prohibited_actions.intersection({"create", "edit"})):
+            return response
+        choice = _direct_text_creation_choice(broker, kwargs["tools"], simple_only=False)
+        if choice is None and not semantic.requests("create") and broker.transaction_explicit_file_targets:
+            choice = owner._wrapper_no_progress_tool_choice(broker.current_prompt, "")
+        available = {(item.get("function") or {}).get("name") for item in kwargs["tools"]}
+        name = ((choice or {}).get("function") or {}).get("name")
+        if name not in available or name not in {
+            "write_file", "read_file_snapshot", "apply_text_patch", "apply_text_patches", "apply_docx_text_patch",
+        }:
+            return response
+        broker._content_tool_recovery_used = True
+        retry = dict(kwargs)
+        ceiling = int(getattr(self.config, "num_predict", kwargs["num_predict"]))
+        previous = int(kwargs["num_predict"]) if response.get("finish_reason") in {"length", "max_tokens"} else 0
+        retry["num_predict"] = (
+            min(ceiling, 512) if name == "read_file_snapshot" and ceiling > 0
+            else _file_content_output_budget(broker, ceiling, previous)
+        )
+        retry["messages"] = list(kwargs["messages"]) + [{"role": "user", "content": (
+            "Wrapper recovery: the requested file operation has no verified completion. "
+            f"Return one complete native {name} tool call, not code or a tool-call tag in prose. "
+            "Preserve the user's exact target and constraints; do not overwrite a new-file destination. "
+            "The normal permission, snapshot and verification checks still apply."
+        )}]
+        if broker.callback is not None:
+            broker.callback("status", "Retrying the incomplete file operation once with a native tool call and an adaptive output budget.")
+        # Never execute reasoning text or truncated arguments. The ordinary tool broker executes the result.
+        saved_choice = getattr(stream_state, "forced_tool_choice", None)
+        try:
+            stream_state.forced_tool_choice = choice
+            return _chat_with_transport_retry(self, **retry)
+        finally:
+            stream_state.forced_tool_choice = saved_choice
+
     _CONTEXT_GUARD_HEADROOM = 0.90
     _CONTEXT_GUARD_MIN_TOOL_CHARS = 240
 
     def _server_context_window(client: Any) -> int:
-        """Context window llama-server actually loaded, cached per client.
+        _sync_loaded_context(client)
+        loaded = _loaded_llamacpp_context_window(client)
+        return min(loaded, int(client.config.num_ctx)) if loaded > 0 else 0
 
-        The configured value is only a ceiling; llama.cpp clamps it to whatever
-        fits alongside the weights, and the difference can be large.
-        """
-        cached = getattr(client, "_qubitz_server_context_window", None)
-        if cached is not None:
-            return int(cached)
-        window = 0
+    def _context_launch_command(command: list[str], target: int) -> list[str]:
+        """Change only context flags in the fully composed variant launch command."""
+        import base64
+
+        command = list(command)
+        encoded_index = next((i + 1 for i, part in enumerate(command[:-1])
+                              if part.casefold() == "-encodedcommand"), None)
+        if encoded_index is not None:
+            script = base64.b64decode(command[encoded_index]).decode("utf-16le")
+            if "'--fit' 'on'" not in script or "'--fit-ctx'" not in script:
+                raise ValueError("The loaded runtime does not expose a supported automatic fit launch.")
+            for option in ("--ctx-size", "--fit-ctx"):
+                pattern = re.escape("'" + option + "'") + r"\s+'\d+'"
+                replacement = f"'{option}' '{target}'"
+                if re.search(pattern, script):
+                    script = re.sub(pattern, replacement, script)
+                else:
+                    script = script.rstrip() + " " + replacement
+            command[encoded_index] = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+            return command
+        if "--fit-ctx" not in command or "--fit" not in command or command[command.index("--fit") + 1] != "on":
+            raise ValueError("The loaded runtime does not expose a supported automatic fit launch.")
+        for option in ("--ctx-size", "--fit-ctx"):
+            if option in command:
+                command[command.index(option) + 1] = str(target)
+            else:
+                command.extend([option, str(target)])
+        return command
+
+    def _reload_for_context(client: Any, prompt_tokens: int, reserve: int, window: int) -> str:
+        context = globals().get("_TOOL_CALL_CONTEXT")
+        broker = context.get() if context is not None else None
+        owner = broker if broker is not None else client
+        if getattr(owner, "_qubitz_context_reload_attempted", False):
+            return "The single context-capacity recovery attempt has already been used for this task."
+        owner._qubitz_context_reload_attempted = True
+        maximum = int(getattr(client.config, "_qubitz_requested_num_ctx", client.config.num_ctx))
+        needed = (prompt_tokens + max(256, reserve)) * 10 // 9 + 1
+        target = min(maximum, max(32768, ((needed + 4095) // 4096) * 4096))
+        if target < needed or target <= window:
+            return "The request exceeds the configured context ceiling; it was not increased without permission."
+        server = getattr(client, "server_process", None)
+        process = getattr(server, "process", None)
+        stop = getattr(client, "_stop_verified_listener", None)
+        if process is None or process.poll() is not None or not callable(stop):
+            return "No live wrapper-owned model server is available for a safe context reload."
+        model = str(getattr(client.config, "model_name", ""))
         try:
-            probe = client._probe_with_fallback("/props")
-            if int(probe.get("status_code") or 0) == 200:
-                props = probe.get("json") or {}
-                settings = props.get("default_generation_settings")
-                for value in (
-                    settings.get("n_ctx") if isinstance(settings, dict) else None,
-                    props.get("n_ctx"),
-                ):
-                    try:
-                        resolved = int(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if resolved > 0:
-                        window = resolved
-                        break
-        except Exception:
-            window = 0
-        client._qubitz_server_context_window = window
-        return window
+            model_probe = client._probe_with_fallback("/v1/models")
+            advertised = {item.get("id") for item in (model_probe.get("json") or {}).get("data", [])
+                          if isinstance(item, dict)}
+        except Exception as exc:
+            return f"Model identity probe failed ({type(exc).__name__}); no listener was stopped."
+        if not model or advertised != {model}:
+            return "Model identity could not be verified; no listener was stopped."
+        saved_context = client.config.num_ctx
+        saved_override = server.__dict__.get("_launch_command")
+        try:
+            command = _context_launch_command(server._launch_command(), target)
+            callback = getattr(broker, "callback", None)
+            if callable(callback):
+                callback("status", f"Context capacity recovery: reloading the owned model once with a {target:,}-token fit minimum; completed tools will not be replayed.")
+            stop("Context recovery could not safely release the owned model listener.")
+            client.config.num_ctx = maximum
+            server._launch_command = lambda: list(command)
+            server.ensure_started()
+            client._qubitz_server_context_window = None
+            original_ensure_model(client, model)
+            _sync_loaded_context(client)
+            loaded = _loaded_llamacpp_context_window(client)
+            if loaded < target:
+                return f"The server reloaded with only {loaded:,} tokens instead of the required {target:,}."
+            return ""
+        except Exception as exc:
+            # This is a failed capacity recovery, not a user cancellation or model answer.
+            return f"The context reload failed ({type(exc).__name__}): {str(exc)[:1200]}"
+        finally:
+            if saved_override is None:
+                server.__dict__.pop("_launch_command", None)
+            else:
+                server._launch_command = saved_override
+            if getattr(client, "_qubitz_server_context_window", None) is None:
+                client.config.num_ctx = saved_context
+            else:
+                _sync_loaded_context(client)
 
     def _fit_messages_to_window(client: Any, kwargs: dict[str, Any]) -> None:
-        """Shrink oldest tool results until the request fits the real window.
-
-        Structure is preserved exactly: no message is removed, no role changes,
-        and tool_call_id values are untouched, so assistant tool_calls stay
-        paired with their results. Only role="tool" content shrinks. If that is
-        not enough the request proceeds unchanged rather than editing user or
-        assistant turns, so a genuine overflow still surfaces as itself.
-        """
+        """Reserve answer space without modifying history, user text, or rules."""
         messages = kwargs.get("messages")
         if not isinstance(messages, list) or not messages:
             return
@@ -9891,9 +10248,12 @@ def _patch_streaming_chat(base: Any) -> None:
             predict = int(kwargs.get("num_predict") or 0)
         except (TypeError, ValueError):
             predict = 0
-        limit = int(window * _CONTEXT_GUARD_HEADROOM) - max(0, predict)
-        if limit <= 0:
-            return
+        capacity = int(window * _CONTEXT_GUARD_HEADROOM)
+        # The output setting is a maximum, not a demand to consume the whole slot.
+        reserve = min(predict if predict > 0 else 4096, max(256, capacity // 4))
+        limit = max(1, capacity - reserve)
+        messages = [dict(message) if isinstance(message, dict) else message for message in messages]
+        kwargs["messages"] = messages
 
         def estimate() -> int:
             payload = json.dumps(
@@ -9903,19 +10263,42 @@ def _patch_streaming_chat(base: Any) -> None:
             )
             return base.estimate_tokens(payload)
 
-        if estimate() <= limit:
-            return
-        for message in messages:
-            if not isinstance(message, dict) or message.get("role") != "tool":
-                continue
-            content = message.get("content")
-            if not isinstance(content, str) or len(content) <= _CONTEXT_GUARD_MIN_TOOL_CHARS:
-                continue
-            message["content"] = base.shorten(content, _CONTEXT_GUARD_MIN_TOOL_CHARS)
-            if estimate() <= limit:
+        prompt_tokens = estimate()
+        if prompt_tokens > limit:
+            for message in messages:
+                if not isinstance(message, dict) or message.get("role") != "tool":
+                    continue
+                content = message.get("content")
+                if not isinstance(content, str) or len(content) <= _CONTEXT_GUARD_MIN_TOOL_CHARS:
+                    continue
+                message["content"] = base.shorten(content, _CONTEXT_GUARD_MIN_TOOL_CHARS)
+                prompt_tokens = estimate()
+                if prompt_tokens <= limit:
+                    break
+        retrieval_message = getattr(stream_state, "retrieval_message", None)
+        if prompt_tokens > limit and retrieval_message is not None:
+            full, reduced = retrieval_message
+            for message in messages:
+                if isinstance(message, dict) and message.get("role") == "user" and message.get("content") == full:
+                    message["content"] = reduced
+                    prompt_tokens = estimate()
+                    break
+        available = capacity - prompt_tokens
+        if available < min(256, reserve):
+            reason = _reload_for_context(client, prompt_tokens, reserve, window)
+            if not reason:
+                _fit_messages_to_window(client, kwargs)
                 return
+            raise ContextCapacityError(
+                f"Insufficient loaded context: {window:,} tokens; the protected request and tool schemas "
+                f"need approximately {prompt_tokens:,} input tokens plus answer space. "
+                f"{reason} User instructions and governing rules were preserved."
+            )
+        kwargs["num_predict"] = min(predict, available) if predict > 0 else available
 
     base.LlamaCppClient.chat = _chat_with_transient_retry
+    base.LlamaCppClient.ensure_model = _ensure_model_with_context
+    base.AgentRunner._user_message = _user_message_with_context
     base.LlamaCppClient._qubitz_streaming_patched = True
     base.LlamaCppClient.qubitz_reset_generation_metrics = _reset_generation_metrics
     base.LlamaCppClient.qubitz_generation_metrics = _generation_metrics
@@ -9924,6 +10307,7 @@ def _patch_streaming_chat(base: Any) -> None:
     base.set_qubitz_reasoning_mode = _set_reasoning_mode
     base.set_qubitz_forced_tool_choice = _set_forced_tool_choice
     base.LlamaCppClient.qubitz_json_chat = _json_chat
+    base.LlamaCppClient.qubitz_context_launch_command = staticmethod(_context_launch_command)
 
 
 class WorkspaceDiscoveryMemory:
@@ -11540,6 +11924,9 @@ class LocalOnlyApp:
 
             def _runtime_fact_block(self, prompt: str) -> str:
                 capabilities = self._runtime_capabilities()
+                broker = getattr(self, "_tool_permission_broker", None)
+                # Internal continuation instructions cannot redefine user authorization.
+                prompt = getattr(broker, "current_prompt", "") or prompt
                 semantic = _analyze_semantic_intent(prompt)
                 decision = getattr(self, "_route_decision", None)
                 preferred_python = "none"
@@ -11563,6 +11950,9 @@ class LocalOnlyApp:
                     f"- Semantic speech act: {semantic.speech_act}",
                     f"- Requested actions: {', '.join(sorted(semantic.requested_actions)) or 'none'}",
                     f"- Prohibited actions: {', '.join(sorted(semantic.prohibited_actions)) or 'none'}",
+                    "- Authorization scope: requested actions satisfy the explicit-request modification gate; "
+                    "prohibitions are from the user task, not from a previous assistant refusal. "
+                    "The active access mode and enforced tool permissions still apply.",
                     f"- Action objects and scope: {', '.join(sorted(semantic.objects)) or 'none'}; {semantic.execution_scope}",
                     f"- Selected route: {selected_route}",
                     f"- Route profile: {route_profile}",
@@ -13414,8 +13804,14 @@ def _reported_entrypoint_browser_urls(
     *,
     requested_browser_open: bool,
     return_code: int,
+    requested_browser: str | None = None,
 ) -> list[str]:
+    broker = _TOOL_CALL_CONTEXT.get()
+    if requested_browser is None and broker is not None:
+        requested_browser = _requested_browser_name(broker.current_prompt)
     if not requested_browser_open or return_code != 0 or not output_urls:
+        return []
+    if requested_browser and _entrypoint_browser_name(entrypoint) != requested_browser:
         return []
     source_parts = [browser_helper_text]
     raw_path = entrypoint.get("path")
@@ -13444,7 +13840,15 @@ def _reported_entrypoint_browser_urls(
     opened_count = int(matches[-1].group(1))
     if opened_count <= 0 or opened_count > len(output_urls):
         return []
-    return list(output_urls[:opened_count])
+    opened_urls = list(output_urls[:opened_count])
+    if broker is not None:
+        broker.evidence.append({
+            "turn_id": broker.turn_id, "tool": "wrapper_entrypoint_browser_report", "success": True,
+            "categories": ["opened_urls"], "browser": _entrypoint_browser_name(entrypoint) or "default",
+            "urls": opened_urls, "opened_count": opened_count,
+            "verification": "successful_entrypoint_report",
+        })
+    return opened_urls
 _HARNESS_BLOCK_MARKER = "### BLOCK:"
 _HARNESS_SCHEMA_MARKER = "Harness schema: QUBITZ-HARNESS/1"
 _HARNESS_REQUIRED_BLOCKS = (
@@ -13719,6 +14123,7 @@ class _ToolPermissionBroker:
 
     def begin_turn(self, prompt: str, callback: Callable[[str, str], None] | None) -> None:
         self.turn_id = uuid.uuid4().hex
+        self._content_tool_recovery_used = False
         self.current_prompt = prompt
         self.task_intent = _build_task_intent(prompt, "")
         self.dependency_manifest = _dependency_install_manifest(prompt)
@@ -13747,6 +14152,19 @@ class _ToolPermissionBroker:
         self.transaction_changed_hashes.clear()
         self.transaction_staged_patches.clear()
         self.transaction_explicit_file_targets.clear()
+        self.creation_targets: set[str] = set()
+        creation_candidates: set[str] = set()
+        if self.task_intent.semantic.requests("create"):
+            for candidate in self.base.extract_file_tokens(prompt):
+                with suppress(OSError, ValueError):
+                    target = self.base.resolve_workspace_path(
+                        self.workspace, candidate, allow_missing=True,
+                        allow_external=self.access_mode == ACCESS_MODE_FULL,
+                    ).resolve()
+                    creation_candidates.add(str(target))
+            self.creation_targets = {path for path in creation_candidates if not Path(path).exists()}
+            if not self.creation_targets and len(creation_candidates) == 1:
+                self.creation_targets = creation_candidates
         for candidate in self.base.extract_file_tokens(prompt):
             with suppress(Exception):
                 target = self.base.resolve_workspace_path(
@@ -14508,6 +14926,13 @@ class _ToolPermissionBroker:
                     expected_hash = structured.get("new_sha256")
                     if success and isinstance(expected_hash, str) and target is not None and target.is_file():
                         success = hashlib.sha256(target.read_bytes()).hexdigest() == expected_hash
+                    if normalized == "write_file":
+                        content = arguments.get("content")
+                        success = bool(
+                            success and target is not None and target.is_file()
+                            and isinstance(content, str) and structured.get("created") is True
+                            and target.read_bytes() == content.encode("utf-8")
+                        )
                 if success and target is not None:
                     verified_paths.append(str(target))
             if success:
@@ -14639,6 +15064,8 @@ class _ToolPermissionBroker:
             "return_code": return_code,
             "result_count": result_count,
             "opened_count": len(evidence_urls) if browser_action and success else 0,
+            "browser": str(structured.get("browser") or "").casefold() if browser_action else "",
+            "file_hashes": _current_file_hashes(verified_paths) if success and "created_outputs" in categories else {},
             "urls": evidence_urls,
             "source_urls": source_urls if success else [],
             "command": (
@@ -14842,6 +15269,28 @@ class _ToolPermissionBroker:
             if evidence.get("success")
             for category in evidence.get("categories", [])
         }
+        creation_targets = getattr(self, "creation_targets", set())
+        if creation_targets and "created_outputs" in required:
+            created_hashes = {
+                path: digest for evidence in evidence_items
+                if evidence.get("success") and "created_outputs" in evidence.get("categories", [])
+                for path, digest in evidence.get("file_hashes", {}).items()
+            }
+            current_hashes = _current_file_hashes(sorted(creation_targets))
+            for path in creation_targets:
+                if not created_hashes.get(path) or current_hashes.get(path) != created_hashes[path]:
+                    verified.difference_update({"created_outputs", "changed_files"})
+                    break
+        requested_browser = _requested_browser_name(effective_prompt)
+        browser_evidence = [
+            evidence for evidence in evidence_items
+            if not requested_browser or evidence.get("browser") == requested_browser
+        ]
+        if "opened_urls" in required and requested_browser and not any(
+            evidence.get("success") and "opened_urls" in evidence.get("categories", [])
+            for evidence in browser_evidence
+        ):
+            verified.discard("opened_urls")
         named_source_urls = {_canonical_http_url(url) for url in _named_source_urls(effective_prompt)}
         named_source_urls.discard("")
         if "external_sources" in required:
@@ -14863,7 +15312,7 @@ class _ToolPermissionBroker:
             if category == "opened_urls":
                 unique_urls = {
                     str(url).strip().casefold()
-                    for evidence in evidence_items
+                    for evidence in browser_evidence
                     if evidence.get("success") and "opened_urls" in evidence.get("categories", [])
                     for url in evidence.get("urls", [])
                     if _is_external_http_url(url)
@@ -14873,7 +15322,7 @@ class _ToolPermissionBroker:
                     max(
                         (
                             int(evidence.get("opened_count") or 0)
-                            for evidence in evidence_items
+                            for evidence in browser_evidence
                             if evidence.get("success") and "opened_urls" in evidence.get("categories", [])
                         ),
                         default=0,
@@ -14964,21 +15413,25 @@ class _ToolPermissionBroker:
         verified = sorted(required.difference(missing))
         parts = [item.replace("_", " ") for item in verified]
         count_requirement = _requested_count_postcondition(prompt)
+        requested_browser = _requested_browser_name(prompt)
         if count_requirement is not None:
             category, expected = count_requirement
             observed = 0
             if category == "opened_urls":
                 urls = {
                     str(url).strip().casefold()
-                    for evidence in self.evidence
-                    if evidence.get("success")
+                    for evidence in self._current_turn_evidence()
+                    if evidence.get("success") and "opened_urls" in evidence.get("categories", [])
+                    and (not requested_browser or evidence.get("browser") == requested_browser)
                     for url in evidence.get("urls", [])
                     if _is_external_http_url(url)
                 }
                 observed = max(
                     len(urls),
                     max(
-                        (int(evidence.get("opened_count") or 0) for evidence in self.evidence if evidence.get("success")),
+                        (int(evidence.get("opened_count") or 0) for evidence in self._current_turn_evidence()
+                         if evidence.get("success") and "opened_urls" in evidence.get("categories", [])
+                         and (not requested_browser or evidence.get("browser") == requested_browser)),
                         default=0,
                     ),
                 )
@@ -15662,6 +16115,22 @@ class _ToolPermissionBroker:
                     "missing_urls": missing_source_urls,
                     "files_unchanged": True,
                 }
+        requested_browser = _requested_browser_name(self.current_prompt)
+        if normalized == "open_urls_in_browser" and requested_browser:
+            supplied_browser = str(arguments.get("browser") or "default").strip().casefold()
+            if supplied_browser == "msedge":
+                supplied_browser = "edge"
+            if supplied_browser != requested_browser:
+                reason = f"The user requested {requested_browser}; use browser='{requested_browser}'. No URLs were opened."
+                self._audit("constraint_mismatch", normalized, arguments, fingerprint, reason)
+                return False, {"status": "constraint_mismatch", "reason": reason, "opened_count": 0}
+        creation_targets = getattr(self, "creation_targets", set())
+        if normalized == "write_file" and creation_targets:
+            target = self._resolved_argument_path(arguments, "path")
+            if target is None or str(target.resolve()) not in creation_targets:
+                reason = "Use the creation destination explicitly named in the current user task."
+                self._audit("constraint_mismatch", normalized, arguments, fingerprint, reason)
+                return False, {"status": "constraint_mismatch", "reason": reason, "files_unchanged": True}
         if fingerprint in self.approved_once:
             self.approved_once.remove(fingerprint)
             self.pending.pop(fingerprint, None)
@@ -19200,6 +19669,19 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     f"Authoritative wrapper fact: {label} blocked direct existing-entrypoint execution. "
                     "No process was started; answer or plan without executing the entrypoint."
                 )
+            requested_browser = _requested_browser_name(prompt) if _prompt_requests_browser_open(prompt) else None
+            entrypoint = self._resolve_existing_entrypoint_for_prompt(prompt)
+            configured_browser = _entrypoint_browser_name(entrypoint) if isinstance(entrypoint, dict) else None
+            if requested_browser and configured_browser and configured_browser != requested_browser:
+                self._existing_script_direct_answer = ""
+                message = (
+                    f"The discovered entrypoint launches {configured_browser}, but the user requested {requested_browser}. "
+                    "The wrapper did not execute it. Inspect the existing project for a supported browser override or "
+                    "a URL-only operation, then use open_urls_in_browser with the requested browser. "
+                    "Do not edit the project unless the user authorized editing, and do not run the mismatched launch path."
+                )
+                self._emit(callback, "status", message)
+                return message
             context = super()._run_existing_script_preflight(prompt, callback)
             broker = self._tool_permission_broker
             focused = broker.update_focused_postconditions(prompt)
@@ -19247,6 +19729,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             prompt: str,
             route_name: str | None = None,
         ) -> TaskIntent:
+            broker = getattr(self, "_tool_permission_broker", None)
+            active_broker = _TOOL_CALL_CONTEXT.get()
+            if active_broker is broker and getattr(broker, "current_prompt", ""):
+                prompt = broker.current_prompt
             normalized_prompt = " ".join(str(prompt or "").strip().split())
             route = (
                 str(self._selected_route_name(prompt) or "").strip().lower()
@@ -19558,6 +20044,24 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     ),
                     fallback_routes=["ask_user_missing_info"],
                 )
+            semantic = _analyze_semantic_intent(prompt)
+            if semantic.requests("create") and decision.selected_route in {"simple_answer", "read_only_workspace"}:
+                decision = base.replace(
+                    decision, selected_route="tool_loop",
+                    reason="An explicit creation request requires a creation tool and verified filesystem output.",
+                    fallback_routes=["retrieval_plus_model", "ask_user_missing_info"],
+                )
+            if decision.selected_route == "direct_existing_entrypoint" and semantic.requests("open_browser"):
+                requested_browser = _requested_browser_name(prompt)
+                entrypoint = self._resolve_existing_entrypoint_for_prompt(prompt)
+                configured_browser = _entrypoint_browser_name(entrypoint) if entrypoint else None
+                if requested_browser and configured_browser and configured_browser != requested_browser:
+                    decision = base.replace(
+                        decision, selected_route="tool_loop",
+                        reason=(f"The existing entrypoint names {configured_browser}, not the requested "
+                                f"{requested_browser}; inspect supported arguments before executing it."),
+                        fallback_routes=["ask_user_missing_info"],
+                    )
             if mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN} and decision.selected_route == "direct_existing_entrypoint":
                 decision = base.replace(
                     decision,
@@ -20078,6 +20582,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             task_intent = broker.task_intent or self._task_intent_for_prompt(prompt)
             if (
                 task_intent.task_kind not in {"coding_repair_task", "edit_or_refactor_task"}
+                or task_intent.semantic.requests("create", "copy")
                 or _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE)) != ACCESS_MODE_FULL
             ):
                 return None
@@ -20371,7 +20876,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         return None
                     try:
                         return validate_proposal(proposal)
-                    except ValueError as exc:
+                    except (OSError, ValueError) as exc:
                         if schema_attempt == 1:
                             if callback is not None:
                                 callback(
@@ -20493,26 +20998,33 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             prompt: str,
             answer: str,
         ) -> dict[str, Any] | None:
+            broker = self._tool_permission_broker
+            task_intent = broker.task_intent or self._task_intent_for_prompt(prompt)
+            _required, missing = broker.completion_report(prompt)
+            creation_tool = _creation_tool_name(prompt)
+            creation_pending = creation_tool is not None and "created_outputs" in missing
+            browser_pending = task_intent.semantic.requests("open_browser") and "opened_urls" in missing
             normalized = str(answer or "").strip().lower()
             no_progress_markers = (
                 "stopped after a focused recovery attempt because consecutive model steps produced",
                 "stopped without a final answer",
                 "you returned neither tool calls nor a final answer",
             )
-            if normalized and not any(marker in normalized for marker in no_progress_markers):
+            if normalized and not (creation_pending or browser_pending) and not any(marker in normalized for marker in no_progress_markers):
                 return None
-            broker = self._tool_permission_broker
-            task_intent = broker.task_intent or self._task_intent_for_prompt(prompt)
             if task_intent.task_kind not in {
                 "coding_repair_task",
                 "edit_or_refactor_task",
                 "mcp_or_tool_task",
                 "tool_or_verification_task",
-            }:
+            } and not task_intent.semantic.requests("create", "open_browser"):
                 return None
-            _required, missing = broker.completion_report(prompt)
             tool_name = ""
-            if "mcp_ready" in missing:
+            if creation_pending:
+                tool_name = creation_tool
+            elif "opened_urls" in missing:
+                tool_name = "open_urls_in_browser"
+            elif "mcp_ready" in missing:
                 tool_name = "list_project_mcp_tools"
             elif "mcp_tool_called" in missing:
                 tool_name = "call_project_mcp_tool"
@@ -20618,6 +21130,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         "copy_path",
                         "run_existing_entrypoint",
                         "write_file",
+                        "make_directory",
                     },
                     "changed_files": {
                         "apply_docx_text_patch",
@@ -20853,6 +21366,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     "read_project_mcp_server_log",
                     "stop_project_mcp_server",
                 ]
+            elif _creation_tool_name(prompt) is not None:
+                pinned_names = [_creation_tool_name(prompt), "list_files", "read_file", "search_text"]
             elif edit_intent:
                 pinned_names = [
                     "read_file_snapshot",
@@ -20868,6 +21383,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     pinned_names.extend(["move_path", "delete_path"])
                 elif not existing_file_repair:
                     pinned_names.append("write_file")
+            elif semantic.requests("open_browser"):
+                pinned_names = ["open_urls_in_browser", "read_file", "list_files", "search_text"]
             elif execute_intent:
                 pinned_names = [
                     "run_existing_entrypoint",
@@ -21204,6 +21721,17 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             return None
 
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
+            observed_prompt = prompt
+            previous_task = getattr(self, "_last_actionable_task", {})
+            correction = None
+            if previous_task.get("workspace") == str(self.workspace.resolve()):
+                previous_answer = next((
+                    str(item.get("content") or "") for item in reversed(getattr(self, "history", []))
+                    if item.get("role") == "assistant"
+                ), "")
+                correction = _resolve_corrective_task_prompt(
+                    prompt, previous_task.get("prompt", ""), previous_answer,
+                )
             self._active_research_decision = _research_decision_for_prompt(
                 prompt,
                 getattr(self, "network_mode", DEFAULT_NETWORK_MODE),
@@ -21213,6 +21741,26 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 getattr(self, "history", []),
                 getattr(self, "history_summary", ""),
             )
+            if correction:
+                prompt = correction
+                browser = _requested_browser_name(correction)
+                previous_urls = _validated_external_urls(previous_task.get("urls", []), SCRIPT_PREFLIGHT_MAX_URLS)
+                if browser and previous_urls and _analyze_semantic_intent(correction).requests("open_browser"):
+                    prompt = f"Open these URLs as tabs in {browser}:\n" + "\n".join(previous_urls)
+                self._turn_relation = base.replace(
+                    self._turn_relation, kind="follow_up",
+                    reason="The correction binds to the same authorized task and workspace; re-verify its outcome.",
+                )
+                if callback is not None:
+                    callback("status", "Wrapper correction: retaining the original requested action and target; re-verifying completion.")
+            semantic = _analyze_semantic_intent(prompt)
+            if semantic.requests("create", "edit", "open_browser"):
+                self._last_actionable_task = {
+                    "workspace": str(self.workspace.resolve()), "prompt": prompt,
+                    "urls": previous_task.get("urls", []) if correction else [],
+                }
+            elif semantic.prohibited_actions or semantic.requested_actions or self._turn_relation.kind == "new_request":
+                self._last_actionable_task = {}
             social_response = self._social_fast_path_response(prompt)
             if social_response is not None:
                 response_kind, answer = social_response
@@ -21254,6 +21802,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 if self._selected_route_name(prompt) not in {"simple_answer", "dependency_install"}:
                     self._active_discovery_context = self.discovery_memory.context_for(prompt)
             self._tool_permission_broker.begin_turn(prompt, callback)
+            self._tool_permission_broker._qubitz_context_reload_attempted = False
             broker_context_token = _TOOL_CALL_CONTEXT.set(self._tool_permission_broker)
             selected_route = self._selected_route_name(prompt)
             progressive_budget_enabled = selected_route not in {
@@ -21398,17 +21947,44 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     str(rendered_answer).strip(),
                     callback,
                 )
+                required, missing = self._tool_permission_broker.completion_report(prompt)
+                if missing.intersection({"changed_files", "created_outputs", "opened_urls"}):
+                    summary = self._tool_permission_broker.completion_evidence_summary(prompt)
+                    targets = sorted(getattr(self._tool_permission_broker, "creation_targets", set()))
+                    target_text = "\nRequested path(s): " + ", ".join(targets) if targets else ""
+                    stop_reason = ""
+                    if self._cancel_source == "user":
+                        stop_reason = "Stopped at the user's request. "
+                    elif self._cancel_source and self._cancel_source != "wrapper_verified_completion":
+                        stop_reason = "Stopped by the wrapper. "
+                    answer_text = (
+                        f"{stop_reason}The requested action was not completed and verified."
+                        f"{target_text}\n\nVerified current-turn evidence: {summary}.\n\n"
+                        "[Completion status: partial] Unverified postconditions: "
+                        + ", ".join(sorted(item.replace("_", " ") for item in missing)) + "."
+                    )
                 if turn_history_finalized:
                     return answer_text
+                semantic = _analyze_semantic_intent(prompt)
+                if semantic.requests("create", "edit", "open_browser"):
+                    self._last_actionable_task = {
+                        "workspace": str(self.workspace.resolve()), "prompt": prompt,
+                        "urls": _validated_external_urls([
+                            url for evidence in self._tool_permission_broker._current_turn_evidence()
+                            if evidence.get("success") for url in evidence.get("urls", [])
+                        ], SCRIPT_PREFLIGHT_MAX_URLS),
+                    }
+                elif semantic.requested_actions or self._turn_relation.kind == "new_request":
+                    self._last_actionable_task = {}
                 with suppress(Exception):
                     self.memory.turns = self.memory.turns[:memory_checkpoint]
-                    self.memory.add_turn("user", prompt)
+                    self.memory.add_turn("user", observed_prompt)
                     self.memory.add_turn("assistant", answer_text)
                 with suppress(Exception):
                     self.history = self.history[:history_checkpoint]
                     self.history.extend(
                         [
-                            {"role": "user", "content": prompt},
+                            {"role": "user", "content": observed_prompt},
                             {"role": "assistant", "content": answer_text},
                         ]
                     )
@@ -21789,6 +22365,25 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         )
                     rendered_answer = f"{rendered_answer}\n\n[Completion status: verified]"
                 return finalize_turn_answer(rendered_answer)
+            except base.QubitzContextCapacityError as exc:
+                broker = self._tool_permission_broker
+                _required, missing = broker.completion_report(prompt)
+                rollback = {"restored": [], "skipped": []}
+                if missing.intersection({"changed_files", "tests"}) and broker.transaction_changed_hashes:
+                    rollback = rollback_interrupted_transaction("a context-capacity blocker before verification")
+                summary = broker.completion_evidence_summary(prompt)
+                details = ""
+                if rollback["restored"] or rollback["skipped"]:
+                    details = f" Unverified transaction rollback restored {rollback['restored']}; skipped concurrently changed or unavailable paths: {rollback['skipped']}."
+                missing_text = ", ".join(sorted(item.replace("_", " ") for item in missing)) or "the remaining response"
+                answer = (
+                    f"[Capacity blocker] {exc}{details}\n\n"
+                    f"Verified current-turn evidence: {summary}.\n\n"
+                    f"[Completion status: partial] Unverified postconditions: {missing_text}."
+                )
+                if callback is not None:
+                    callback("status", "Context-capacity recovery could not fit this request; returning a partial result without replaying completed actions.")
+                return finalize_turn_answer(answer)
             finally:
                 with suppress(Exception):
                     self.discovery_memory.observe_tool_evidence(
@@ -22048,6 +22643,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._qubitz_gui_log_queue: Any = base.queue.Queue(maxsize=4096)
             self._qubitz_gui_watchdog_stop = threading.Event()
             self._qubitz_gui_last_poll_at = time.monotonic()
+            gui_thread_id = threading.get_ident()
 
             def enqueue_gui_log(event_name: str, **details: Any) -> None:
                 payload = {
@@ -22075,25 +22671,37 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 except OSError:
                     return
 
-            threading.Thread(
+            self._qubitz_gui_log_writer = threading.Thread(
                 target=write_gui_log,
                 name="qubitz-gui-log",
                 daemon=True,
-            ).start()
+            )
+            self._qubitz_gui_log_writer.start()
 
             def watch_gui_heartbeat() -> None:
                 stalled = False
                 while not self._qubitz_gui_watchdog_stop.wait(2.0):
                     lag_seconds = max(0.0, time.monotonic() - self._qubitz_gui_last_poll_at)
-                    if lag_seconds >= 8.0 and not stalled:
+                    queued_events = self.event_queue.qsize()
+                    overdue = lag_seconds >= 8.0 or (queued_events > 0 and lag_seconds >= 3.0)
+                    if overdue and not stalled:
                         stalled = True
+                        # Capture code locations only, never frame locals or prompt values.
+                        frame = sys._current_frames().get(gui_thread_id)
+                        try:
+                            main_thread_stack = (
+                                "".join(base.traceback.format_stack(frame, limit=32)) if frame is not None else ""
+                            )
+                        finally:
+                            del frame
                         enqueue_gui_log(
                             "gui_heartbeat_stalled",
                             lag_seconds=round(lag_seconds, 3),
                             busy=bool(getattr(self, "busy", False)),
-                            queued_events=self.event_queue.qsize(),
+                            queued_events=queued_events,
+                            main_thread_stack=main_thread_stack,
                         )
-                    elif stalled and lag_seconds < 4.0:
+                    elif stalled and lag_seconds < 1.0:
                         stalled = False
                         enqueue_gui_log(
                             "gui_heartbeat_recovered",
@@ -23193,7 +23801,588 @@ if ($null -ne $process) {{
 
     base.QubitzGUI = RunControlGUI
 
+def _install_optional_mcp_capabilities(app: LocalOnlyApp) -> None:
+    """Operator-configured MCPs; no package acquisition or third-party edit bypass."""
+    from contextlib import AsyncExitStack
+    from datetime import timedelta
+    from urllib.parse import urlsplit
+
+    base = app.base
+    original_host = base.MCPHost
+    original_runner = base.AgentRunner
+    config_path = app.runtime_workspace / ".qubitz" / "mcp_capabilities.json"
+    meta_names = {"discover_mcp_capability", "list_project_mcp_tools", "call_project_mcp_tool"}
+    # These are wrapper-owned classifications, not server-supplied annotations.
+    policies = {
+        "serena": {
+            "category": "code_semantic", "network": False,
+            "reads": "find_symbol find_referencing_symbols get_symbols_overview search_for_pattern list_dir find_file read_file",
+            "effect": "LOCAL_READ",
+        },
+        "github": {
+            "category": "github", "network": True,
+            "reads": "get_me get_file_contents search_code search_repositories list_branches list_commits get_commit list_tags get_tag list_releases get_latest_release get_release_by_tag issue_read list_issues search_issues pull_request_read list_pull_requests search_pull_requests actions_list actions_get actions_get_job_logs",
+            "effect": "NETWORK_READ",
+            "writes": "issue_write add_issue_comment create_pull_request update_pull_request merge_pull_request pull_request_review_write create_branch create_or_update_file push_files delete_file",
+        },
+        "context7": {
+            "category": "documentation", "network": True,
+            "reads": "resolve-library-id query-docs get-library-docs", "effect": "NETWORK_READ",
+        },
+        "playwright": {
+            "category": "browser", "network": True,
+            "reads": "browser_snapshot browser_console_messages browser_network_requests", "effect": "BROWSER_READ",
+            "actions": "browser_navigate browser_navigate_back browser_click browser_hover browser_type browser_fill_form browser_press_key browser_select_option browser_wait_for browser_handle_dialog browser_tabs browser_close",
+        },
+        "dbhub": {
+            "category": "database", "network": True,
+            "reads": "search_objects execute_sql", "effect": "DATABASE_READ",
+        },
+        "firecrawl": {
+            "category": "research", "network": True,
+            "reads": "firecrawl_scrape firecrawl_map firecrawl_search firecrawl_crawl firecrawl_check_crawl_status firecrawl_batch_scrape firecrawl_check_batch_scrape_status firecrawl_extract",
+            "effect": "NETWORK_READ",
+        },
+        "brave": {
+            "category": "research", "network": True,
+            "reads": "brave_web_search brave_local_search brave_news_search brave_image_search brave_video_search",
+            "effect": "NETWORK_READ",
+        },
+        "sequential_thinking": {
+            "category": "reasoning", "network": False,
+            "reads": "sequentialthinking", "effect": "LOCAL_READ",
+        },
+    }
+
+    def read_registry() -> tuple[dict[str, dict[str, Any]], str]:
+        if not config_path.exists():
+            return {}, "Optional MCP providers have not been configured."
+        try:
+            if config_path.stat().st_size > 131072:
+                raise ValueError("Registry exceeds 128 KiB.")
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            if data.get("version") != 1 or not isinstance(data.get("capabilities"), dict):
+                raise ValueError("Expected version 1 and a capabilities object.")
+            entries = data["capabilities"]
+            if set(entries) - set(policies) or any(not isinstance(v, dict) for v in entries.values()):
+                raise ValueError("Unknown provider or invalid provider entry.")
+            return entries, ""
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            return {}, f"Optional MCP registry unavailable: {type(exc).__name__}."
+
+    def relevant(provider: str, prompt: str) -> bool:
+        text = prompt.casefold()
+        if re.search(r"(?<!\w)" + re.escape(provider).replace("_", r"[ _-]") + r"(?!\w)", text):
+            return True
+        category = policies[provider]["category"]
+        if category == "reasoning":
+            return False
+        if category in {"documentation", "research"} and not _prompt_requests_network_research(prompt):
+            return False
+        patterns = {
+            "code_semantic": r"\b(symbols?|references|callers|callees|refactor|definitions)\b",
+            "github": r"github\.com|\bgithub\b|\bpull requests?\b",
+            "documentation": r"\b(documentation|docs|library|libraries|api|compatibility)\b",
+            "browser": r"\b(browser|frontend|web app|website|rendered page|ui test)\b",
+            "database": r"\b(database|sql|postgres|mysql|sqlite|mariadb)\b",
+            "research": r".",
+        }
+        return bool(re.search(patterns[category], text))
+
+    def effect_for(provider: str, name: str, entry: dict[str, Any]) -> str:
+        policy = policies[provider]
+        if provider == "dbhub":
+            # Multi-source DBHub exposes one tool per configured source, not a source argument.
+            for stem in ("execute_sql", "search_objects"):
+                if name == stem or name.startswith(stem + "_"):
+                    return "DATABASE_READ"
+        if name in str(policy["reads"]).split():
+            return str(policy["effect"])
+        if name in str(policy.get("actions", "")).split():
+            return "BROWSER_ACTION"
+        if entry.get("allow_remote_mutations") is True and name in str(policy.get("writes", "")).split():
+            return "REMOTE_MUTATION"
+        return "UNKNOWN"
+
+    def result_payload(payload: dict[str, Any], *, error: bool = False) -> Any:
+        return base.mcp_types.CallToolResult(
+            content=[base.mcp_types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=True))],
+            structuredContent=payload, isError=error,
+        )
+
+    def resolve_entry(provider: str, entry: dict[str, Any], workspace: Path, access_mode: str) -> dict[str, Any]:
+        if entry.get("enabled") is not True:
+            raise ValueError("Provider is disabled; enable it in the operator-owned MCP registry first.")
+        if entry.get("cost_policy") not in {"free", "self_hosted"}:
+            raise ValueError("Provider requires an explicit free or self_hosted cost policy; paid fallback is forbidden.")
+        scopes = entry.get("workspaces", [])
+        if not isinstance(scopes, list) or any(not isinstance(item, str) for item in scopes):
+            raise ValueError("workspaces must contain exact absolute workspace paths.")
+        if scopes and str(workspace.resolve()) not in {str(Path(item).resolve()) for item in scopes}:
+            raise ValueError("Provider is not enabled for the active workspace.")
+        if provider == "dbhub" and not scopes:
+            raise ValueError("Bind DBHub to an explicit workspace before connecting a database.")
+        if provider == "dbhub" and entry.get("read_only_credentials_confirmed") is not True:
+            raise ValueError("DBHub requires operator-confirmed read-only database credentials, not an administrator connection.")
+        if policies[provider]["network"] and not _network_mode_is_online():
+            raise PermissionError("Offline mode disables this network-capable provider, including its startup.")
+        transport = entry.get("transport", "stdio")
+        if transport not in {"stdio", "streamable_http"}:
+            raise ValueError("Only stdio and streamable_http transports are supported.")
+        if provider in {"serena", "dbhub", "playwright", "sequential_thinking"} and transport != "stdio":
+            raise ValueError("This provider requires its own workspace-bound stdio session.")
+        replacements = {"{workspace}": str(workspace.resolve()), "{runtime}": str(app.runtime_workspace)}
+
+        def expand(value: str) -> str:
+            for key, replacement in replacements.items():
+                value = value.replace(key, replacement)
+            return value
+
+        env = {}
+        env_names = entry.get("env", {})
+        if not isinstance(env_names, dict):
+            raise ValueError("env must map child variable names to source variable names.")
+        for target, source in env_names.items():
+            if not isinstance(target, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", target):
+                raise ValueError("env keys must be valid child variable names.")
+            if not isinstance(source, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", source):
+                raise ValueError("env values must be environment-variable names, not embedded secrets.")
+            if source not in os.environ:
+                raise ValueError(f"Required environment variable {source} is not set.")
+            env[str(target)] = os.environ[source]
+        runtime_env = entry.get("runtime_env", {})
+        allowed_runtime_env = {
+            "serena": {"SERENA_HOME"},
+            "playwright": {"PLAYWRIGHT_BROWSERS_PATH"},
+            "sequential_thinking": {"DISABLE_THOUGHT_LOGGING"},
+        }.get(provider, set())
+        if not isinstance(runtime_env, dict) or set(runtime_env) - allowed_runtime_env:
+            raise ValueError("runtime_env accepts only the provider's documented non-secret settings.")
+        for key, value in runtime_env.items():
+            if not isinstance(value, str) or not value or "\x00" in value or key in env:
+                raise ValueError("runtime_env values must be nonempty strings without duplicate env mappings.")
+            if key == "DISABLE_THOUGHT_LOGGING":
+                if value not in {"true", "false"}:
+                    raise ValueError("DISABLE_THOUGHT_LOGGING must be true or false.")
+                env[key] = value
+            else:
+                location = Path(expand(value))
+                if not location.is_absolute():
+                    location = app.runtime_workspace / location
+                location = location.resolve()
+                if not location.is_relative_to(app.runtime_workspace.resolve()):
+                    raise ValueError("runtime_env cache paths must stay inside the runtime directory.")
+                env[key] = str(location)
+        # Inherit only essential process/display settings, never every credential.
+        child_env = {key: value for key, value in os.environ.items() if key in {
+            "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP",
+            "SYSTEMROOT", "WINDIR", "COMSPEC", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+            "WSL_INTEROP", "WSL_DISTRO_NAME", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        }}
+        child_env.update(env)
+        spec: dict[str, Any] = {"transport": transport, "env": child_env, "cwd": str(workspace)}
+        if transport == "streamable_http":
+            url = str(entry.get("url", ""))
+            parsed = urlsplit(url)
+            if parsed.username or parsed.password or parsed.fragment or parsed.query:
+                raise ValueError("MCP URLs must not embed credentials, query tokens, or fragments.")
+            if parsed.scheme != "https" and not (
+                parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+            ):
+                raise ValueError("Use HTTPS for remote MCP or HTTP for loopback only.")
+            if not parsed.hostname:
+                raise ValueError("MCP URL has no host.")
+            headers = {}
+            token_var = entry.get("bearer_token_env")
+            if token_var:
+                if token_var not in os.environ:
+                    raise ValueError(f"Required environment variable {token_var} is not set.")
+                headers["Authorization"] = "Bearer " + os.environ[token_var]
+            if provider == "github":
+                headers.update({"X-MCP-Lockdown": "true", "X-MCP-Toolsets": "repos,issues,pull_requests,actions"})
+                if access_mode != ACCESS_MODE_FULL or entry.get("allow_remote_mutations") is not True:
+                    headers["X-MCP-Readonly"] = "true"
+            spec.update(url=url, headers=headers)
+            return spec
+        command = expand(str(entry.get("command", "")))
+        if not command:
+            raise ValueError("Configure an already-installed MCP executable; no automatic installation is performed.")
+        command_path = Path(command)
+        if not command_path.is_absolute():
+            if "/" in command or "\\" in command:
+                command_path = (app.runtime_workspace / command).absolute()
+            else:
+                executable = shutil.which(command)
+                if executable is None:
+                    raise ValueError(f"MCP executable {command!r} is not installed or not on PATH.")
+                command_path = Path(executable).absolute()
+        if not command_path.is_file():
+            raise ValueError("Configured MCP executable is missing.")
+        # Resolve sibling runtimes without requiring a global Node/Python installation.
+        child_env["PATH"] = str(command_path.parent) + os.pathsep + child_env.get("PATH", "")
+        if command_path.suffix.lower() in {".cmd", ".bat", ".ps1", ".py"} or command_path.name.lower() in {
+            "npx", "npm", "uvx", "uv", "pip", "pip3", "bash", "sh", "cmd.exe", "powershell.exe", "pwsh",
+        }:
+            raise ValueError("Use an installed server executable, or an explicit node/python interpreter and server path; no shell/package-runner launch.")
+        args = entry.get("args", [])
+        if not isinstance(args, list) or any(not isinstance(item, str) for item in args):
+            raise ValueError("MCP args must be a list of strings.")
+        args = [expand(item) for item in args]
+        if provider == "serena":
+            args.extend(["--project", str(workspace.resolve()), "--mode", "planning", "--open-web-dashboard", "false"])
+        elif provider == "github":
+            args.extend(["--lockdown-mode", "--toolsets", "repos,issues,pull_requests,actions"])
+            child_env["GITHUB_LOCKDOWN_MODE"] = "1"
+            child_env["GITHUB_TOOLSETS"] = "repos,issues,pull_requests,actions"
+            if access_mode != ACCESS_MODE_FULL or entry.get("allow_remote_mutations") is not True:
+                args.append("--read-only")
+                child_env["GITHUB_READ_ONLY"] = "1"
+        elif provider == "playwright":
+            args.append("--isolated")
+        elif provider == "dbhub":
+            # Never infer SQL safety from a SELECT prefix or MCP readOnlyHint.
+            if "--config" not in args:
+                raise ValueError("DBHub requires an explicit --config file with readonly execute_sql settings.")
+            index = args.index("--config")
+            if index + 1 >= len(args):
+                raise ValueError("DBHub --config requires a file path.")
+            db_config = Path(args[index + 1])
+            if not db_config.is_absolute():
+                db_config = workspace / db_config
+            db_bytes = db_config.read_bytes()
+            data = tomllib.loads(db_bytes.decode("utf-8"))
+            sources = {item["id"] for item in data.get("sources", [])}
+            sql_tools = [item for item in data.get("tools", []) if item.get("name") == "execute_sql"]
+            if not sources or not sql_tools or any(item.get("readonly") is not True for item in sql_tools):
+                raise ValueError("Every DBHub execute_sql tool must explicitly be readonly.")
+            if not any(not item.get("source") for item in sql_tools) and not sources.issubset(
+                {item.get("source") for item in sql_tools}
+            ):
+                raise ValueError("DBHub readonly settings must cover every configured source.")
+            if any(not 1 <= int(item.get("max_rows", 0)) <= 1000 for item in sql_tools):
+                raise ValueError("Set a DBHub max_rows limit from 1 to 1000 for every execute_sql tool.")
+            spec["db_config_path"] = str(db_config.resolve())
+            spec["db_config_hash"] = hashlib.sha256(db_bytes).hexdigest()
+        elif provider == "firecrawl" and entry.get("cost_policy") == "self_hosted":
+            if not env.get("FIRECRAWL_API_URL"):
+                raise ValueError("Self-hosted Firecrawl requires FIRECRAWL_API_URL; do not fall back to the cloud.")
+        spec.update(command=str(command_path), args=args)
+        return spec
+
+    class CapabilitySession:
+        """One owner task enters/exits MCP cancel scopes; requests reuse its session."""
+        def __init__(self, provider: str, spec: dict[str, Any], timeout: int) -> None:
+            self.provider = provider
+            self.spec = spec
+            self.timeout = timeout
+            self.requests: asyncio.Queue[Any] = asyncio.Queue()
+            self.ready = asyncio.get_running_loop().create_future()
+            self.tools: dict[str, Any] = {}
+            self.closed = False
+            self.stderr_path = app.runtime_workspace / ".cache" / "mcp_capabilities" / uuid.uuid4().hex / "stderr.log"
+            self.task = asyncio.create_task(self._serve(), name=f"qubitz-mcp-{provider}")
+
+        async def _serve(self) -> None:
+            pending = None
+            try:
+                import httpx
+                from mcp import ClientSession, StdioServerParameters
+                from mcp.client.stdio import stdio_client
+                from mcp.client.streamable_http import streamable_http_client
+
+                async with AsyncExitStack() as stack:
+                    async with asyncio.timeout(self.timeout):
+                        if self.spec["transport"] == "stdio":
+                            self.stderr_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                            fd = os.open(self.stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                            log = stack.enter_context(os.fdopen(fd, "w", encoding="utf-8"))
+                            parameters = StdioServerParameters(**{
+                                key: self.spec[key] for key in ("command", "args", "env", "cwd")
+                            })
+                            read, write = await stack.enter_async_context(stdio_client(parameters, errlog=log))
+                        else:
+                            client = await stack.enter_async_context(httpx.AsyncClient(
+                                headers=self.spec["headers"], follow_redirects=False, timeout=self.timeout,
+                            ))
+                            read, write, _ = await stack.enter_async_context(streamable_http_client(
+                                self.spec["url"], http_client=client,
+                            ))
+                        session = await stack.enter_async_context(ClientSession(
+                            read, write, read_timeout_seconds=timedelta(seconds=self.timeout),
+                        ))
+                        initialized = await session.initialize()
+                        if self.provider == "dbhub":
+                            from packaging.version import Version
+                            if Version(initialized.serverInfo.version.lstrip("v")) < Version("0.22.6"):
+                                raise ValueError("DBHub versions below 0.22.6 have a known read-only enforcement vulnerability.")
+                        cursor = None
+                        for _ in range(20):
+                            response = await session.list_tools(cursor=cursor)
+                            self.tools.update({tool.name: tool for tool in response.tools})
+                            cursor = response.nextCursor
+                            if not cursor:
+                                break
+                        if cursor:
+                            raise ValueError("MCP tool catalog exceeded the 20-page limit.")
+                    self.ready.set_result(None)
+                    while True:
+                        request = await self.requests.get()
+                        if request is None:
+                            break
+                        name, arguments, pending = request
+                        response = await session.call_tool(name, arguments)
+                        if not pending.done():
+                            pending.set_result(response)
+                        pending = None
+            except BaseException as exc:
+                # Never replay a call after disconnect: its remote side effect may have happened.
+                error = RuntimeError(f"{self.provider} MCP session ended ({type(exc).__name__}); no automatic replay.")
+                if not self.ready.done():
+                    self.ready.set_exception(error)
+                if pending is not None and not pending.done():
+                    pending.set_exception(error)
+            finally:
+                self.closed = True
+                while not self.requests.empty():
+                    request = self.requests.get_nowait()
+                    if request is not None and not request[2].done():
+                        request[2].set_exception(RuntimeError("MCP session closed before dispatch."))
+
+        async def start(self) -> None:
+            await asyncio.shield(self.ready)
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> Any:
+            if self.closed:
+                raise RuntimeError("MCP session is closed; start a new task to reconnect.")
+            future = asyncio.get_running_loop().create_future()
+            await self.requests.put((name, arguments, future))
+            try:
+                return await asyncio.wait_for(asyncio.shield(future), self.timeout)
+            except BaseException:
+                future.cancel()
+                await self.close(cancel=True)
+                raise
+
+        async def close(self, *, cancel: bool = False) -> None:
+            if not self.task.done():
+                if cancel:
+                    self.task.cancel()
+                else:
+                    await self.requests.put(None)
+                try:
+                    await asyncio.wait_for(asyncio.shield(self.task), 10)
+                except asyncio.TimeoutError:
+                    self.task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await self.task
+            if self.ready.done() and not self.ready.cancelled():
+                self.ready.exception()
+
+    class CapabilityHost(original_host):
+        def __init__(self, workspace: Path) -> None:
+            super().__init__(workspace)
+            self.capability_entries, self.capability_config_error = read_registry()
+            self.capability_sessions: dict[str, CapabilitySession] = {}
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            try:
+                for session in self.capability_sessions.values():
+                    await session.close(cancel=exc_type is not None)
+            finally:
+                await super().__aexit__(exc_type, exc, tb)
+
+        async def list_tools(self) -> list[Any]:
+            tools = await super().list_tools()
+            tools.append(base.mcp_types.Tool(
+                name="discover_mcp_capability",
+                description=(
+                    "Inspect configured optional MCP capabilities without starting servers. "
+                    "Supply capability to list its permitted tool names; add tool_name to retrieve just that tool's schema. "
+                    "Use capability:<id> as server_reference in call_project_mcp_tool. "
+                    "Use native tools first; optional MCPs do not bypass access or network settings."
+                ),
+                inputSchema={"type": "object", "properties": {
+                    "capability": {"type": "string", "enum": list(policies)},
+                    "tool_name": {"type": "string"},
+                }, "additionalProperties": False},
+                annotations=base.mcp_types.ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+            ))
+            return tools
+
+        def _permission_error(self, provider: str, effect: str, arguments: dict[str, Any], broker: Any) -> str:
+            if broker is None:
+                return "Optional MCP calls require an active wrapper permission context."
+            if broker.dependency_manifest is not None:
+                return "This turn is bound to the explicit dependency manifest."
+            if not relevant(provider, broker.current_prompt or broker.approval_context_prompt):
+                return "This capability is not relevant to the current request."
+            if policies[provider]["network"] and not _network_mode_is_online():
+                return "Offline mode blocks this network-capable MCP, even when hosted locally."
+            if effect == "UNKNOWN":
+                return "This nested MCP tool has no approved wrapper capability classification."
+            if broker._references_protected_harness("call_project_mcp_tool", arguments):
+                return "MCP access to protected harness/configuration files is forbidden."
+            rendered = json.dumps(arguments, default=str).casefold()
+            if re.search(r"harness\.(?:txt|enc)|mcp_capabilities\.json|harness_key", rendered):
+                return "Optional MCPs may not access protected runtime configuration."
+            if provider == "serena":
+                for key in ("relative_path", "path"):
+                    if arguments.get(key):
+                        try:
+                            value = str(arguments[key])
+                            if ".." in Path(value.replace("\\", "/")).parts:
+                                return "Serena paths cannot traverse above the active workspace."
+                            base.resolve_workspace_path(self.workspace, value, allow_missing=True, allow_external=False)
+                        except (OSError, ValueError, PermissionError):
+                            return "Serena navigation must stay inside the active workspace."
+            if effect in {"REMOTE_MUTATION", "BROWSER_ACTION"}:
+                if broker.access_mode != ACCESS_MODE_FULL:
+                    return "Read-only and Plan modes do not permit this nested MCP side effect."
+                semantic = getattr(broker.task_intent, "semantic", None)
+                if semantic is None or not semantic.requests(
+                    "mcp_call", "open_browser", "verify", "edit", "create", "delete", "clone_repository", "execute",
+                ):
+                    return "The current request does not explicitly authorize this MCP side effect."
+            return ""
+
+        async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+            if not isinstance(arguments, dict):
+                return result_payload({"status": "invalid_arguments", "reason": "Tool arguments must be an object."}, error=True)
+            reference = str(arguments.get("server_reference", ""))
+            is_capability = name in {"list_project_mcp_tools", "call_project_mcp_tool"} and reference.startswith("capability:")
+            if name != "discover_mcp_capability" and not is_capability:
+                # The registry is operator-owned, never writable by a model tool.
+                if "mcp_capabilities.json" in json.dumps(arguments, default=str).casefold():
+                    return result_payload({"status": "protected_configuration", "reason": "Use operator-side configuration, not agent tools."}, error=True)
+                return await super().call_tool(name, arguments)
+            broker = _TOOL_CALL_CONTEXT.get()
+
+            def finish(payload: dict[str, Any], error: bool = False) -> Any:
+                result = result_payload(payload, error=error)
+                if broker is not None:
+                    broker._audit(payload.get("status", "mcp_result"), name, arguments, broker._fingerprint(name, arguments))
+                    if name != "discover_mcp_capability":
+                        broker.record_result(name, arguments, result)
+                return result
+
+            if name == "discover_mcp_capability" and not arguments.get("capability"):
+                if arguments:
+                    return finish({"status": "invalid_arguments", "reason": "tool_name requires a capability id."}, True)
+                rows = []
+                for provider, policy in policies.items():
+                    entry = self.capability_entries.get(provider, {})
+                    rows.append({
+                        "id": provider, "category": policy["category"], "network": policy["network"],
+                        "enabled": entry.get("enabled") is True,
+                        "relevant": bool(broker and relevant(provider, broker.current_prompt)),
+                        "server_reference": f"capability:{provider}",
+                    })
+                return finish({"status": "catalog", "capabilities": rows, "configuration_notice": self.capability_config_error})
+            if name == "discover_mcp_capability":
+                if set(arguments) - {"capability", "tool_name"}:
+                    return finish({"status": "invalid_arguments", "reason": "Unexpected discovery arguments."}, True)
+                reference = "capability:" + str(arguments.get("capability", ""))
+            elif set(arguments) - {"server_reference", "server_id", "cwd", "python_path", "timeout_seconds", "tool_name", "arguments"}:
+                return finish({"status": "invalid_arguments", "reason": "Unexpected MCP routing arguments."}, True)
+            provider = reference.removeprefix("capability:")
+            if provider not in policies:
+                return finish({"status": "unknown_capability", "reason": "Discover the exact provider id first."}, True)
+            entry = self.capability_entries.get(provider, {})
+            nested = arguments.get("arguments", {})
+            tool_name = str(arguments.get("tool_name", ""))
+            discovery = name in {"list_project_mcp_tools", "discover_mcp_capability"}
+            effect = "LOCAL_READ" if discovery else effect_for(provider, tool_name, entry)
+            reason = self._permission_error(provider, effect, nested if isinstance(nested, dict) else {}, broker)
+            if reason:
+                return finish({"status": "capability_denied", "capability": provider, "effect": effect, "reason": reason}, True)
+            # No model-supplied cwd, executable, environment, or transport overrides.
+            if any(arguments.get(key) for key in ("server_id", "python_path")) or str(arguments.get("cwd", ".")) != ".":
+                return finish({"status": "invalid_arguments", "reason": "Registry capabilities use the active workspace and operator-configured launch paths."}, True)
+            try:
+                spec = resolve_entry(provider, entry, self.workspace, broker.access_mode)
+                timeout = max(5, min(int(entry.get("timeout_seconds", 60)), 300))
+                session = self.capability_sessions.get(provider)
+                if session is None:
+                    session = CapabilitySession(provider, spec, timeout)
+                    self.capability_sessions[provider] = session
+                await session.start()
+                if session.closed:
+                    raise RuntimeError("This capability session failed; no automatic reconnect or side-effect replay.")
+                if spec != session.spec:
+                    raise RuntimeError("Capability environment or database configuration changed; start a new task.")
+                allowed = {key: tool for key, tool in session.tools.items() if effect_for(provider, key, entry) != "UNKNOWN"}
+                if broker.access_mode != ACCESS_MODE_FULL:
+                    allowed = {key: tool for key, tool in allowed.items() if effect_for(provider, key, entry) not in {"REMOTE_MUTATION", "BROWSER_ACTION"}}
+                if name == "discover_mcp_capability":
+                    if tool_name:
+                        tool = allowed.get(tool_name)
+                        if tool is None:
+                            return finish({"status": "tool_unavailable", "reason": "Tool not advertised or not permitted."}, True)
+                        return finish({"status": "ready", "reference": reference, "tool": tool.model_dump(mode="json"),
+                                       "effect": effect_for(provider, tool_name, entry)})
+                    return finish({"status": "ready", "reference": reference, "tools": [
+                        {"name": key, "description": (tool.description or "")[:240], "effect": effect_for(provider, key, entry)}
+                        for key, tool in allowed.items()
+                    ]})
+                if name == "list_project_mcp_tools":
+                    return finish({"status": "ready", "reference": reference, "count": len(allowed), "returncode": 0,
+                                   "tools": [tool.model_dump(mode="json") for tool in allowed.values()]})
+                contract = allowed.get(tool_name)
+                if contract is None:
+                    return finish({"status": "tool_unavailable", "reason": "Tool not advertised by the live server or not permitted."}, True)
+                strict = _strict_tool_schema(contract.inputSchema)
+                errors = _json_schema_errors(nested, strict)
+                if errors:
+                    repaired, repairs, errors = _repair_tool_arguments(nested, strict)
+                    if errors or not isinstance(repaired, dict):
+                        count = broker.register_invalid_call(name, arguments, "; ".join(errors))
+                        return finish({"status": "repeated_invalid_arguments" if count > 1 else "invalid_arguments",
+                                       "errors": errors[:10], "repair_attempted": True}, True)
+                    broker.record_schema_repair(name, arguments, {**arguments, "arguments": repaired}, repairs)
+                    nested = repaired
+                    arguments = {**arguments, "arguments": nested}
+                reason = self._permission_error(provider, effect, nested, broker)
+                if reason:
+                    return finish({"status": "capability_denied", "reason": reason}, True)
+                broker.mcp_tool_schemas[tool_name.casefold()] = contract.inputSchema
+                bound, _ = broker._explicit_mcp_arguments_satisfied(tool_name, nested)
+                if not bound:
+                    return finish({"status": "argument_mismatch", "reason": "Preserve the user's exact MCP arguments."}, True)
+                fingerprint = broker._result_fingerprint(name, arguments)
+                if broker.failed_result_counts.get(fingerprint, 0) >= 2:
+                    return finish({"status": "repeated_failed_result", "reason": "This same MCP call already failed twice; choose a different route."}, True)
+                response = await session.call(tool_name, nested)
+                return finish({"status": "tool_result", "reference": reference, "tool": tool_name,
+                               "effect": effect, "returncode": 0, "result": response.model_dump(mode="json")},
+                              bool(response.isError))
+            except asyncio.CancelledError:
+                for session in self.capability_sessions.values():
+                    await session.close(cancel=True)
+                raise
+            except Exception as exc:
+                reason = str(exc) if isinstance(exc, (ValueError, PermissionError)) else f"{type(exc).__name__}: MCP request failed; outcome may be unknown, do not replay a side effect."
+                return finish({"status": "capability_error", "capability": provider, "reason": reason,
+                               "stderr_log": str(self.capability_sessions[provider].stderr_path) if provider in self.capability_sessions else None}, True)
+
+    class CapabilityRunner(original_runner):
+        def _filter_tools_by_intent(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
+            selected = super()._filter_tools_by_intent(prompt, tools)
+            broker = self._tool_permission_broker
+            if broker.dependency_manifest is not None or broker.transaction_recovery_required or re.search(r"\buse\b.+\bonly\b", prompt, re.IGNORECASE):
+                return selected
+            entries, _ = read_registry()
+            wanted = any(entry.get("enabled") is True and relevant(provider, prompt) for provider, entry in entries.items())
+            explicit = any(re.search(r"(?<!\w)" + re.escape(provider).replace("_", r"[ _-]") + r"(?!\w)", prompt, re.IGNORECASE) for provider in policies)
+            if not wanted and not explicit:
+                return [tool for tool in selected if self._tool_name(tool) != "discover_mcp_capability"]
+            names = {self._tool_name(tool) for tool in selected}
+            return [*selected, *(tool for tool in tools if self._tool_name(tool) in meta_names - names)]
+
+    base.MCPHost = CapabilityHost
+    base.AgentRunner = CapabilityRunner
+
 def _install_gpu_thermal_gate(app: LocalOnlyApp) -> None:
+    _install_optional_mcp_capabilities(app)
     base = app.base
     original_chat = base.LlamaCppClient.chat
     original_json_chat = getattr(base.LlamaCppClient, "qubitz_json_chat", None)
