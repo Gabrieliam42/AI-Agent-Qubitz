@@ -443,6 +443,22 @@ def _independent_request_routing_prompt(prompt: str) -> str:
     return str(match.group("body") or "").strip() or normalized
 
 
+def _resolve_named_workspace_path(base: Any, workspace: Path, candidate: str) -> Path:
+    """Resolve a workspace path without following its final symlink component."""
+    normalized = base.normalize_workspace_text(candidate)
+    translated_windows_path: Path | None = None
+    if base.in_wsl() and base.WINDOWS_DRIVE_PATH_PATTERN.match(normalized):
+        drive = normalized[0].lower()
+        remainder = normalized[2:].replace("\\", "/").lstrip("/")
+        translated_windows_path = Path("/mnt") / drive / remainder if remainder else Path("/mnt") / drive
+    raw = translated_windows_path or Path(normalized).expanduser()
+    unresolved = raw if translated_windows_path is not None or raw.is_absolute() else workspace / raw
+    target = unresolved.parent.resolve() / unresolved.name
+    if not target.is_relative_to(workspace.resolve()):
+        raise ValueError(f"Path escapes workspace: {candidate}")
+    return target
+
+
 def _creation_tool_name(prompt: str) -> str | None:
     semantic = _analyze_semantic_intent(prompt)
     if not semantic.requests("create"):
@@ -454,30 +470,169 @@ def _creation_tool_name(prompt: str) -> str | None:
     return "write_file"
 
 
+def _named_text_creation_request(
+    base: Any,
+    workspace: Path,
+    access_mode: Any,
+    prompt: str,
+    *,
+    simple_only: bool = False,
+) -> dict[str, Any] | None:
+    """Resolve one self-contained workspace text-file creation without discovery."""
+    if _normalize_access_mode(access_mode) != ACCESS_MODE_FULL:
+        return None
+    semantic = _analyze_semantic_intent(prompt)
+    if (
+        semantic.speech_act != "request"
+        or not semantic.requests("create")
+        or semantic.prohibited_actions.intersection({"create", "edit"})
+        or semantic.requested_actions - {"create", "edit"}
+        or _creation_tool_name(prompt) != "write_file"
+    ):
+        return None
+    description = (
+        r"\b(?:basic|simple|containing|with (?:the )?content)\b"
+        if simple_only
+        else r"\b(?:basic|simple|containing|that|which|with|to|for)\b"
+    )
+    if (
+        not re.search(description, prompt, re.IGNORECASE)
+        or re.search(
+            r"\b(?:first|before|after|if|unless|read|inspect|search|research|download|install|existing|according)\b|https?://",
+            prompt,
+            re.IGNORECASE,
+        )
+    ):
+        return None
+    candidates: set[str] = set()
+    for candidate in base.extract_file_tokens(prompt):
+        with suppress(OSError, ValueError):
+            target = _resolve_named_workspace_path(base, workspace, candidate)
+            if target.is_relative_to(workspace.resolve()):
+                candidates.add(str(target))
+    if len(candidates) != 1:
+        return None
+    target = next(iter(candidates))
+    overwrite_forbidden = bool(
+        re.search(r"\b(?:do not|don't|never)\s+(?:overwrite|replace|recreate)\b", prompt, re.IGNORECASE)
+    )
+    overwrite_requested = bool(
+        not overwrite_forbidden
+        and re.search(r"\b(?:overwrite|replace|recreate)\b", prompt, re.IGNORECASE)
+    )
+    return {
+        "target": target,
+        "exists": os.path.lexists(target),
+        "overwrite_requested": overwrite_requested,
+    }
+
+
+def _named_file_operation_request(
+    base: Any,
+    workspace: Path,
+    access_mode: Any,
+    prompt: str,
+) -> dict[str, Any] | None:
+    """Resolve one unambiguous named workspace-file operation without discovery."""
+    if _normalize_access_mode(access_mode) != ACCESS_MODE_FULL:
+        return None
+    creation = _named_text_creation_request(base, workspace, access_mode, prompt)
+    if creation is not None:
+        return {"operation": "create", "source": None, "destination": creation["target"], **creation}
+
+    semantic = _analyze_semantic_intent(prompt)
+    operations = semantic.requested_actions.intersection({"copy", "delete", "edit", "move"})
+    if semantic.speech_act != "request" or len(operations) != 1:
+        return None
+    operation = next(iter(operations))
+    conflicting_prohibitions = {operation}
+    if operation == "edit":
+        conflicting_prohibitions.add("create")
+    if semantic.prohibited_actions.intersection(conflicting_prohibitions):
+        return None
+    allowed_actions = {operation}
+    if semantic.requested_actions - allowed_actions:
+        return None
+    if re.search(
+        r"https?://|\b(?:according\s+to|based\s+on|before|after|research|download|install|"
+        r"search\s+(?:online|the\s+web|the\s+internet)|run\s+(?:tests?|it)|test\s+after)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
+        return None
+    if operation == "edit" and re.search(
+        r"\b(?:debug|fix|implement|refactor|optimi[sz]e|repair)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
+        return None
+
+    candidates: list[str] = []
+    for candidate in base.extract_file_tokens(prompt):
+        cleaned = str(candidate).strip().strip("`\"'")
+        normalized = cleaned.replace("\\", "/")
+        if not (
+            base.is_explicit_absolute_path_text(cleaned)
+            or "/" in normalized
+            or bool(Path(normalized).suffix)
+        ):
+            continue
+        with suppress(OSError, ValueError):
+            resolved = str(_resolve_named_workspace_path(base, workspace, cleaned))
+            if resolved not in candidates:
+                candidates.append(resolved)
+    expected_count = 2 if operation in {"copy", "move"} else 1
+    if len(candidates) != expected_count:
+        return None
+
+    source = candidates[0]
+    destination = candidates[1] if expected_count == 2 else None
+    if destination is not None and source == destination:
+        return None
+    if os.path.islink(source):
+        return None
+    if os.path.lexists(source) and Path(source).is_dir():
+        return None
+    overwrite_forbidden = bool(
+        re.search(r"\b(?:do not|don't|never)\s+(?:overwrite|replace)\b", prompt, re.IGNORECASE)
+    )
+    overwrite_requested = bool(
+        not overwrite_forbidden
+        and re.search(r"\b(?:overwrite|replace\s+(?:the\s+)?(?:destination|target|existing\s+file))\b", prompt, re.IGNORECASE)
+    )
+    return {
+        "operation": operation,
+        "source": source,
+        "destination": destination,
+        "target": source,
+        "exists": os.path.lexists(source),
+        "destination_exists": bool(destination and os.path.lexists(destination)),
+        "overwrite_requested": overwrite_requested,
+    }
+
+
 def _direct_text_creation_choice(
     broker: Any, tools: Sequence[dict[str, Any]], *, simple_only: bool = True,
 ) -> dict[str, Any] | None:
     """Select only a simple, self-contained new text file; never grant permission."""
-    if broker is None or broker.access_mode != ACCESS_MODE_FULL:
+    if broker is None:
         return None
-    prompt = broker.current_prompt
-    semantic = broker.task_intent.semantic
-    if (semantic.speech_act != "request" or not semantic.requests("create")
-            or semantic.prohibited_actions.intersection({"create", "edit"})
-            or semantic.requested_actions - {"create", "edit"}
-            or _creation_tool_name(prompt) != "write_file"
-            or broker.transaction_explicit_file_targets or broker.provenance_urls):
+    request = _named_text_creation_request(
+        broker.base,
+        broker.workspace,
+        broker.access_mode,
+        broker.current_prompt,
+        simple_only=simple_only,
+    )
+    if (
+        request is None
+        or request["exists"]
+        or broker.transaction_explicit_file_targets
+        or broker.provenance_urls
+    ):
         return None
     targets = sorted(broker.creation_targets)
-    if len(targets) != 1 or os.path.lexists(targets[0]):
-        return None
-    target = Path(targets[0])
-    if not target.is_relative_to(broker.workspace.resolve()):
-        return None
-    description = r"\b(?:basic|simple|containing|with (?:the )?content)\b" if simple_only else r"\b(?:basic|simple|containing|that|which|with|to|for)\b"
-    if (not re.search(description, prompt, re.IGNORECASE)
-            or re.search(r"\b(?:first|before|after|if|unless|read|inspect|search|research|download|install|existing|according)\b|https?://",
-                         prompt, re.IGNORECASE)):
+    if len(targets) != 1 or targets[0] != request["target"] or os.path.lexists(targets[0]):
         return None
     if not any((tool.get("function") or {}).get("name") == "write_file" for tool in tools):
         return None
@@ -3268,6 +3423,21 @@ def _sampling_profile_for_route(
         family_name = "qwen3_8"
         profiles = _uniform((1.00, 0.95, 20, 0.0, 1.0, 0.0))
         profiles["simple_question"] = (0.70, 0.80, 20, 0.0, 1.0, 1.5)
+        profiles["brainstorming_explanation"] = profiles["simple_question"]
+    elif "muse-glimmer" in resolved_model:
+        family_name = "muse_glimmer"
+        profiles = _uniform((1.00, 0.95, 64, 0.0, 1.0, 0.0))
+    elif "nex-n2.5" in resolved_model:
+        family_name = "nex_n2_5_mini"
+        profiles = _uniform((0.70, 0.95, 40, 0.0, 1.0, 0.0))
+    elif any(
+        marker in resolved_model
+        for marker in ("calibforge-35b", "kat-coder-v2.5", "macaron-v1-tall")
+    ):
+        family_name = "qwen3_6_35"
+        profiles = _uniform((1.00, 0.95, 20, 0.0, 1.0, 1.5))
+        profiles["simple_question"] = (0.70, 0.80, 20, 0.0, 1.0, 1.5)
+        profiles["coding_edit"] = (0.60, 0.95, 20, 0.0, 1.0, 0.0)
         profiles["brainstorming_explanation"] = profiles["simple_question"]
     elif "qwen3.6" in resolved_model:
         is_27b = "27b" in resolved_model
@@ -6822,15 +6992,37 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
 
     @server.tool(description="Delete a file or directory inside the active workspace.")
     def delete_path(path: str, recursive: bool = False) -> dict[str, Any]:
-        target = _resolve(path, allow_missing=False, allow_external=True)
+        target = _resolve(path, allow_missing=True, allow_external=True)
+        relative_target = base.relative_path(target, workspace)
+        if not os.path.lexists(target):
+            return {
+                "deleted": relative_target,
+                "recursive": recursive,
+                "already_absent": True,
+                "verified_absent": True,
+            }
         if target.is_dir():
             if recursive:
                 shutil.rmtree(target)
             else:
                 target.rmdir()
         else:
-            target.unlink()
-        return {"deleted": base.relative_path(target, workspace), "recursive": recursive}
+            staged = target.with_name(f".{target.name}.{uuid.uuid4().hex}.deleting")
+            os.replace(target, staged)
+            try:
+                staged.unlink()
+            except Exception:
+                if not os.path.lexists(target) and os.path.lexists(staged):
+                    os.replace(staged, target)
+                raise
+        if os.path.lexists(target):
+            raise OSError(f"Deletion could not be verified: {path}")
+        return {
+            "deleted": relative_target,
+            "recursive": recursive,
+            "already_absent": False,
+            "verified_absent": True,
+        }
 
     @server.tool(description="Create a directory inside the active workspace.")
     def make_directory(path: str) -> dict[str, Any]:
@@ -6842,18 +7034,43 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
     def move_path(source: str, destination: str, overwrite: bool = False) -> dict[str, Any]:
         source_path = _resolve(source, allow_missing=False, allow_external=True)
         destination_path = _resolve(destination, allow_external=True)
+        if source_path == destination_path:
+            raise ValueError("Source and destination must be different paths.")
         destination_path.parent.mkdir(parents=True, exist_ok=True)
-        if destination_path.exists():
+        if os.path.lexists(destination_path):
             if not overwrite:
                 raise ValueError(f"Destination already exists: {destination}")
-            if destination_path.is_dir():
-                shutil.rmtree(destination_path)
+            if source_path.is_file() != destination_path.is_file():
+                raise ValueError("Overwrite requires source and destination to be the same path type.")
+        source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest() if source_path.is_file() else None
+        rollback_path: Path | None = None
+        if os.path.lexists(destination_path):
+            rollback_path = destination_path.with_name(f".{destination_path.name}.{uuid.uuid4().hex}.rollback")
+            os.replace(destination_path, rollback_path)
+        try:
+            shutil.move(str(source_path), str(destination_path))
+            if os.path.lexists(source_path) or not os.path.lexists(destination_path):
+                raise OSError("Move verification failed: source/destination state is inconsistent.")
+            if source_hash is not None and hashlib.sha256(destination_path.read_bytes()).hexdigest() != source_hash:
+                raise OSError("Move verification failed: destination content does not match the source.")
+        except Exception:
+            if not os.path.lexists(source_path) and os.path.lexists(destination_path):
+                shutil.move(str(destination_path), str(source_path))
+            if rollback_path is not None and os.path.lexists(rollback_path):
+                os.replace(rollback_path, destination_path)
+            raise
+        if rollback_path is not None and os.path.lexists(rollback_path):
+            if rollback_path.is_dir():
+                shutil.rmtree(rollback_path)
             else:
-                destination_path.unlink()
-        shutil.move(str(source_path), str(destination_path))
+                rollback_path.unlink()
         return {
             "source": base.relative_path(source_path, workspace),
             "destination": base.relative_path(destination_path, workspace),
+            "new_sha256": source_hash,
+            "source_absent": True,
+            "destination_verified": True,
+            "overwrite": bool(overwrite),
         }
 
     @server.tool(description="Search text content inside active workspace files.")
@@ -9715,6 +9932,11 @@ def _patch_streaming_chat(base: Any) -> None:
         payload.pop("reasoning_budget", None)
         payload.pop("reasoning", None)
 
+    def _apply_route_chat_template(payload: dict[str, Any]) -> None:
+        chat_template_kwargs = getattr(stream_state, "chat_template_kwargs", None)
+        if chat_template_kwargs:
+            payload["chat_template_kwargs"] = dict(chat_template_kwargs)
+
     def _non_streaming_chat(
         self: Any,
         *,
@@ -9739,6 +9961,7 @@ def _patch_streaming_chat(base: Any) -> None:
             "repeat_penalty": kwargs["repeat_penalty"],
             "presence_penalty": float(getattr(self.config, "presence_penalty", 0.0)),
         }
+        _apply_route_chat_template(payload)
         _apply_file_creation_schema(payload, kwargs)
         raw = self._call_with_fallback("post_json", "/v1/chat/completions", payload)
         return _normalize_chat_response(self, raw)
@@ -9784,6 +10007,7 @@ def _patch_streaming_chat(base: Any) -> None:
         reasoning_mode = getattr(stream_state, "reasoning_mode", None)
         if reasoning_mode is not None:
             payload["reasoning"] = reasoning_mode
+        _apply_route_chat_template(payload)
         _apply_file_creation_schema(payload, kwargs)
         content_parts: list[str] = []
         pending_parts: list[str] = []
@@ -9890,6 +10114,11 @@ def _patch_streaming_chat(base: Any) -> None:
 
     def _set_reasoning_mode(reasoning_mode: str | None) -> None:
         stream_state.reasoning_mode = reasoning_mode
+
+    def _set_chat_template_kwargs(chat_template_kwargs: dict[str, Any] | None) -> None:
+        stream_state.chat_template_kwargs = (
+            dict(chat_template_kwargs) if chat_template_kwargs else None
+        )
 
     def _set_forced_tool_choice(tool_choice: dict[str, Any] | str | None) -> None:
         stream_state.forced_tool_choice = tool_choice
@@ -10137,8 +10366,11 @@ def _patch_streaming_chat(base: Any) -> None:
             return result
 
         saved_choice = getattr(stream_state, "forced_tool_choice", None)
+        saved_template_kwargs = getattr(stream_state, "chat_template_kwargs", None)
         try:
             stream_state.forced_tool_choice = None
+            if str(getattr(self.config, "model_name", "")).strip() == "unsloth/Qwen3.8-Flash-Next-GGUF":
+                base.set_qubitz_chat_template_kwargs({"enable_thinking": False})
             for attempt in range(2):
                 if not eligible():
                     return blocked("cancelled, permissions changed, or the destination now exists.")
@@ -10172,12 +10404,23 @@ def _patch_streaming_chat(base: Any) -> None:
                 }}
         finally:
             stream_state.forced_tool_choice = saved_choice
+            base.set_qubitz_chat_template_kwargs(saved_template_kwargs)
         return blocked("structured generation did not produce complete arguments.")
 
     def _chat_with_transient_retry(self: Any, **kwargs: Any) -> dict[str, Any]:
-        response = _chat_with_transport_retry(self, **kwargs)
         context = globals().get("_TOOL_CALL_CONTEXT")
         broker = context.get() if context is not None else None
+        if (
+            broker is not None
+            and kwargs.get("tools")
+            and not getattr(broker, "_content_tool_recovery_used", False)
+            and _direct_text_creation_choice(broker, kwargs["tools"], simple_only=False) is not None
+        ):
+            owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
+            cancel = getattr(owner, "_cancel_event", None)
+            if owner is not None and not (cancel is not None and cancel.is_set()):
+                return _file_creation_chat(self, **kwargs)
+        response = _chat_with_transport_retry(self, **kwargs)
         if (broker is None or not kwargs.get("tools")
                 or (response.get("message") or {}).get("tool_calls")
                 or getattr(broker, "_content_tool_recovery_used", False)
@@ -10389,6 +10632,7 @@ def _patch_streaming_chat(base: Any) -> None:
     base.set_qubitz_stream_callback = _set_stream_callback
     base.set_qubitz_reasoning_budget = _set_reasoning_budget
     base.set_qubitz_reasoning_mode = _set_reasoning_mode
+    base.set_qubitz_chat_template_kwargs = _set_chat_template_kwargs
     base.set_qubitz_forced_tool_choice = _set_forced_tool_choice
     base.LlamaCppClient.qubitz_json_chat = _json_chat
     base.LlamaCppClient.qubitz_file_creation_chat = _file_creation_chat
@@ -14248,7 +14492,7 @@ class _ToolPermissionBroker:
                         allow_external=self.access_mode == ACCESS_MODE_FULL,
                     ).resolve()
                     creation_candidates.add(str(target))
-            self.creation_targets = {path for path in creation_candidates if not Path(path).exists()}
+            self.creation_targets = {path for path in creation_candidates if not os.path.lexists(path)}
             if not self.creation_targets and len(creation_candidates) == 1:
                 self.creation_targets = creation_candidates
         for candidate in self.base.extract_file_tokens(prompt):
@@ -15006,12 +15250,18 @@ class _ToolPermissionBroker:
                 path_key = "destination" if normalized in {"copy_path", "move_path"} else "path"
                 target = self._resolved_argument_path(arguments, path_key)
                 if normalized == "delete_path":
-                    success = target is not None and not target.exists()
+                    success = target is not None and not os.path.lexists(target)
                 else:
-                    success = target is not None and target.exists()
+                    success = target is not None and os.path.lexists(target)
                     expected_hash = structured.get("new_sha256")
                     if success and isinstance(expected_hash, str) and target is not None and target.is_file():
                         success = hashlib.sha256(target.read_bytes()).hexdigest() == expected_hash
+                    if normalized == "move_path":
+                        source = self._resolved_argument_path(arguments, "source")
+                        success = bool(success and source is not None and not os.path.lexists(source))
+                    elif normalized == "copy_path":
+                        source = self._resolved_argument_path(arguments, "source")
+                        success = bool(success and source is not None and os.path.lexists(source))
                     if normalized == "write_file":
                         content = arguments.get("content")
                         success = bool(
@@ -19303,29 +19553,51 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     pass
                 else:
                     raise ValueError("A directory cannot be copied into itself.")
-                if destination_path.exists():
+                if os.path.lexists(destination_path):
                     raise FileExistsError(
                         "Directory copy destinations must not already exist; choose a new destination."
                     )
                 destination_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(source_path, destination_path)
                 copied_directory = True
+                new_sha256 = None
             elif source_path.is_file():
-                if destination_path.exists() and not overwrite:
+                if os.path.lexists(destination_path) and not overwrite:
                     raise FileExistsError(f"Destination already exists: {destination}")
-                if destination_path.exists() and not destination_path.is_file():
+                if os.path.lexists(destination_path) and not destination_path.is_file():
                     raise ValueError("A file cannot overwrite a directory.")
                 destination_path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = destination_path.with_name(
                     f".{destination_path.name}.qubitz-copy-{os.getpid()}-{threading.get_ident()}.tmp"
                 )
+                rollback = destination_path.with_name(
+                    f".{destination_path.name}.qubitz-copy-{os.getpid()}-{threading.get_ident()}.rollback"
+                )
+                source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
                 try:
                     shutil.copy2(source_path, temporary)
+                    if hashlib.sha256(temporary.read_bytes()).hexdigest() != source_hash:
+                        raise OSError("Staged copy content does not match the source.")
+                    if os.path.lexists(destination_path):
+                        os.replace(destination_path, rollback)
                     os.replace(temporary, destination_path)
+                    if hashlib.sha256(destination_path.read_bytes()).hexdigest() != source_hash:
+                        raise OSError("Published copy content does not match the source.")
+                    if hashlib.sha256(source_path.read_bytes()).hexdigest() != source_hash:
+                        raise OSError("Source changed while the copy was being verified.")
+                except Exception:
+                    with suppress(FileNotFoundError):
+                        destination_path.unlink()
+                    if os.path.lexists(rollback):
+                        os.replace(rollback, destination_path)
+                    raise
                 finally:
                     with suppress(FileNotFoundError):
                         temporary.unlink()
+                    with suppress(FileNotFoundError):
+                        rollback.unlink()
                 copied_directory = False
+                new_sha256 = source_hash
             else:
                 raise ValueError(f"Unsupported source path: {source}")
             return {
@@ -19333,6 +19605,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 "destination": tool_base.relative_path(destination_path, workspace),
                 "copied_directory": copied_directory,
                 "overwrite": bool(overwrite),
+                "new_sha256": new_sha256,
+                "source_preserved": os.path.lexists(source_path),
+                "destination_verified": os.path.lexists(destination_path),
             }
 
         return server
@@ -20054,8 +20329,125 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 )
             return "\n".join(lines)
 
+        async def _named_file_operation_preflight(
+            self,
+            prompt: str,
+            callback: Callable[[str, str], None] | None,
+        ) -> str | None:
+            request = _named_file_operation_request(
+                base,
+                self.workspace,
+                getattr(self, "access_mode", DEFAULT_ACCESS_MODE),
+                prompt,
+            )
+            if request is None:
+                return None
+            operation = str(request["operation"])
+            source = request.get("source")
+            destination = request.get("destination")
+            if operation == "create":
+                if request["exists"] and not request["overwrite_requested"]:
+                    target = base.relative_path(Path(request["target"]), self.workspace)
+                    return (
+                        f"`{target}` already exists. Do you want me to overwrite its existing content? "
+                        "No file was changed."
+                    )
+                return None
+            if operation == "edit":
+                if not request["exists"]:
+                    target = base.relative_path(Path(request["target"]), self.workspace)
+                    return (
+                        f"`{target}` does not exist. Do you want me to create it instead? "
+                        "No file was changed."
+                    )
+                return None
+            if operation in {"copy", "move"}:
+                assert source is not None and destination is not None
+                if not request["exists"]:
+                    relative_source = base.relative_path(Path(source), self.workspace)
+                    return f"The requested source `{relative_source}` does not exist. No file was changed."
+                if request["destination_exists"] and not request["overwrite_requested"]:
+                    relative_destination = base.relative_path(Path(destination), self.workspace)
+                    return (
+                        f"`{relative_destination}` already exists. Do you want me to overwrite that destination? "
+                        "No file was changed."
+                    )
+
+            tool_name = {"copy": "copy_path", "move": "move_path", "delete": "delete_path"}[operation]
+            if operation == "delete":
+                arguments = {"path": source, "recursive": False}
+            else:
+                arguments = {
+                    "source": source,
+                    "destination": destination,
+                    "overwrite": bool(request["overwrite_requested"]),
+                }
+            if callback is not None:
+                callback(
+                    "status",
+                    f"Wrapper route: named_file_operation. Executing verified {operation} for the exact named path; "
+                    "repository retrieval and model loading were skipped.",
+                )
+            async with base.MCPHost(self.workspace) as host:
+                await host.list_tools()
+                result = await host.call_tool(tool_name, arguments)
+            structured = getattr(result, "structuredContent", None) or {}
+            if bool(getattr(result, "isError", False)):
+                reason = str(structured.get("reason") or "").strip()
+                if not reason:
+                    reason = " ".join(
+                        str(getattr(item, "text", "") or "").strip()
+                        for item in getattr(result, "content", [])
+                    ).strip()
+                return (
+                    f"The exact named-file {operation} was not completed: {reason or 'the tool returned an error'}.\n\n"
+                    "[Completion status: partial]"
+                )
+            required, missing = self._tool_permission_broker.completion_report(prompt)
+            evidence = self._tool_permission_broker.completion_evidence_summary(prompt)
+            if operation == "copy":
+                summary = (
+                    f"Copied `{structured.get('source')}` to `{structured.get('destination')}` and verified the destination; "
+                    "the source remains present."
+                )
+            elif operation == "move":
+                summary = (
+                    f"Moved `{structured.get('source')}` to `{structured.get('destination')}` and verified both path states."
+                )
+            elif structured.get("already_absent"):
+                summary = f"`{structured.get('deleted')}` was already absent; its absence is verified."
+            else:
+                summary = f"Deleted `{structured.get('deleted')}` and verified that the path is absent."
+            if required and not missing:
+                return (
+                    f"{summary}\n\nCompletion verification passed for the requested postconditions.\n\n"
+                    f"Verified current-turn evidence: {evidence}.\n\n[Completion status: verified]"
+                )
+            missing_text = ", ".join(sorted(missing)) or "requested postconditions"
+            return (
+                f"{summary}\n\nVerified current-turn evidence: {evidence}.\n\n"
+                f"[Completion status: partial] Unverified postconditions: {missing_text}."
+            )
+
         def _select_task_guidance(self, prompt: str) -> str:
-            guidance = super()._select_task_guidance(prompt)
+            if self._selected_route_name(prompt) == "named_file_operation":
+                request = _named_file_operation_request(
+                    base,
+                    self.workspace,
+                    getattr(self, "access_mode", DEFAULT_ACCESS_MODE),
+                    prompt,
+                )
+                operation = str(request.get("operation")) if request else "operation"
+                guidance = (
+                    f"- This is one unambiguous named-file {operation} request.\n"
+                    "- Use only the exact wrapper-resolved path or source/destination pair; do not search for alternatives.\n"
+                    "- For creation, generate complete content and call write_file only when the target is absent.\n"
+                    "- For editing or explicit overwrite, read the exact target snapshot and use its format-aware patch tool.\n"
+                    "- Do not list, search, read, or retrieve unrelated workspace content.\n"
+                    "- Claim completion only after the wrapper verifies operation-specific postconditions.\n"
+                )
+            else:
+                guidance = super()._select_task_guidance(prompt)
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
             if mode == ACCESS_MODE_PLAN:
                 return f"{guidance}\n- Produce a concise executable plan only; do not modify files, run projects, install packages, or create external side effects."
@@ -20129,6 +20521,24 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         "environment binding, installation, and verification."
                     ),
                     fallback_routes=["ask_user_missing_info"],
+                )
+            named_operation = _named_file_operation_request(
+                base,
+                self.workspace,
+                getattr(self, "access_mode", DEFAULT_ACCESS_MODE),
+                prompt,
+            )
+            if named_operation is not None and not (
+                isinstance(relation, TurnRelation) and relation.depends_on_prior
+            ):
+                decision = base.replace(
+                    decision,
+                    selected_route="named_file_operation",
+                    reason=(
+                        f"The request contains one unambiguous named-file {named_operation['operation']} operation; "
+                        "the wrapper can bind exact paths, skip unrelated discovery, and enforce operation-specific verification."
+                    ),
+                    fallback_routes=["tool_loop", "retrieval_plus_model", "ask_user_missing_info"],
                 )
             semantic = _analyze_semantic_intent(prompt)
             if semantic.requests("create") and decision.selected_route in {"simple_answer", "read_only_workspace"}:
@@ -21190,6 +21600,34 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     if self._tool_name(tool)
                     in {"inspect_python_environment", "install_python_package"}
                 ]
+            if self._selected_route_name(prompt) == "named_file_operation":
+                request = _named_file_operation_request(
+                    base,
+                    self.workspace,
+                    getattr(self, "access_mode", DEFAULT_ACCESS_MODE),
+                    self._tool_permission_broker.current_prompt or prompt,
+                )
+                if request is not None:
+                    operation = str(request["operation"])
+                    if operation == "create" and not request["exists"]:
+                        allowed_names = {"write_file"}
+                    elif operation in {"create", "edit"}:
+                        suffix = Path(str(request["target"])).suffix.casefold()
+                        patch_tool = {
+                            ".docx": "apply_docx_text_patch",
+                            ".ipynb": "apply_notebook_text_patch",
+                            ".xlsx": "apply_spreadsheet_cell_patch",
+                            ".xlsm": "apply_spreadsheet_cell_patch",
+                        }.get(suffix, "apply_text_patch")
+                        allowed_names = {"read_file_snapshot", patch_tool}
+                    else:
+                        allowed_names = {
+                            "copy": "copy_path",
+                            "move": "move_path",
+                            "delete": "delete_path",
+                        }.get(operation, "")
+                        allowed_names = {allowed_names} if allowed_names else set()
+                    return [tool for tool in tools if self._tool_name(tool) in allowed_names]
             if explicit_tool_selection:
                 return list(tools)
             focused_postconditions = self._tool_permission_broker.update_focused_postconditions(
@@ -21866,6 +22304,37 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     self._compact_history()
                 return answer
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
+            named_creation = _named_text_creation_request(
+                base,
+                self.workspace,
+                mode,
+                prompt,
+            )
+            if (
+                named_creation is not None
+                and named_creation["exists"]
+                and not named_creation["overwrite_requested"]
+            ):
+                target = Path(named_creation["target"])
+                try:
+                    display_target = target.relative_to(self.workspace.resolve()).as_posix()
+                except ValueError:
+                    display_target = str(target)
+                answer = f"`{display_target}` already exists. Do you want me to overwrite it?"
+                if callback is not None:
+                    callback(
+                        "status",
+                        "Wrapper overwrite guard: the exact requested destination already exists; no retrieval, model, or write action was started.",
+                    )
+                with suppress(Exception):
+                    self.history.extend(
+                        [
+                            {"role": "user", "content": observed_prompt},
+                            {"role": "assistant", "content": answer},
+                        ]
+                    )
+                    self._compact_history()
+                return answer
             effective_prompt = prompt
             if (
                 mode in {ACCESS_MODE_READ_ONLY, ACCESS_MODE_PLAN}
@@ -21885,12 +22354,36 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._focused_missing_postconditions = frozenset()
             self._active_discovery_context = ""
             with suppress(Exception):
-                if self._selected_route_name(prompt) not in {"simple_answer", "dependency_install"}:
+                if self._selected_route_name(prompt) not in {
+                    "simple_answer",
+                    "dependency_install",
+                    "named_file_operation",
+                }:
                     self._active_discovery_context = self.discovery_memory.context_for(prompt)
             self._tool_permission_broker.begin_turn(prompt, callback)
             self._tool_permission_broker._qubitz_context_reload_attempted = False
             broker_context_token = _TOOL_CALL_CONTEXT.set(self._tool_permission_broker)
             selected_route = self._selected_route_name(prompt)
+            original_focused_file_context = self._build_focused_file_context
+            original_metadata_context = self._build_metadata_or_lexical_context
+            original_skip_retrieval = self._should_skip_repo_retrieval
+            original_memory_context = self.memory.build_context
+            original_retriever_context = self.retriever.format_context
+            if selected_route == "named_file_operation":
+                self._build_focused_file_context = lambda _prompt: ""
+                self._build_metadata_or_lexical_context = lambda _prompt: ""
+                self._should_skip_repo_retrieval = lambda _prompt: True
+                self.memory.build_context = lambda _prompt: ""
+                self.retriever.format_context = lambda _prompt: (
+                    "Repository retrieval was intentionally skipped for one exact named-file operation."
+                )
+            base.set_qubitz_chat_template_kwargs(None)
+            if (
+                selected_route == "simple_answer"
+                and str(getattr(self.config, "model_name", "")).strip()
+                == "unsloth/Qwen3.8-Flash-Next-GGUF"
+            ):
+                base.set_qubitz_chat_template_kwargs({"enable_thinking": False})
             progressive_budget_enabled = selected_route not in {
                 "simple_answer",
                 "direct_existing_entrypoint",
@@ -21928,6 +22421,15 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
                 def pass_callback(kind: str, message: str) -> None:
                     nonlocal pass_steps
+                    if (
+                        selected_route == "named_file_operation"
+                        and kind == "status"
+                        and message.startswith("Wrapper route: retrieval_plus_model.")
+                    ):
+                        message = (
+                            "Wrapper route: named_file_operation. Resolve only the exact workspace target(s), skip "
+                            "unrelated retrieval, and enforce operation-specific execution and verification."
+                        )
                     if kind == "status":
                         match = re.search(r"\bModel step\s+(\d+)\s*/\s*(\d+)\b", message, re.IGNORECASE)
                         if match:
@@ -22152,6 +22654,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 dependency_answer = await checked_operation(self._dependency_install_preflight, prompt, callback)
                 if dependency_answer is not None:
                     return finalize_turn_answer(dependency_answer)
+                named_file_answer = await checked_operation(
+                    self._named_file_operation_preflight,
+                    prompt,
+                    callback,
+                )
+                if named_file_answer is not None:
+                    return finalize_turn_answer(named_file_answer)
                 mcp_preflight_answer = await checked_operation(
                     self._wrapper_mcp_lifecycle_recovery,
                     prompt,
@@ -22509,8 +23018,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     )
                 self._tool_permission_broker.end_turn()
                 self._active_discovery_context = ""
+                self._build_focused_file_context = original_focused_file_context
+                self._build_metadata_or_lexical_context = original_metadata_context
+                self._should_skip_repo_retrieval = original_skip_retrieval
+                self.memory.build_context = original_memory_context
+                self.retriever.format_context = original_retriever_context
                 with suppress(Exception):
                     base.set_qubitz_forced_tool_choice(None)
+                base.set_qubitz_chat_template_kwargs(None)
                 self._cancel_source = ""
                 _TOOL_CALL_CONTEXT.reset(broker_context_token)
 
@@ -22898,6 +23413,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py": "48 GB VRAM (2 x 24 GB)",
                 "AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py": "48 GB VRAM (2 x 24 GB)",
                 "AI_Agent_Qubitz_Qwen3-Next-80B-A3B-IT-Q4.py": "48 GB VRAM (2 x 24 GB)",
+                "AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py": "48 GB VRAM (2 x 24 GB)",
                 "AI_Agent_Qubitz_Xorton.WX-Computing.LARGE.2026.3-Q4.py": "48 GB VRAM (2 x 24 GB)",
             }
             grouped: dict[str, list[str]] = {
