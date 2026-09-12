@@ -66,23 +66,18 @@ Its strong focus on routing and task execution creates a more seamless interacti
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 Dense
 - `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q5 Dense
-- `AI_Agent_Qubitz_Granite-4.1-8B_Q5_12G.py` - for 12GB VRAM GPU `IBM's` Granite-4.1-8B Q5 Dense
+- `AI_Agent_Qubitz_Granite-4.2-8B_Q5_12G.py` - for 12GB VRAM GPU `IBM's` Granite-4.2-8B Q5 Dense
 *****
 - `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB VRAM GPU `Z.AI's` GLM-4.7-Flash 30B A3B MoE Q4
 - `AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` - 24 GB VRAM GPU `Cohere's` North-Mini-Code-1.0 30B A3B MoE Q4
 - `AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-Cascade-2 30B A3B MoE IQ4
 - `AI_Agent_Qubitz_Nemotron-3.5-Lightning-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-3.5-Lightning 30B A3B MoE IQ4
-- `AI_Agent_Qubitz_Nemotron-3-Nano-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-3-Nano 30B A3B MoE IQ4
 - `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB VRAM GPU `OpenAI's` GPT-OSS-20B F16 A3B MoE F16
-- `AI_Agent_Qubitz_Ornith-1.0-35B-A3B-Q4.py` - 24 GB VRAM GPU `DeepReinforce AI's` Ornith-1.0-35B A3B MoE Q4
+- `AI_Agent_Qubitz_Ornith-1.5-35B-A3B-Q4.py` - 24 GB VRAM GPU `DeepReinforce AI's` Ornith-1.5-35B A3B MoE Q4
 - `AI_Agent_Qubitz_Qwen3.6-35B-A3B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-35B A3B MoE Q4
 - `AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py` - 24 GB VRAM GPU `Google's` Gemma-4-31B-IT-QAT Q4 Dense
 - `AI_Agent_Qubitz_Qwen3.8-27B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.8-27B Q4 Dense
-- `AI_Agent_Qubitz_Qwen3.6-27B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-27B Q4 Dense
-- `AI_Agent_Qubitz_Granite-4.1-8B_Q8.py` - 24 GB VRAM GPU `IBM's` Granite-4.1-8B Q8
 - `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB VRAM GPU `Mistral AI's` Devstral-Small-2 24B Q4 Dense
-- `AI_Agent_Qubitz_Qwen3.5_9B_Q8.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q8 Dense
-- `AI_Agent_Qubitz_AgenticQwen-8B-F16.py` - 24 GB VRAM GPU `Qwen Team's` AgenticQwen-8B F16 Dense
 *****
 - `AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` - 48 GB VRAM GPU `NVIDIA's` Llama-3_3-Nemotron-Super-49B Q6 Dense
 - `AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py` - 48 GB VRAM GPU `Multiverse Computing` Hypernova-60B-2605 A4.8B MoE Q5 Dense
