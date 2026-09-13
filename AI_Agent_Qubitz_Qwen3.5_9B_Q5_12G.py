@@ -491,7 +491,7 @@ def _named_text_creation_request(
     ):
         return None
     description = (
-        r"\b(?:basic|simple|containing|with (?:the )?content)\b"
+        r"\b(?:basic|minimal|simple|containing|with (?:the )?content)\b"
         if simple_only
         else r"\b(?:as|basic|simple|containing|that|which|with|to|for)\b"
     )
@@ -618,7 +618,7 @@ def _named_file_operation_request(
 def _direct_text_creation_choice(
     broker: Any, tools: Sequence[dict[str, Any]], *, simple_only: bool = True,
 ) -> dict[str, Any] | None:
-    """Select only a simple, self-contained new text file; never grant permission."""
+    """Select only an exact, self-contained new text-file operation; never grant permission."""
     if broker is None:
         return None
     request = _named_text_creation_request(
@@ -630,17 +630,19 @@ def _direct_text_creation_choice(
     )
     if (
         request is None
-        or request["exists"]
+        or request["existing_targets"]
         or broker.transaction_explicit_file_targets
         or broker.provenance_urls
     ):
         return None
-    targets = sorted(broker.creation_targets)
-    if len(targets) != 1 or targets[0] != request["target"] or os.path.lexists(targets[0]):
+    targets = sorted(broker.creation_targets, key=str.casefold)
+    requested_targets = sorted(request["targets"], key=str.casefold)
+    if targets != requested_targets or any(os.path.lexists(target) for target in targets):
         return None
-    if not any((tool.get("function") or {}).get("name") == "write_file" for tool in tools):
+    tool_name = "write_files" if len(targets) > 1 else "write_file"
+    if not any((tool.get("function") or {}).get("name") == tool_name for tool in tools):
         return None
-    return {"type": "function", "function": {"name": "write_file"}}
+    return {"type": "function", "function": {"name": tool_name}}
 
 
 def _file_content_output_budget(broker: Any, configured: int, previous: int = 0) -> int:
@@ -648,8 +650,9 @@ def _file_content_output_budget(broker: Any, configured: int, previous: int = 0)
     if configured <= 0:
         configured = 4096  # An unlimited setting is not an instruction to allocate unlimited output.
     prompt = str(getattr(broker, "current_prompt", ""))
-    estimate = max(1024, 256 + len(prompt.encode("utf-8")))
-    estimate = min(4096, estimate)
+    target_count = max(1, len(getattr(broker, "creation_targets", ())))
+    estimate = max(1024, 256 + len(prompt.encode("utf-8")) + 512 * (target_count - 1))
+    estimate = min(8192 if target_count > 1 else 4096, estimate)
     return min(configured, max(estimate, previous * 2))
 
 
@@ -6302,7 +6305,12 @@ def _preferred_project_windows_python(workspace: Path) -> Path | None:
     return None
 
 
-def _select_direct_workspace_python(base: Any, workspace: Path) -> tuple[Path, str] | None:
+def _select_direct_workspace_python(
+    base: Any,
+    workspace: Path,
+    *,
+    allow_runtime_fallback: bool = False,
+) -> tuple[Path, str] | None:
     capabilities = _workspace_runtime_capabilities(base, workspace)
     interpreter = capabilities.get("preferred_python_path")
     runner = capabilities.get("preferred_python_runner")
@@ -6312,6 +6320,45 @@ def _select_direct_workspace_python(base: Any, workspace: Path) -> tuple[Path, s
         probe = _probe_python_environment(environment_root, interpreter, layout)
         if probe.get("status") == "ready":
             return interpreter, str(runner)
+    if not allow_runtime_fallback:
+        return None
+
+    declared_names = {
+        ".venv", ".venv312", ".venv313", ".venv_wsl", ".venv_linux", ".venv_win", "venv", "env",
+    }
+    declared_environment = any(os.path.lexists(workspace / name) for name in declared_names)
+    try:
+        declared_environment = declared_environment or any(
+            child.is_dir()
+            and (
+                (child / "pyvenv.cfg").is_file()
+                or child.name.casefold() in declared_names
+                or bool(re.fullmatch(r"\.?(?:venv|env)(?:[0-9._-]+)?", child.name, re.IGNORECASE))
+            )
+            for child in workspace.iterdir()
+        )
+    except OSError:
+        return None
+    if declared_environment or _project_environment_candidates(workspace):
+        return None
+
+    runtime_python = Path(sys.executable)
+    if not runtime_python.is_file():
+        return None
+    runtime_layout = "windows" if runtime_python.suffix.lower() == ".exe" else "linux"
+    runtime_runner = "shell"
+    if runtime_layout == "windows":
+        can_use_windows_python = os.name == "nt" or bool(
+            base.in_wsl()
+            and _is_windows_backed_workspace(workspace)
+            and _wsl_windows_executable_interop_available(base)
+        )
+        if not can_use_windows_python:
+            return None
+        runtime_runner = "powershell"
+    runtime_root = runtime_python.parent.parent
+    if _probe_python_environment(runtime_root, runtime_python, runtime_layout).get("status") == "ready":
+        return runtime_python, runtime_runner
     return None
 
 
@@ -9096,6 +9143,8 @@ def _load_embedded_base_module() -> Any:
         embedded_source = embedded_source.replace(old, new)
     code = compile(embedded_source, f"{_EMBEDDED_BASE_MODULE_LABEL}.py", "exec")
     exec(code, module.__dict__)
+    module.EDIT_INTENT_PATTERN = re.compile(r"\brepair\b|" + module.EDIT_INTENT_PATTERN.pattern, module.EDIT_INTENT_PATTERN.flags)
+    module.VERIFY_INTENT_PATTERN = re.compile(r"\btests\b|" + module.VERIFY_INTENT_PATTERN.pattern, module.VERIFY_INTENT_PATTERN.flags)
     return module
 
 
@@ -9973,7 +10022,9 @@ def _patch_streaming_chat(base: Any) -> None:
         if (kwargs.get("tools") and catalog and owner is not None
                 and callable(getattr(owner, "_filter_tools_by_intent", None))):
             kwargs = dict(kwargs)
-            kwargs["tools"] = owner._filter_tools_by_intent(broker.current_prompt, catalog)
+            available = {item["function"]["name"]: item for item in catalog}
+            available.update({item["function"]["name"]: item for item in kwargs["tools"]})
+            kwargs["tools"] = owner._filter_tools_by_intent(broker.current_prompt, list(available.values()))
         names = {(item.get("function") or {}).get("name") for item in kwargs.get("tools", [])}
         if isinstance(choice, dict) and (choice.get("function") or {}).get("name") not in names:
             if broker is not None:
@@ -10383,41 +10434,84 @@ def _patch_streaming_chat(base: Any) -> None:
         owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
         cancel = getattr(owner, "_cancel_event", None)
 
-        def eligible() -> bool:
-            return (owner is not None and not (cancel is not None and cancel.is_set())
-                    and _direct_text_creation_choice(broker, kwargs.get("tools") or [], simple_only=True) is not None)
+        def current_choice() -> dict[str, Any] | None:
+            if owner is None or cancel is not None and cancel.is_set():
+                return None
+            return _direct_text_creation_choice(
+                broker,
+                kwargs.get("tools") or [],
+                simple_only=True,
+            )
 
         def blocked(reason: str) -> dict[str, Any]:
             return {"message": {"role": "assistant", "content": (
                 "File creation remains unverified: " + reason
             ), "tool_calls": []}, "finish_reason": "stop"}
 
-        if not eligible() or getattr(broker, "_content_tool_recovery_used", False):
+        choice = current_choice()
+        if choice is None or getattr(broker, "_content_tool_recovery_used", False):
             return blocked("no eligible new-file operation or the constrained attempt was already used.")
         broker._content_tool_recovery_used = True
-        target = next(iter(broker.creation_targets))
-        schema = {
-            "type": "object", "additionalProperties": False,
-            "properties": {"path": {"type": "string", "const": target},
-                           "content": {"type": "string", "minLength": 1}},
-            "required": ["path", "content"],
-        }
+        tool_name = str(choice["function"]["name"])
+        targets = sorted(broker.creation_targets, key=str.casefold)
+        if tool_name == "write_file":
+            target = targets[0]
+            schema = {
+                "type": "object", "additionalProperties": False,
+                "properties": {"path": {"type": "string", "const": target},
+                               "content": {"type": "string", "minLength": 1}},
+                "required": ["path", "content"],
+            }
+            adapter_instruction = (
+                "Wrapper file-generation adapter: return exactly one JSON object with path and content. "
+                f"The path must be {json.dumps(target)}. Put the complete requested file text in content. "
+                "Preserve the original task and constraints. No Markdown fences, commentary or tool-call tags. "
+                "This JSON is only a proposal: the wrapper will validate it and submit it to write_file "
+                "through the normal permission and verification checks; do not claim the file exists."
+            )
+        else:
+            schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "minItems": len(targets),
+                        "maxItems": len(targets),
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "path": {"type": "string", "enum": targets},
+                                "content": {"type": "string", "minLength": 1},
+                            },
+                            "required": ["path", "content"],
+                        },
+                    }
+                },
+                "required": ["files"],
+            }
+            adapter_instruction = (
+                "Wrapper multi-file generation adapter: return exactly one JSON object with a files array. "
+                f"Include exactly one path/content object for each of these paths: {json.dumps(targets)}. "
+                "Put each complete requested file in its content field. Preserve the original task and constraints. "
+                "No Markdown fences, commentary or tool-call tags. This JSON is only a proposal: the wrapper will "
+                "validate it and submit one atomic write_files call through normal permission and verification checks; "
+                "do not claim the files exist."
+            )
         tool_schema = next(item["function"].get("parameters", {}) for item in kwargs["tools"]
-                           if (item.get("function") or {}).get("name") == "write_file")
+                           if (item.get("function") or {}).get("name") == tool_name)
         request = dict(kwargs)
         ceiling = int(getattr(self.config, "num_predict", kwargs["num_predict"]))
         request["num_predict"] = _file_content_output_budget(broker, ceiling)
         request["tools"] = []
         request["_qubitz_file_creation_schema"] = schema
-        request["messages"] = _append_adapter_instruction(kwargs["messages"], (
-            "Wrapper file-generation adapter: return exactly one JSON object with path and content. "
-            f"The path must be {json.dumps(target)}. Put the complete requested file text in content. "
-            "Preserve the original task and constraints. No Markdown fences, commentary or tool-call tags. "
-            "This JSON is only a proposal: the wrapper will validate it and submit it to write_file "
-            "through the normal permission and verification checks; do not claim the file exists."
-        ))
+        request["messages"] = _append_adapter_instruction(kwargs["messages"], adapter_instruction)
         if broker.callback is not None:
-            broker.callback("status", "Generating schema-constrained new-file content; normal write permissions and verification still apply.")
+            broker.callback(
+                "status",
+                "Generating schema-constrained new-file content; normal write permissions and verification still apply.",
+            )
 
         def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             result: dict[str, Any] = {}
@@ -10434,10 +10528,10 @@ def _patch_streaming_chat(base: Any) -> None:
             if str(getattr(self.config, "model_name", "")).strip() == "unsloth/Qwen3.8-Flash-Next-GGUF":
                 base.set_qubitz_chat_template_kwargs({"enable_thinking": False})
             for attempt in range(2):
-                if not eligible():
+                if current_choice() is None:
                     return blocked("cancelled, permissions changed, or the destination now exists.")
                 response = _chat_with_transport_retry(self, **request)
-                if not eligible():
+                if current_choice() is None:
                     return blocked("cancelled, permissions changed, or the destination now exists.")
                 if response.get("finish_reason") in {"length", "max_tokens"}:
                     larger = _file_content_output_budget(broker, ceiling, request["num_predict"])
@@ -10450,18 +10544,39 @@ def _patch_streaming_chat(base: Any) -> None:
                 try:
                     arguments = json.loads((response.get("message") or {}).get("content", ""),
                                            object_pairs_hook=unique_pairs)
-                    if (not isinstance(arguments, dict) or set(arguments) != {"path", "content"}
-                            or arguments["path"] != target or not isinstance(arguments["content"], str)
-                            or not arguments["content"]):
-                        raise ValueError("wrong path, fields or empty content")
+                    if tool_name == "write_file":
+                        if (not isinstance(arguments, dict) or set(arguments) != {"path", "content"}
+                                or arguments["path"] != targets[0]
+                                or not isinstance(arguments["content"], str)
+                                or not arguments["content"]):
+                            raise ValueError("wrong path, fields or empty content")
+                    else:
+                        files = arguments.get("files") if isinstance(arguments, dict) else None
+                        paths = [item.get("path") for item in files] if isinstance(files, list) else []
+                        if (
+                            not isinstance(arguments, dict)
+                            or set(arguments) != {"files"}
+                            or not isinstance(files, list)
+                            or len(files) != len(targets)
+                            or len(set(paths)) != len(targets)
+                            or sorted(paths, key=str.casefold) != targets
+                            or any(
+                                not isinstance(item, dict)
+                                or set(item) != {"path", "content"}
+                                or not isinstance(item.get("content"), str)
+                                or not item["content"]
+                                for item in files
+                            )
+                        ):
+                            raise ValueError("wrong paths, fields or empty content")
                     if _json_schema_errors(arguments, tool_schema):
-                        raise ValueError("arguments do not match the registered write_file schema")
+                        raise ValueError(f"arguments do not match the registered {tool_name} schema")
                 except (ValueError, TypeError):
                     return blocked("invalid structured file arguments; no prose or reasoning was executed.")
                 return {**response, "finish_reason": "tool_calls", "message": {
                     "role": "assistant", "content": "", "tool_calls": [{
                         "id": f"qubitz_create_{time.monotonic_ns()}", "type": "function",
-                        "function": {"name": "write_file", "arguments": arguments},
+                        "function": {"name": tool_name, "arguments": arguments},
                     }],
                 }}
         finally:
@@ -12518,6 +12633,9 @@ class LocalOnlyApp:
                     self._tool_definitions_cache = None
                     return
                 if catalog:
+                    available = {item["function"]["name"]: item for item in catalog}
+                    available.update({item["function"]["name"]: item for item in self._tool_definitions_cache})
+                    catalog = list(available.values())
                     self._tool_permission_broker._available_tool_definitions = catalog
                 filtered = self._prioritize_tools_for_prompt(prompt, catalog or self._tool_definitions_cache)
                 self._tool_definitions_cache = list(filtered)
@@ -19049,7 +19167,10 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             candidate = _preferred_project_python(workspace)
             if candidate is not None:
                 return candidate
-            if list(_project_environment_candidates(workspace)):
+            declared_environment = any((workspace / name).exists() for name in (
+                ".venv", ".venv312", ".venv313", ".venv_wsl", ".venv_linux", ".venv_win", "venv", "env",
+            )) or any((child / "pyvenv.cfg").is_file() for child in workspace.iterdir() if child.is_dir())
+            if declared_environment or _project_environment_candidates(workspace):
                 raise RuntimeError("The workspace Python environment is unusable; refusing to substitute another environment.")
             candidate = Path(sys.executable)
             if not candidate.is_file():
@@ -19947,6 +20068,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._qubitz_tool_contracts = {tool.name: tool for tool in annotated}
             broker = _TOOL_CALL_CONTEXT.get()
             if broker is not None:
+                self._qubitz_active_broker = broker
                 broker._available_tool_definitions = build_model_tools(annotated)
                 owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
                 if owner is not None:
@@ -19973,6 +20095,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
             broker = _TOOL_CALL_CONTEXT.get()
+            if broker is None:
+                candidate_broker = getattr(self, "_qubitz_active_broker", None)
+                if getattr(candidate_broker, "current_prompt", ""):
+                    broker = candidate_broker
             if broker is not None and name == "call_project_mcp_tool":
                 arguments = broker.preserve_mcp_call_arguments(arguments)
             if (
@@ -20758,6 +20884,58 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 f"{summary}\n\nVerified current-turn evidence: {evidence}.\n\n"
                 f"[Completion status: partial] Unverified postconditions: {missing_text}."
             )
+
+        async def _empty_workspace_listing_preflight(
+            self,
+            prompt: str,
+            callback: Callable[[str, str], None] | None,
+        ) -> str | None:
+            """Answer only an explicit empty-workspace listing from the authoritative list tool."""
+            normalized = " ".join(str(prompt or "").strip().split())
+            semantic = _analyze_semantic_intent(normalized)
+            if (
+                semantic.speech_act != "request"
+                or semantic.requested_actions.intersection(
+                    {
+                        "clone_repository", "copy", "create", "delete", "edit", "execute", "fetch_url",
+                        "install", "mcp_call", "move", "open_browser", "restart", "start", "stop",
+                        "uninstall", "upgrade", "verify",
+                    }
+                )
+                or _extract_external_urls(normalized)
+                or base.extract_file_tokens(normalized)
+                or not re.match(r"^(?:please\s+)?(?:list|show|display)\b", normalized, re.IGNORECASE)
+                or not re.search(
+                    r"\b(?:files?|directories|folders?|contents?|entries)\b",
+                    normalized,
+                    re.IGNORECASE,
+                )
+                or not re.search(
+                    r"\b(?:workspace|directory|folder|here|present)\b",
+                    normalized,
+                    re.IGNORECASE,
+                )
+            ):
+                return None
+            async with base.MCPHost(self.workspace) as host:
+                await host.list_tools()
+                result = await host.call_tool(
+                    "list_files",
+                    {"path": ".", "recursive": False, "max_entries": 200},
+                )
+            structured = getattr(result, "structuredContent", None)
+            if bool(getattr(result, "isError", False)) or not isinstance(structured, dict):
+                return None
+            entries = structured.get("entries")
+            if not isinstance(entries, list) or entries:
+                return None
+            if callback is not None:
+                callback(
+                    "status",
+                    "Wrapper empty-workspace preflight: the authoritative listing is empty; skipped retrieval, "
+                    "embeddings, and model generation.",
+                )
+            return "The workspace is empty; no visible files or directories are present."
 
         def _select_task_guidance(self, prompt: str) -> str:
             if self._selected_route_name(prompt) == "named_file_operation":
@@ -22518,6 +22696,16 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         def _social_fast_path_response(self, prompt: str) -> tuple[str, str] | None:
             normalized = re.sub(r"\s+", " ", str(prompt or "").strip()).casefold()
+            identity_shape = re.fullmatch(
+                r"(?P<question>who are you|what are you|what is your name|what's your name|"
+                r"which model are you using|what model are you using|what model is this|"
+                r"which qubitz variant is this)\s*[?!.]*\s+"
+                r"(?:answer|reply|respond)\s+(?:briefly|concisely)"
+                r"(?:\s+with\s+(?:only\s+)?your\s+configured\s+model\s+identity)?[.!?]*",
+                normalized,
+            )
+            if identity_shape is not None:
+                normalized = identity_shape.group("question")
             normalized = re.sub(r"[.!?]+$", "", normalized).strip()
             greetings = {
                 "good afternoon",
@@ -22709,17 +22897,18 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._cancel_partial_answer = ""
             self._focused_missing_postconditions = frozenset()
             self._active_discovery_context = ""
+            self._tool_permission_broker.begin_turn(prompt, callback)
+            self._route_decision = self._decide_route(prompt)
+            selected_route = self._route_decision.selected_route
             with suppress(Exception):
-                if self._selected_route_name(prompt) not in {
+                if selected_route not in {
                     "simple_answer",
                     "dependency_install",
                     "named_file_operation",
                 }:
                     self._active_discovery_context = self.discovery_memory.context_for(prompt)
-            self._tool_permission_broker.begin_turn(prompt, callback)
             self._tool_permission_broker._qubitz_context_reload_attempted = False
             broker_context_token = _TOOL_CALL_CONTEXT.set(self._tool_permission_broker)
-            selected_route = self._selected_route_name(prompt)
             original_focused_file_context = self._build_focused_file_context
             original_metadata_context = self._build_metadata_or_lexical_context
             original_skip_retrieval = self._should_skip_repo_retrieval
@@ -22809,15 +22998,25 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
             def verified_completion_answer() -> str | None:
                 check_user_cancellation()
-                if not (
+                completion_signalled = (
                     self._cancel_source == "wrapper_verified_completion"
                     or self._tool_permission_broker.verified_completion_requested
-                ):
-                    return None
+                )
+                if not completion_signalled:
+                    named_request = _named_file_operation_request(
+                        base,
+                        self.workspace,
+                        getattr(self, "access_mode", DEFAULT_ACCESS_MODE),
+                        prompt,
+                    )
+                    if named_request is None or named_request["operation"] not in {"create", "create_many"}:
+                        return None
                 required, missing = self._tool_permission_broker.completion_report(prompt)
-                self._cancel_source = ""
                 if not required or missing:
                     return None
+                if self._cancel_source == "wrapper_verified_completion":
+                    self._cancel_event.clear()
+                self._cancel_source = ""
                 summary = self._tool_permission_broker.completion_evidence_summary(prompt)
                 return (
                     "Completed the requested task.\n\n"
@@ -23007,6 +23206,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             "Wrapper preflight resolved an explicit read-only external-path denial; model loading was skipped.",
                         )
                     return finalize_turn_answer(preflight_denial)
+                empty_listing_answer = await checked_operation(
+                    self._empty_workspace_listing_preflight,
+                    prompt,
+                    callback,
+                )
+                if empty_listing_answer is not None:
+                    return finalize_turn_answer(empty_listing_answer)
                 dependency_answer = await checked_operation(self._dependency_install_preflight, prompt, callback)
                 if dependency_answer is not None:
                     return finalize_turn_answer(dependency_answer)
@@ -23151,7 +23357,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                                         "repeated empty model responses after one focused recovery"
                                     )
                 except (Exception, asyncio.CancelledError):
-                    if (
+                    completed_answer = verified_completion_answer()
+                    if completed_answer is not None:
+                        answer = completed_answer
+                    elif (
                         (
                             self._tool_permission_broker.transaction_recovery_interrupt_requested
                             and self._cancel_source == "wrapper_transaction_recovery"
