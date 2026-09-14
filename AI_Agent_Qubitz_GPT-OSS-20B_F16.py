@@ -5973,6 +5973,7 @@ def _probe_python_environment(
     environment_root: Path,
     python_executable: Path,
     layout: str,
+    require_isolated: bool = True,
 ) -> dict[str, Any]:
     """Execute an environment's interpreter and classify the environment from runtime facts."""
     result: dict[str, Any] = {
@@ -6042,11 +6043,18 @@ def _probe_python_environment(
         return result
     prefix = str(payload.get("sys_prefix") or "").replace("\\", "/").rstrip("/").casefold()
     base_prefix = str(payload.get("sys_base_prefix") or "").replace("\\", "/").rstrip("/").casefold()
-    if not prefix or prefix == base_prefix:
+    if not prefix:
+        result["reason"] = "The interpreter ran, but sys.prefix was unavailable."
+        return result
+    if require_isolated and prefix == base_prefix:
         result["reason"] = "The interpreter ran, but sys.prefix does not identify an isolated virtual environment."
         return result
     result["status"] = "ready"
-    result["reason"] = "The exact environment interpreter executed successfully and reported an isolated prefix."
+    result["reason"] = (
+        "The exact environment interpreter executed successfully and reported an isolated prefix."
+        if require_isolated
+        else "The exact runtime interpreter executed successfully and matched the workspace platform."
+    )
     return result
 
 def _inspect_project_python_environment(
@@ -8219,7 +8227,7 @@ def _select_direct_workspace_python(
             return None
         runtime_runner = "powershell"
     runtime_root = runtime_python.parent.parent
-    if _probe_python_environment(runtime_root, runtime_python, runtime_layout).get("status") == "ready":
+    if _probe_python_environment(runtime_root, runtime_python, runtime_layout, False).get("status") == "ready":
         return runtime_python, runtime_runner
     return None
 
@@ -10389,8 +10397,25 @@ def _patch_streaming_chat(base: Any) -> None:
                             raise ValueError("wrong paths, fields or empty content")
                     if _json_schema_errors(arguments, tool_schema):
                         raise ValueError(f"arguments do not match the registered {tool_name} schema")
-                except (ValueError, TypeError):
-                    return blocked("invalid structured file arguments; no prose or reasoning was executed.")
+                except (ValueError, TypeError) as exc:
+                    if attempt == 0:
+                        correction = (
+                            f"Schema correction: the previous JSON was invalid ({exc}). Return exactly the same "
+                            f"requested operation as one JSON object matching this schema: "
+                            f"{json.dumps(schema, ensure_ascii=True, sort_keys=True)}. Preserve every valid path and "
+                            "file-content requirement; change only missing or invalid JSON fields. No prose, Markdown, "
+                            "tool-call tags, or completion claim."
+                        )
+                        request["messages"] = _append_adapter_instruction(request["messages"], correction)
+                        if broker.callback is not None:
+                            broker.callback(
+                                "status",
+                                "Retrying invalid structured file arguments once with the exact registered schema.",
+                            )
+                        continue
+                    return blocked(
+                        "invalid structured file arguments after one schema-guided correction; nothing was written."
+                    )
                 return {**response, "finish_reason": "tool_calls", "message": {
                     "role": "assistant", "content": "", "tool_calls": [{
                         "id": f"qubitz_create_{time.monotonic_ns()}", "type": "function",
@@ -10629,6 +10654,7 @@ def _patch_streaming_chat(base: Any) -> None:
     base.set_qubitz_reasoning_mode = _set_reasoning_mode
     base.set_qubitz_chat_template_kwargs = _set_chat_template_kwargs
     base.set_qubitz_forced_tool_choice = _set_forced_tool_choice
+    base.get_qubitz_forced_tool_choice = lambda: getattr(stream_state, "forced_tool_choice", None)
     base.LlamaCppClient.qubitz_json_chat = _json_chat
     base.LlamaCppClient.qubitz_file_creation_chat = _file_creation_chat
     base.LlamaCppClient.qubitz_context_launch_command = staticmethod(_context_launch_command)
@@ -14449,6 +14475,7 @@ class _ToolPermissionBroker:
         self.approved_once: set[str] = set()
         self.callback: Callable[[str, str], None] | None = None
         self.evidence: list[dict[str, Any]] = []
+        self.verified_creation_hashes: dict[str, str] = {}
         self.schema_repairs: list[dict[str, Any]] = []
         self.approval_context_prompt = ""
         self.required_postconditions: set[str] = set()
@@ -14506,8 +14533,10 @@ class _ToolPermissionBroker:
         self.task_intent = _build_task_intent(prompt, "")
         self.dependency_manifest = _dependency_install_manifest(prompt)
         self.callback = callback
+        setattr(self.base, "_qubitz_active_permission_broker", self)
         self.approved_once.clear()
         self.evidence.clear()
+        self.verified_creation_hashes.clear()
         self.schema_repairs.clear()
         self.approval_context_prompt = ""
         self.required_postconditions = self._completion_requirements(prompt, self.task_intent)
@@ -14577,12 +14606,15 @@ class _ToolPermissionBroker:
             self.approval_context_prompt = candidates[0].request_prompt
 
     def end_turn(self) -> None:
+        if getattr(self.base, "_qubitz_active_permission_broker", None) is self:
+            delattr(self.base, "_qubitz_active_permission_broker")
         self.current_prompt = ""
         self.task_intent = None
         self.dependency_manifest = None
         self.callback = None
         self.approved_once.clear()
         self.evidence.clear()
+        self.verified_creation_hashes.clear()
         self.schema_repairs.clear()
         self.approval_context_prompt = ""
         self.required_postconditions.clear()
@@ -15255,24 +15287,40 @@ class _ToolPermissionBroker:
         if normalized in mutation_tools and success and status != "patch_staged":
             target: Path | None = None
             if normalized == "write_files":
+                requested_files = arguments.get("files")
                 files = structured.get("files")
-                success = isinstance(files, list) and 2 <= len(files) <= 16
-                for item in files if isinstance(files, list) else []:
-                    if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                success = bool(
+                    isinstance(requested_files, list)
+                    and isinstance(files, list)
+                    and 2 <= len(requested_files) == len(files) <= 16
+                )
+                paired_files = zip(requested_files, files) if success else ()
+                for requested_item, item in paired_files:
+                    if (
+                        not isinstance(requested_item, dict)
+                        or not isinstance(requested_item.get("path"), str)
+                        or not isinstance(item, dict)
+                        or not isinstance(item.get("path"), str)
+                    ):
                         success = False
                         continue
-                    item_target = self._resolved_argument_path({"path": item["path"]}, "path")
+                    requested_target = self._resolved_argument_path(
+                        {"path": requested_item["path"]}, "path"
+                    )
+                    receipt_target = self._resolved_argument_path({"path": item["path"]}, "path")
                     new_hash = str(item.get("new_sha256", "")).strip().lower()
                     item_verified = bool(
-                        item_target is not None
-                        and item_target.is_file()
+                        requested_target is not None
+                        and receipt_target is not None
+                        and requested_target == receipt_target
+                        and requested_target.is_file()
                         and item.get("created") is True
                         and re.fullmatch(r"[a-f0-9]{64}", new_hash)
-                        and hashlib.sha256(item_target.read_bytes()).hexdigest() == new_hash
+                        and hashlib.sha256(requested_target.read_bytes()).hexdigest() == new_hash
                     )
                     success = success and item_verified
-                    if item_verified and item_target is not None:
-                        verified_paths.append(str(item_target))
+                    if item_verified and requested_target is not None:
+                        verified_paths.append(str(requested_target))
             elif normalized == "apply_text_patches":
                 files = structured.get("files")
                 success = isinstance(files, list) and len(files) >= 2
@@ -15355,6 +15403,9 @@ class _ToolPermissionBroker:
                     if str(target) in self.transaction_originals and re.fullmatch(r"[a-f0-9]{64}", new_hash):
                         self.transaction_changed_hashes[str(target)] = new_hash
 
+        if success and "created_outputs" in categories and verified_paths:
+            self.verified_creation_hashes.update(_current_file_hashes(verified_paths))
+
         command_value = arguments.get("command", "")
         command_text = " ".join(str(item) for item in command_value) if isinstance(command_value, list) else str(command_value)
         if not command_text:
@@ -15413,6 +15464,8 @@ class _ToolPermissionBroker:
             ):
                 categories.add("dependencies_verified")
         if success and normalized in self._EXECUTION_TOOLS:
+            if normalized == "run_existing_entrypoint":
+                categories.add("entrypoint_executed")
             if structured.get("test_runner") or re.search(
                 r"\b(?:pytest|unittest|ruff|lint|test|check)\b",
                 command_text,
@@ -15612,6 +15665,12 @@ class _ToolPermissionBroker:
             r"\b(?:tests?|pytest|unittest|ruff|lint|checks?)\b",
         ):
             requirements.add("tests")
+        if positive(
+            prompt,
+            r"\b(?:run|execute)\b",
+            r"(?:^|[\s`'\"])[a-z0-9_.\\/-]+\.(?:bat|cmd|ps1|py|sh)(?:[\s`'\"]|$)",
+        ):
+            requirements.add("entrypoint_executed")
         if semantic.requests("install", "upgrade"):
             requirements.add("dependencies_verified")
         if positive(
@@ -15677,16 +15736,65 @@ class _ToolPermissionBroker:
         }
         creation_targets = getattr(self, "creation_targets", set())
         if creation_targets and "created_outputs" in required:
-            created_hashes = {
+            created_hashes = dict(getattr(self, "verified_creation_hashes", {}))
+            created_hashes.update({
                 path: digest for evidence in evidence_items
                 if evidence.get("success") and "created_outputs" in evidence.get("categories", [])
                 for path, digest in evidence.get("file_hashes", {}).items()
-            }
+            })
             current_hashes = _current_file_hashes(sorted(creation_targets))
-            for path in creation_targets:
-                if not created_hashes.get(path) or current_hashes.get(path) != created_hashes[path]:
-                    verified.difference_update({"created_outputs", "changed_files"})
-                    break
+            all_creations_verified = all(
+                created_hashes.get(path) and current_hashes.get(path) == created_hashes[path]
+                for path in creation_targets
+            )
+            if all_creations_verified:
+                verified.update({"created_outputs", "changed_files"})
+            else:
+                verified.difference_update({"created_outputs", "changed_files"})
+        if "entrypoint_executed" in required:
+            script_suffixes = {".bat", ".cmd", ".ps1", ".py", ".sh"}
+            requested_scripts: set[str] = set()
+            for token in self.base.extract_file_tokens(effective_prompt):
+                candidate = _normalize_prompt_path_token(token)
+                if Path(candidate).suffix.lower() not in script_suffixes:
+                    continue
+                with suppress(OSError, ValueError):
+                    requested_scripts.add(
+                        str(
+                            self.base.resolve_workspace_path(
+                                self.workspace,
+                                candidate,
+                                allow_missing=False,
+                                allow_external=self.access_mode == ACCESS_MODE_FULL,
+                            ).resolve()
+                        )
+                    )
+
+            def resolved_entrypoint_evidence_path(evidence: dict[str, Any]) -> str:
+                value = str(evidence.get("evidence_path") or "").strip()
+                if not value:
+                    return ""
+                with suppress(OSError, ValueError):
+                    return str(
+                        self.base.resolve_workspace_path(
+                            self.workspace,
+                            value,
+                            allow_missing=False,
+                            allow_external=self.access_mode == ACCESS_MODE_FULL,
+                        ).resolve()
+                    )
+                return ""
+
+            executed_scripts = {
+                resolved_entrypoint_evidence_path(evidence)
+                for evidence in evidence_items
+                if evidence.get("success")
+                and evidence.get("tool") in {"run_existing_entrypoint", "wrapper_direct_existing_entrypoint"}
+                and "entrypoint_executed" in evidence.get("categories", [])
+            }
+            executed_scripts.discard("")
+            if not requested_scripts or not requested_scripts.issubset(executed_scripts):
+                verified.discard("entrypoint_executed")
         named_operation = _named_file_operation_request(
             self.base,
             self.workspace,
@@ -19926,7 +20034,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             tools = await super().list_tools()
             annotated = [tool.model_copy(update={"annotations": _tool_annotations(base, tool.name)}) for tool in tools]
             self._qubitz_tool_contracts = {tool.name: tool for tool in annotated}
-            broker = _TOOL_CALL_CONTEXT.get()
+            broker = _TOOL_CALL_CONTEXT.get() or getattr(base, "_qubitz_active_permission_broker", None)
             if broker is not None:
                 self._qubitz_active_broker = broker
                 broker._available_tool_definitions = build_model_tools(annotated)
@@ -19957,6 +20065,10 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             broker = _TOOL_CALL_CONTEXT.get()
             if broker is None:
                 candidate_broker = getattr(self, "_qubitz_active_broker", None)
+                if getattr(candidate_broker, "current_prompt", ""):
+                    broker = candidate_broker
+            if broker is None:
+                candidate_broker = getattr(base, "_qubitz_active_permission_broker", None)
                 if getattr(candidate_broker, "current_prompt", ""):
                     broker = candidate_broker
             if broker is not None and name == "call_project_mcp_tool":
@@ -20341,17 +20453,30 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return message
             context = super()._run_existing_script_preflight(prompt, callback)
             broker = self._tool_permission_broker
-            focused = broker.update_focused_postconditions(prompt)
-            self._focused_missing_postconditions = frozenset(focused)
-            if focused and not context:
-                context = broker.focused_evidence_context(prompt)
-            direct_succeeded = any(
-                evidence.get("tool") == "wrapper_direct_existing_entrypoint" and evidence.get("success")
+            direct_evidence = [
+                evidence
                 for evidence in broker._current_turn_evidence()
-            )
+                if evidence.get("tool") == "wrapper_direct_existing_entrypoint" and evidence.get("success")
+            ]
+            direct_succeeded = bool(direct_evidence)
             if direct_succeeded:
-                entrypoint = self._resolve_existing_entrypoint_for_prompt(prompt)
                 if isinstance(entrypoint, dict):
+                    entrypoint_path = str(entrypoint.get("path") or "").strip()
+                    if entrypoint_path:
+                        with suppress(OSError, ValueError):
+                            entrypoint_path = str(
+                                base.resolve_workspace_path(
+                                    self.workspace,
+                                    entrypoint_path,
+                                    allow_missing=False,
+                                    allow_external=mode == ACCESS_MODE_FULL,
+                                ).resolve()
+                            )
+                        for evidence in direct_evidence:
+                            evidence["evidence_path"] = entrypoint_path
+                            evidence["categories"] = sorted(
+                                {*evidence.get("categories", []), "entrypoint_executed"}
+                            )
                     command = str(
                         entrypoint.get("command")
                         or entrypoint.get("path")
@@ -20364,6 +20489,39 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             command,
                             source="direct_preflight",
                         )
+                explicit_output_request = bool(
+                    re.search(r"\b(?:run|execute)\b", prompt, re.IGNORECASE)
+                    and re.search(r"\.(?:bat|cmd|ps1|py|sh)\b", prompt, re.IGNORECASE)
+                    and re.search(r"\b(?:exact\s+)?(?:output|stdout|stderr)\b|\breport\b", prompt, re.IGNORECASE)
+                )
+                if explicit_output_request:
+                    def context_section(label: str) -> str:
+                        marker = f"{label}:\n"
+                        if marker not in context:
+                            return ""
+                        tail = context.split(marker, 1)[1]
+                        return re.split(
+                            r"\n(?:Script (?:stdout|stderr) excerpt|Generated browser-opening helper excerpt|"
+                            r"Changed (?:output|non-text).*?):\n",
+                            tail,
+                            maxsplit=1,
+                        )[0].strip()
+
+                    stdout_text = context_section("Script stdout excerpt")
+                    stderr_text = context_section("Script stderr excerpt")
+                    direct_answer = stdout_text or "The requested entrypoint completed successfully with no stdout."
+                    if stderr_text:
+                        direct_answer = f"{direct_answer}\n\nstderr:\n{stderr_text}"
+                    self._existing_script_direct_answer = direct_answer
+                    self._emit(
+                        callback,
+                        "status",
+                        "Wrapper direct path verified the exact script execution and returned its captured output without a model pass.",
+                    )
+            focused = broker.update_focused_postconditions(prompt)
+            self._focused_missing_postconditions = frozenset(focused)
+            if focused and not context:
+                context = broker.focused_evidence_context(prompt)
             return context
 
         def _runtime_fact_block(self, prompt: str) -> str:
@@ -20846,7 +21004,53 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 if isinstance(relation, TurnRelation) and relation.kind == "new_request"
                 else prompt
             )
-            decision = super()._decide_route(routing_prompt)
+            parent_runner = super()
+            route_decider = getattr(parent_runner, "_decide_route", None)
+            if callable(route_decider):
+                decision = route_decider(routing_prompt)
+            else:
+                legacy_decider = getattr(parent_runner, "_decide_locked_route", None)
+                if not callable(legacy_decider):
+                    raise RuntimeError(
+                        "The active variant exposes neither _decide_route nor the legacy _decide_locked_route interface."
+                    )
+                selected_route, reason = legacy_decider(routing_prompt)
+                legacy_features, _entrypoint = parent_runner._extract_route_features(routing_prompt)
+                legacy_scores = parent_runner._score_routes(legacy_features)
+                feature_payload = (
+                    legacy_features.to_trace_dict()
+                    if callable(getattr(legacy_features, "to_trace_dict", None))
+                    else dict(legacy_features)
+                )
+                fallback_decider = getattr(parent_runner, "_fallback_routes_for_selection", None)
+                fallback_routes = (
+                    list(fallback_decider(selected_route))
+                    if callable(fallback_decider)
+                    else {
+                        "simple_answer": ["retrieval_plus_model", "tool_loop"],
+                        "direct_existing_entrypoint": ["retrieval_plus_model", "tool_loop"],
+                        "read_only_workspace": ["retrieval_plus_model", "tool_loop"],
+                        "tool_loop": ["retrieval_plus_model"],
+                        "ask_user_missing_info": ["read_only_workspace", "retrieval_plus_model"],
+                    }.get(selected_route, ["tool_loop"])
+                )
+
+                @base.dataclass
+                class LegacyRouteDecision:
+                    selected_route: str
+                    reason: str
+                    scores: dict[str, int]
+                    features: dict[str, Any]
+                    fallback_routes: list[str]
+                    profile: str = "legacy_locked_route"
+
+                decision = LegacyRouteDecision(
+                    selected_route=selected_route,
+                    reason=reason,
+                    scores=dict(legacy_scores),
+                    features=feature_payload,
+                    fallback_routes=fallback_routes,
+                )
             decision = base.replace(
                 decision,
                 features={
@@ -21888,6 +22092,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             )
             if normalized and not (creation_pending or browser_pending) and not any(marker in normalized for marker in no_progress_markers):
                 return None
+            if (
+                creation_pending
+                and len(broker.creation_targets) > 1
+                and getattr(broker, "_content_tool_recovery_used", False)
+            ):
+                return None
             if task_intent.task_kind not in {
                 "coding_repair_task",
                 "edit_or_refactor_task",
@@ -21924,7 +22134,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     tool_name = "apply_docx_text_patch" if docx_targets else "apply_text_patch"
                 else:
                     tool_name = "read_file_snapshot"
-            elif "tests" in missing:
+            elif "entrypoint_executed" in missing or "tests" in missing:
                 tool_name = "run_existing_entrypoint"
             if not tool_name:
                 return None
@@ -22029,6 +22239,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     "external_sources": {"fetch_url", "search_web"},
                     "web_search": {"search_web", "fetch_url"},
                     "result_count": {"fetch_url", "run_existing_entrypoint"},
+                    "entrypoint_executed": {"run_existing_entrypoint"},
                     "created_outputs": {
                         "apply_docx_text_patch",
                         "apply_text_patch",
@@ -22856,6 +23067,35 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     with suppress(Exception):
                         self.history = self.history[:history_checkpoint]
 
+            async def run_scalar_format_pass(contract: str) -> str:
+                correction_prompt = (
+                    f"{observed_prompt.rstrip()}\n\n"
+                    f"Format correction: return only the requested {contract}. "
+                    "Do not add a label, explanation, quotation marks, Markdown, or sentence punctuation."
+                )
+                sentinel = object()
+                saved_decide_route = self.__dict__.get("_decide_route", sentinel)
+                saved_route_decision = self._route_decision
+                saved_forced_choice = base.get_qubitz_forced_tool_choice()
+                pinned_decision = base.replace(
+                    self._route_decision,
+                    selected_route="simple_answer",
+                    reason="Wrapper scalar-format correction: answer-only route with retrieval and tools disabled.",
+                    fallback_routes=[],
+                )
+                self.__dict__["_decide_route"] = lambda _prompt: pinned_decision
+                self._route_decision = pinned_decision
+                base.set_qubitz_forced_tool_choice(None)
+                try:
+                    return await run_model_pass(correction_prompt, 1)
+                finally:
+                    self._route_decision = saved_route_decision
+                    if saved_decide_route is sentinel:
+                        self.__dict__.pop("_decide_route", None)
+                    else:
+                        self.__dict__["_decide_route"] = saved_decide_route
+                    base.set_qubitz_forced_tool_choice(saved_forced_choice)
+
             def verified_completion_answer() -> str | None:
                 check_user_cancellation()
                 completion_signalled = (
@@ -22888,6 +23128,37 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return str(rendered_answer or "").strip().startswith(
                     "Stopped after reaching the maximum tool steps"
                 )
+
+            def explicit_scalar_answer_contract() -> str:
+                if selected_route != "simple_answer":
+                    return ""
+                match = re.search(
+                    r"\b(?:answer|respond|reply|return|output)\s+(?:with\s+)?only\s+(?:the\s+)?"
+                    r"(?P<contract>city\s+name|name|word|number|integer|letter|boolean|yes\s+or\s+no|"
+                    r"true\s+or\s+false|value|identifier|path|file\s+name|filename|version)\b",
+                    observed_prompt,
+                    re.IGNORECASE,
+                )
+                return re.sub(r"\s+", " ", match.group("contract").strip().lower()) if match else ""
+
+            def violates_scalar_answer_contract(answer_text: str, contract: str) -> bool:
+                rendered = str(answer_text or "").strip()
+                if not rendered or not contract or "\n" in rendered:
+                    return True
+                if rendered.startswith(("`", "#", "- ", "* ", ">")) or rendered.endswith("`"):
+                    return True
+                if rendered[:1] in {'"', "'"} or rendered[-1:] in {'"', "'"}:
+                    return True
+                if re.match(
+                    r"^(?:answer|result|response)\s*:|^(?:the\s+)?(?:answer|capital|city)\s+is\b",
+                    rendered,
+                    re.IGNORECASE,
+                ):
+                    return True
+                if rendered.endswith((".", "!", "?", ";", ":")):
+                    return True
+                word_limit = 6 if contract in {"city name", "name"} else 3
+                return len(rendered.split()) > word_limit
 
             def account_model_pass(granted_budget: int, rendered_answer: Any) -> int:
                 nonlocal allocated_step_budget
@@ -23180,7 +23451,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             answer = mcp_answer
                         else:
                             check_user_cancellation()
-                            forced_tool_choice = self._wrapper_no_progress_tool_choice(prompt, answer)
+                            completed_answer = verified_completion_answer()
+                            if completed_answer is not None:
+                                answer = completed_answer
+                            forced_tool_choice = (
+                                None
+                                if completed_answer is not None
+                                else self._wrapper_no_progress_tool_choice(prompt, answer)
+                            )
                             if forced_tool_choice is not None:
                                 tool_name = str(forced_tool_choice["function"]["name"])
                                 if callback is not None:
@@ -23299,6 +23577,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             if self._cancel_partial_answer:
                                 return finalize_turn_answer(self._cancel_partial_answer)
                             raise
+                scalar_contract = explicit_scalar_answer_contract()
+                if scalar_contract and violates_scalar_answer_contract(answer, scalar_contract):
+                    if callback is not None:
+                        callback(
+                            "status",
+                            "The answer violated the user's explicit scalar-output format; retrying once for format only.",
+                        )
+                    answer = await run_scalar_format_pass(scalar_contract)
                 required, missing = self._tool_permission_broker.completion_report(prompt)
                 rollback = {"restored": [], "skipped": []}
                 if missing.intersection({"changed_files", "tests"}) and self._tool_permission_broker.transaction_changed_hashes:
