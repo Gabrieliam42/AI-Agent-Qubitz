@@ -2338,7 +2338,9 @@ print(json.dumps(result))
 '''
 
 
-def _validate_html_artifact(content: str) -> dict[str, Any]:
+def _validate_html_artifact(
+    content: str, *, allow_existing_interaction_errors: bool = False,
+) -> dict[str, Any]:
     """Check scripted HTML without opening a workspace file or trusting generated code."""
     validation = _check_html_dependencies(content)
     if re.search(r"<script\b", content, re.IGNORECASE) is None:
@@ -2372,7 +2374,9 @@ def _validate_html_artifact(content: str) -> dict[str, Any]:
         content,
         re.IGNORECASE,
     ):
-        preview = _check_graphical_html_visibility(content)
+        preview = _check_graphical_html_visibility(
+            content, allow_existing_interaction_errors=allow_existing_interaction_errors,
+        )
     return {
         **validation, "browser_load": status,
         "browser_check_reason": str(result.get("reason") or "")[:240],
@@ -2381,7 +2385,9 @@ def _validate_html_artifact(content: str) -> dict[str, Any]:
     }
 
 
-def _check_graphical_html_visibility(content: str) -> dict[str, str]:
+def _check_graphical_html_visibility(
+    content: str, *, allow_existing_interaction_errors: bool = False,
+) -> dict[str, str]:
     """Detect an observably blank canvas without equating pixels with semantic correctness."""
     source = r'''
 import io
@@ -2402,6 +2408,9 @@ try:
         browser = playwright.chromium.launch(headless=True, args=["--use-gl=angle", "--use-angle=swiftshader"])
         context = browser.new_context(service_workers="block")
         page = context.new_page()
+        interaction_errors = []
+        page.on("pageerror", lambda error: interaction_errors.append(str(error)))
+        page.on("console", lambda message: interaction_errors.append(message.text) if message.type == "error" else None)
 
         # A nonblank canvas can still hide objects whose transforms contain NaN.
         page.evaluate("""() => {
@@ -2434,27 +2443,41 @@ try:
         context.route("**/*", allow_request)
         page.set_content(payload["content"], wait_until="domcontentloaded", timeout=8000)
         page.wait_for_timeout(1500)
-        invalid_draw_calls = page.evaluate("window.__qubitzInvalidDrawCalls || []")
+        invalid_draw_calls_before = page.evaluate("window.__qubitzInvalidDrawCalls || []")
         seen_canvas = False
         nonblank = False
+        interaction_box = None
         for canvas in page.locator("canvas").all()[:4]:
             box = canvas.bounding_box()
             if not canvas.is_visible() or box is None or box["width"] < 64 or box["height"] < 64:
                 continue
             seen_canvas = True
+            if interaction_box is None:
+                interaction_box = box
             image = Image.open(io.BytesIO(canvas.screenshot(timeout=4000))).convert("RGB").resize((64, 64))
             if any(low != high for low, high in image.getextrema()):
                 nonblank = True
                 break
+        if interaction_box is not None:
+            page.mouse.click(interaction_box["x"] + interaction_box["width"] / 2,
+                             interaction_box["y"] + interaction_box["height"] / 2)
+            page.wait_for_timeout(150)
+        invalid_draw_calls_after = page.evaluate("window.__qubitzInvalidDrawCalls || []")
         context.close()
         browser.close()
-    if invalid_draw_calls:
+    if invalid_draw_calls_before:
         result = {"status": "failed", "reason": "non-finite numeric values reached graphical draw calls: "
-                  + ", ".join(invalid_draw_calls)}
+                  + ", ".join(invalid_draw_calls_before)}
+    elif seen_canvas and not nonblank:
+        result = {"status": "blank", "reason": "visible canvas had uniform pixels"}
+    elif interaction_errors or invalid_draw_calls_after:
+        reason = "; ".join(interaction_errors[:3]) if interaction_errors else (
+            "non-finite numeric values followed graphical interaction: "
+            + ", ".join(invalid_draw_calls_after)
+        )
+        result = {"status": "interaction_failed", "reason": reason[:200]}
     elif nonblank:
         result = {"status": "nonblank"}
-    elif seen_canvas:
-        result = {"status": "blank", "reason": "visible canvas had uniform pixels"}
     else:
         result = {"status": "unavailable", "reason": "no visible canvas large enough for a preview"}
 except Exception as exc:
@@ -2478,6 +2501,12 @@ print(json.dumps(result))
     except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
         result = {}
     status = str(result.get("status") or "unavailable")
+    if status == "interaction_failed":
+        reason = str(result.get("reason") or "unknown interaction error")[:200]
+        if not allow_existing_interaction_errors:
+            raise ValueError(f"Graphical HTML interaction check failed: {reason}; repair the artifact before creation.")
+        return {"visual_preview": "nonblank", "visual_preview_reason": "",
+                "interaction_status": "failed", "interaction_reason": reason}
     if status == "failed":
         raise ValueError(
             f"Graphical HTML runtime check failed: {str(result.get('reason') or 'invalid draw call')[:200]}; "
@@ -12015,6 +12044,22 @@ def _patch_streaming_chat(base: Any) -> None:
                     return _chat_with_transport_retry(self, **retry)
                 finally:
                     stream_state.forced_tool_choice = saved_choice
+        if (
+            broker is not None
+            and kwargs.get("tools")
+            and broker.access_mode == ACCESS_MODE_FULL
+            and getattr(broker, "follow_up_repair_prompt", "")
+            and broker.transaction_snapshot_hashes
+            and not getattr(broker, "_content_tool_recovery_used", False)
+        ):
+            kwargs = dict(kwargs)
+            kwargs["num_predict"] = min(int(kwargs["num_predict"]), 4096)
+            kwargs["messages"] = _append_adapter_instruction(
+                kwargs["messages"],
+                "The existing target has been inspected. Use a focused native edit tool call now; "
+                "prefer a minimal patch over rewriting the whole file. Preserve the requested behavior "
+                "and do not replace the tool call with a prose description.",
+            )
         response = _chat_with_transport_retry(self, **kwargs)
         if (broker is None or not kwargs.get("tools")
                 or (response.get("message") or {}).get("tool_calls")
@@ -16455,7 +16500,8 @@ class _ToolPermissionBroker:
         effective_prompt = (
             "Inspect and update the preceding task's existing verified target file(s). "
             "Preserve the user's prior constraints, change only what is needed for the current request, "
-            "and verify the updated artifact with file-tool evidence.\n"
+            "and verify the updated artifact. File-tool evidence proves the edit, not the requested "
+            "behavior; test that behavior when possible and report it as unverified otherwise.\n"
             f"Current {'revision request' if revision else 'outcome feedback'}: {current_prompt.strip()}\n"
             "Exact verified target path(s): " + ", ".join(targets)
         )
@@ -17555,6 +17601,8 @@ class _ToolPermissionBroker:
                     f"verified after tool result {self.tool_result_count}",
                 )
                 self._emit(
+                    "File mutation is verified; finalizing with behavioral limits."
+                    if self.follow_up_repair_prompt else
                     "All required postconditions are verified; ending tool use and finalizing from structured evidence."
                 )
                 if self.completion_callback is not None:
@@ -20815,7 +20863,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
         if structured_error:
             raise ValueError(structured_error)
         artifact_validation = (
-            _validate_html_artifact(updated)
+            _validate_html_artifact(updated, allow_existing_interaction_errors=True)
             if target.suffix.casefold() in {".html", ".htm"} else None
         )
         updated_bytes = _encode_text_preserving_encoding(updated, encoding_label, bom)
@@ -20927,7 +20975,7 @@ def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path,
             if structured_error:
                 raise ValueError(f"Patch {patch_index}: {structured_error}")
             artifact_validation = (
-                _validate_html_artifact(updated)
+                _validate_html_artifact(updated, allow_existing_interaction_errors=True)
                 if target.suffix.casefold() in {".html", ".htm"} else None
             )
             updated_bytes = _encode_text_preserving_encoding(updated, encoding_label, bom)
@@ -25928,7 +25976,11 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                             + (
                                 f" Complete only these remaining postconditions: {missing_text}."
                                 if missing_text
-                                else " All required postconditions are verified; return a concise final result."
+                                else (
+                                    " File mutation is verified; report any untested repair behavior as unverified."
+                                    if self._tool_permission_broker.follow_up_repair_prompt else
+                                    " All required postconditions are verified; return a concise final result."
+                                )
                             )
                         )
                     pass_prompt = f"{original_pass_prompt}\n\n{continuation_context}"
@@ -25940,13 +25992,22 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     str(rendered_answer).strip(),
                     callback,
                 )
-                html_mutations = {
+                file_mutations = {
                     str(path)
                     for evidence in self._tool_permission_broker._current_turn_evidence()
                     if evidence.get("success") and "changed_files" in evidence.get("categories", [])
                     for path in evidence.get("paths", [])
-                    if Path(str(path)).suffix.casefold() in {".html", ".htm"}
                 }
+                html_mutations = {
+                    path for path in file_mutations
+                    if Path(path).suffix.casefold() in {".html", ".htm"}
+                }
+                follow_up_repair = bool(
+                    self._tool_permission_broker.follow_up_repair_prompt and file_mutations
+                )
+                unverified_behavior: list[str] = []
+                interaction_errors: list[str] = []
+                browser_checked = False
                 if html_mutations:
                     checks = [
                         validation
@@ -25963,32 +26024,45 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         check.get("browser_load") == "passed" for check in checks
                     )
                     answer_text = answer_text.replace(
-                        "Completed the requested task.", "Wrote the requested HTML file.", 1
+                        "Completed the requested task.",
+                        "Updated the requested HTML file." if follow_up_repair else "Wrote the requested HTML file.",
+                        1,
                     )
-                    behavior_missing = _unverified_html_behavior_postconditions(prompt) if browser_checked else ()
-                    if not browser_checked or behavior_missing:
-                        answer_text = re.sub(
-                            r"\n\n\[Completion status: (?:partial|verified|full)\].*\Z",
-                            "",
-                            answer_text.rstrip(),
-                            flags=re.IGNORECASE | re.DOTALL,
-                        )
-                        missing_detail = (
-                            ", ".join(behavior_missing) if browser_checked else "browser behavior"
-                        )
-                        checked_detail = (
-                            "file bytes and browser load" if browser_checked else "file bytes"
-                        )
-                        answer_text += (
-                            f"\n\nArtifact validation: {checked_detail} verified; "
-                            f"{missing_detail} not independently verified. The created file was preserved."
-                            f"\n\n[Completion status: partial] Unverified postconditions: {missing_detail}."
-                        )
-                    else:
-                        answer_text += (
-                            "\n\nArtifact validation: file bytes and browser load verified; "
-                            "visual appearance and interactions were not independently verified."
-                        )
+                    unverified_behavior.extend(
+                        _unverified_html_behavior_postconditions(prompt) if browser_checked
+                        else ("browser behavior",)
+                    )
+                    interaction_errors = [
+                        str(check.get("interaction_reason") or "unknown JavaScript error")[:160]
+                        for check in checks if check.get("interaction_status") == "failed"
+                    ]
+                    if interaction_errors:
+                        unverified_behavior.append("browser interactions")
+                if follow_up_repair:
+                    unverified_behavior.append("requested repair behavior")
+                if unverified_behavior:
+                    answer_text = re.sub(
+                        r"\n\n\[Completion status: (?:partial|verified|full)\].*\Z",
+                        "",
+                        answer_text.rstrip(),
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+                    missing_detail = ", ".join(dict.fromkeys(unverified_behavior))
+                    checked_detail = (
+                        "file bytes and browser load" if browser_checked
+                        else "file bytes" if html_mutations else "file mutation"
+                    )
+                    answer_text += (
+                        f"\n\nArtifact validation: {checked_detail} verified; "
+                        f"{missing_detail} not independently verified. The changed file was preserved."
+                        + (f" Browser interaction error: {interaction_errors[0]}." if interaction_errors else "")
+                        + f"\n\n[Completion status: partial] Unverified postconditions: {missing_detail}."
+                    )
+                elif html_mutations:
+                    answer_text += (
+                        "\n\nArtifact validation: file bytes and browser load verified; "
+                        "visual appearance and interactions were not independently verified."
+                    )
                 required, missing = self._tool_permission_broker.completion_report(prompt)
                 if missing.intersection({"changed_files", "created_outputs", "opened_urls"}):
                     summary = self._tool_permission_broker.completion_evidence_summary(prompt)
@@ -26430,7 +26504,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         f"Unverified postconditions: {missing_text}."
                     )
                 if required and callback is not None:
-                    callback("status", "Completion verification passed for the requested postconditions.")
+                    callback(
+                        "status",
+                        "File mutation verified; requested repair behavior still needs independent validation."
+                        if self._tool_permission_broker.follow_up_repair_prompt
+                        else "Completion verification passed for the requested postconditions.",
+                    )
                 rendered_answer = str(answer).rstrip()
                 conflict = bool(
                     re.search(
