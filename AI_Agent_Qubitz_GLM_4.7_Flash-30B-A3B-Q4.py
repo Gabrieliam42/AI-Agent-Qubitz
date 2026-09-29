@@ -721,6 +721,136 @@ def _resolve_named_workspace_path(base: Any, workspace: Path, candidate: str) ->
     return target
 
 
+_QSPACE_ALIAS = re.compile(r"(?<![\w./\\-])qspace(?![\w.-])", re.IGNORECASE)
+_QFILE_ALIAS = re.compile(r"(?<![\w./\\-])qfile(?![\w./\\-])", re.IGNORECASE)
+
+
+def _user_context_aliases(prompt: str) -> frozenset[str]:
+    """Only the current user's prose may activate aliases; fenced examples remain data."""
+    prose = " ".join(re.split(r"```[\s\S]*?```", str(prompt or ""))[::2])
+    aliases: set[str] = set()
+    if _QSPACE_ALIAS.search(prose):
+        aliases.add("qspace")
+    if _QFILE_ALIAS.search(prose):
+        aliases.add("qfile")
+    return frozenset(aliases)
+
+
+def _verified_created_alias_paths(evidence_items: Sequence[dict[str, Any]], workspace: Path) -> tuple[str, ...]:
+    """Keep only files whose creation was verified by the current tool turn."""
+    workspace_root = workspace.resolve()
+    paths: set[str] = set()
+    for evidence in evidence_items:
+        if (
+            not evidence.get("success")
+            or evidence.get("tool") not in {"write_file", "write_files", "copy_path"}
+            or "created_outputs" not in evidence.get("categories", ())
+        ):
+            continue
+        for value in evidence.get("paths", ()):
+            with suppress(OSError, ValueError):
+                candidate = Path(str(value))
+                target = candidate.resolve()
+                if not candidate.is_symlink() and target.is_relative_to(workspace_root) and target.is_file():
+                    paths.add(str(target))
+    return tuple(sorted(paths, key=str.casefold))
+
+
+def _resolve_user_context_aliases(
+    prompt: str,
+    workspace: Path,
+    created_paths: Sequence[str],
+) -> tuple[str, frozenset[str], str, str]:
+    """Resolve qspace/qfile without inferring a file from unverified conversation text."""
+    aliases = _user_context_aliases(prompt)
+    qfile_path = ""
+    if "qfile" in aliases:
+        if len(created_paths) != 1:
+            reason = (
+                "No verified created file is available in this workspace."
+                if not created_paths
+                else "The latest creation produced multiple files."
+            )
+            return prompt, aliases, "", f"`qfile` is not uniquely bound. {reason} Please name the file."
+        candidate = Path(created_paths[0])
+        with suppress(OSError, ValueError):
+            target = candidate.resolve()
+            if (
+                not candidate.is_symlink()
+                and target.is_relative_to(workspace.resolve())
+                and target.is_file()
+            ):
+                qfile_path = str(target)
+        if not qfile_path:
+            return prompt, aliases, "", "`qfile` no longer names a verified existing file here. Please name the file."
+
+    parts = re.split(r"(```[\s\S]*?```)", prompt)
+    relative_file = Path(qfile_path).relative_to(workspace.resolve()).as_posix() if qfile_path else ""
+    for index in range(0, len(parts), 2):
+        prose = parts[index]
+        if "qspace" in aliases:
+            prose = re.sub(
+                r"(?<![\w./\\-])qspace(?=[/\\])",
+                workspace.resolve().as_posix(),
+                prose,
+                flags=re.IGNORECASE,
+            )
+            prose = re.sub(
+                r"(?<![\w./\\-])(?:(?:the|my|our|this|current)\s+)?qspace(?![\w./\\-])",
+                "the workspace",
+                prose,
+                flags=re.IGNORECASE,
+            )
+        if qfile_path:
+            prose = _QFILE_ALIAS.sub(f"`{relative_file}`", prose)
+        parts[index] = prose
+    return "".join(parts), aliases, qfile_path, ""
+
+
+def _expand_alias_tool_paths(
+    name: str,
+    arguments: dict[str, Any],
+    workspace: Path,
+    qfile_path: str,
+    active_aliases: frozenset[str],
+) -> dict[str, Any]:
+    """Expand aliases only in filesystem path fields, never in content or commands."""
+    if name not in {
+        "list_files", "read_file", "read_file_snapshot", "search_text", "write_file",
+        "write_files", "make_directory", "copy_path", "move_path", "delete_path",
+        "apply_text_patch", "apply_text_patches", "apply_docx_text_patch",
+        "apply_notebook_text_patch", "apply_spreadsheet_cell_patch",
+    } or not active_aliases:
+        return arguments
+
+    def expand(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        if "qfile" in active_aliases and value.casefold() == "qfile" and qfile_path:
+            return qfile_path
+        if "qspace" in active_aliases:
+            if value.casefold() == "qspace":
+                return str(workspace.resolve())
+            if re.match(r"^qspace[/\\]", value, re.IGNORECASE):
+                return str(workspace.resolve() / value[7:])
+        return value
+
+    def expand_fields(item: dict[str, Any]) -> dict[str, Any]:
+        updated = dict(item)
+        for key in ("path", "source", "destination", "directory", "root", "cwd"):
+            if key in updated:
+                updated[key] = expand(updated[key])
+        return updated
+
+    updated = expand_fields(arguments)
+    for key in ("files", "patches"):
+        if isinstance(updated.get(key), list):
+            updated[key] = [expand_fields(item) if isinstance(item, dict) else item for item in updated[key]]
+    if isinstance(updated.get("paths"), list):
+        updated["paths"] = [expand(item) for item in updated["paths"]]
+    return updated
+
+
 def _explicit_file_reference_tokens(
     base: Any, prompt: str, *, for_creation: bool = False,
 ) -> list[str]:
@@ -732,7 +862,10 @@ def _explicit_file_reference_tokens(
         prompt,
         re.IGNORECASE,
     )
-    candidates = list(base.extract_file_tokens(prompt))
+    prompt_without_urls = prompt
+    for url in _extract_external_urls(prompt):
+        prompt_without_urls = prompt_without_urls.replace(url, " ")
+    candidates = list(base.extract_file_tokens(prompt_without_urls))
     candidates.extend(quoted or bare for quoted, bare in named_candidates)
     creation_verbs = list(re.finditer(
         r"\b(?:create|generate|write|save|make|draft|compose|produce|construct|design)\b",
@@ -835,7 +968,11 @@ def _creation_tool_name(prompt: str) -> str | None:
         return None
     if re.search(r"\.(?:docx?|xlsx?|xlsm|pptx?|pdf|png|jpe?g|zip|exe|gguf)\b", prompt, re.IGNORECASE):
         return None
-    if re.search(r"\b(?:directory|folder)\b", prompt, re.IGNORECASE) and not re.search(r"\.[a-zA-Z0-9]{1,9}\b", prompt):
+    if re.search(
+        r"\b(?:create|make|add|generate)\s+(?:(?:a|an|new|the)\s+)?(?:directory|folder)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
         return "make_directory"
     return "write_file"
 
@@ -870,6 +1007,42 @@ _SCOPED_TEXT_ARTIFACT_SUFFIXES = {
 }
 
 
+def _creation_requires_existing_workspace_context(base: Any, prompt: str) -> bool:
+    """Separate source files and existing project state from creation destinations."""
+    references = {
+        token.casefold() for token in _explicit_file_reference_tokens(base, prompt)
+    }
+    destinations = {
+        token.casefold()
+        for token in _explicit_file_reference_tokens(base, prompt, for_creation=True)
+    }
+    if references - destinations:
+        return True
+    return bool(re.search(
+        r"\b(?:this|our|my|current|existing)\s+"
+        r"(?:codebase|project|repo(?:sitory)?|sources?|source\s+code)\b|"
+        r"\b(?:the|this|my|our|current)\s+workspace\s+project\b|"
+        r"\b(?:current|existing|previous)\s+(?:files?|scripts?|documents?|configs?|configuration|"
+        r"code|styles?|templates?|design)\b|"
+        r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:sources?|files?|code|structure|"
+        r"conventions?|configs?|configuration|styles?|templates?)\b",
+        prompt,
+        re.IGNORECASE,
+    ))
+
+
+def _standalone_creation_without_local_source(prompt: str, semantic: SemanticIntent) -> bool:
+    """A new text artifact may have a workspace destination or web source, but no local source."""
+    return bool(
+        semantic.speech_act == "request"
+        and semantic.requests("create")
+        and not semantic.prohibited_actions.intersection({"create", "edit"})
+        and not semantic.requested_actions - {"create", "edit"}
+        and _creation_tool_name(prompt) in {"write_file", "make_directory"}
+        and not _creation_requires_existing_workspace_context(_APP.base, prompt)
+    )
+
+
 def _scoped_project_action_request(access_mode: Any, prompt: str) -> dict[str, str] | None:
     """Identify one new text artifact that needs no existing workspace context."""
     if _normalize_access_mode(access_mode) != ACCESS_MODE_FULL:
@@ -883,13 +1056,8 @@ def _scoped_project_action_request(access_mode: Any, prompt: str) -> dict[str, s
         or _creation_tool_name(prompt) != "write_file"
     ):
         return None
-    if re.search(
-        r"https?://|\b(?:according\s+to|based\s+on|before|after|download|existing|fix|inspect|"
-        r"integrate|match|modify|read|refactor|repair|research|review|search|update)\b|"
-        r"\b(?:current|existing|this)\s+(?:codebase|project|repo(?:sitory)?|source|workspace)\b|"
-        r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:conventions?|files?|structure)\b",
-        prompt,
-        re.IGNORECASE,
+    if re.search(r"https?://", prompt, re.IGNORECASE) or _creation_requires_existing_workspace_context(
+        _APP.base, prompt,
     ):
         return None
     artifact_match = re.search(
@@ -930,40 +1098,58 @@ def _classify_query_scope(
     scoped_project_action: bool = False,
 ) -> QueryClassification:
     query_type = "task" if semantic.speech_act == "request" else "question"
-    project_reference = bool(
-        file_token_count
-        or re.search(
-            r"\b(?:this|the|my|our|current|active)\s+"
-            r"(?:codebase|directory|file|folder|project|repo(?:sitory)?|script|source|workspace)\b|"
-            r"\b(?:in|inside|from|under|within)\s+(?:this|the|my|our|current|active)\s+"
-            r"(?:codebase|directory|project|repo(?:sitory)?|workspace)\b|"
-            r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:directory|file|files|root|structure)\b",
+    standalone_creation = _standalone_creation_without_local_source(prompt, semantic)
+    external_project_only = bool(
+        not standalone_creation
+        and not file_token_count
+        and _named_source_urls(prompt)
+        and re.search(
+            r"\b(?:projects?|repo(?:sitor(?:y|ies))?|codebases?)\b.{0,120}https?://",
+            prompt,
+            re.IGNORECASE | re.DOTALL,
+        )
+        and not re.search(
+            r"\b(?:this|my|our|current|active)\s+(?:workspace\s+)?"
+            r"(?:codebase|project|repo(?:sitory)?|workspace)\b|"
+            r"\bthe\s+workspace\b|"
+            r"\b(?:workspace|project|repo(?:sitory)?)\s+(?:files?|sources?|code|structure)\b",
             prompt,
             re.IGNORECASE,
         )
+        and not semantic.requested_actions.intersection(
+            {
+                "clone_repository", "copy", "create", "delete", "edit", "execute", "install",
+                "move", "open_project", "restart", "start", "stop", "uninstall", "upgrade",
+            }
+        )
+    )
+    project_reference = bool(
+        not (standalone_creation or external_project_only)
+        and (
+            file_token_count
+            or re.search(
+                r"\b(?:this|the|my|our|current|active)\s+"
+                r"(?:codebase|directory|file|folder|project|repo(?:sitory)?|script|source|workspace)\b|"
+                r"\b(?:in|inside|from|under|within)\s+(?:this|the|my|our|current|active)\s+"
+                r"(?:codebase|directory|project|repo(?:sitory)?|workspace)\b|"
+                r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:directory|file|files|root|structure)\b",
+                prompt,
+                re.IGNORECASE,
+            )
+        )
     )
     workspace_action = bool(
-        named_operation
-        or scoped_project_action
-        or semantic.requested_actions.intersection(
-            {
-                "clone_repository",
-                "copy",
-                "delete",
-                "edit",
-                "execute",
-                "install",
-                "mcp_call",
-                "mcp_discover",
-                "move",
-                "open_project",
-                "restart",
-                "start",
-                "stop",
-                "uninstall",
-                "upgrade",
-                "verify",
-            }
+        not (standalone_creation or external_project_only)
+        and (
+            named_operation
+            or scoped_project_action
+            or semantic.requested_actions.intersection(
+                {
+                    "clone_repository", "copy", "delete", "edit", "execute", "install",
+                    "mcp_call", "mcp_discover", "move", "open_project", "restart", "start",
+                    "stop", "uninstall", "upgrade", "verify",
+                }
+            )
         )
     )
     project_related = bool(project_reference or workspace_action or scoped_project_action)
@@ -975,6 +1161,14 @@ def _classify_query_scope(
         context_required = False
         inspection_level = "none"
         reason = "The request creates one new text artifact without depending on existing project state."
+    elif standalone_creation:
+        context_required = False
+        inspection_level = "none"
+        reason = "The workspace is only an output destination; no existing project content is needed."
+    elif external_project_only:
+        context_required = False
+        inspection_level = "none"
+        reason = "The named project URL is an external source, not the current workspace project."
     elif not project_related:
         context_required = False
         inspection_level = "none"
@@ -1039,11 +1233,8 @@ def _named_text_creation_request(
     )
     if (
         not re.search(description, prompt, re.IGNORECASE)
-        or re.search(
-            r"\b(?:first|before|after|if|unless|read|inspect|search|research|download|install|existing|according)\b|https?://",
-            prompt,
-            re.IGNORECASE,
-        )
+        or re.search(r"https?://", prompt, re.IGNORECASE)
+        or _creation_requires_existing_workspace_context(base, prompt)
     ):
         return None
     candidates: set[str] = set()
@@ -2563,6 +2754,17 @@ def _prompt_is_browser_only_url_action(prompt: str) -> bool:
 
 def _named_source_urls(prompt: str) -> list[str]:
     if _prompt_is_browser_only_url_action(prompt):
+        return []
+    if re.search(
+        r"\b(?:link|hyperlink|anchor|bookmark|href)\b.{0,80}https?://",
+        prompt,
+        re.IGNORECASE | re.DOTALL,
+    ) and not re.search(
+        r"\b(?:analy[sz]e|based\s+on|check|compare|extract|fetch|inspect|read|"
+        r"research|review|search|summarize|verify|about)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
         return []
     return _extract_external_urls(prompt, limit=8)
 
@@ -22342,6 +22544,14 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 candidate_broker = getattr(base, "_qubitz_active_permission_broker", None)
                 if getattr(candidate_broker, "current_prompt", ""):
                     broker = candidate_broker
+            if broker is not None and isinstance(arguments, dict):
+                arguments = _expand_alias_tool_paths(
+                    name,
+                    arguments,
+                    broker.workspace,
+                    str(getattr(broker, "alias_qfile_path", "")),
+                    frozenset(getattr(broker, "active_user_aliases", ())),
+                )
             handled_batch, batched_result = await self._consume_parallel_read_only_batch(
                 name,
                 arguments,
@@ -22675,6 +22885,9 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             super().__init__(config)
             self._cancel_source = ""
             self._wrapper_interrupt_event = threading.Event()
+            self._last_created_artifacts: tuple[str, ...] = ()
+            self._active_aliases: frozenset[str] = frozenset()
+            self._active_qfile_path = ""
             self._turn_relation = TurnRelation(
                 "new_request",
                 "No current prompt has been classified yet.",
@@ -22829,7 +23042,18 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 access_fact = "- Access mode: Plan Mode; inspect and research, but do not perform side effects."
             else:
                 access_fact = "- Access mode: Read-only; read and inspect, but do not perform side effects."
-            return f"{block}\n{access_fact}"
+            alias_facts: list[str] = []
+            if "qspace" in self._active_aliases:
+                alias_facts.append(
+                    f"- User alias qspace means the active workspace root {self.workspace.resolve()}; "
+                    "use it as a location, not as permission for unrelated discovery."
+                )
+            if self._active_qfile_path:
+                alias_facts.append(
+                    f"- User alias qfile means the verified existing file {self._active_qfile_path}; "
+                    "use this exact target, not another file inferred from history."
+                )
+            return "\n".join((block, access_fact, *alias_facts))
 
         def _task_intent_for_prompt(
             self,
@@ -23512,6 +23736,19 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                         "The user requested one self-contained new text artifact that does not depend on "
                         "existing workspace context; skip discovery and require the write tool directly."
                     ),
+                    fallback_routes=["tool_loop", "ask_user_missing_info"],
+                )
+            elif (
+                mode == ACCESS_MODE_FULL
+                and named_operation is None
+                and dependency_manifest is None
+                and _standalone_creation_without_local_source(prompt, semantic)
+                and not (isinstance(relation, TurnRelation) and relation.depends_on_prior)
+            ):
+                decision = base.replace(
+                    decision,
+                    selected_route="project_independent",
+                    reason="Create the requested artifact without unrelated workspace discovery.",
                     fallback_routes=["tool_loop", "ask_user_missing_info"],
                 )
             elif (
@@ -24781,6 +25018,11 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return preserve_explicit_tools(scoped_tools, scoped_tools)
             if selected_route == "project_independent":
                 allowed_names: set[str] = set()
+                current_prompt = self._tool_permission_broker.current_prompt or prompt
+                if _standalone_creation_without_local_source(current_prompt, semantic):
+                    creation_tool = _creation_tool_name(current_prompt)
+                    if creation_tool is not None:
+                        allowed_names.add(creation_tool)
                 if network_research_allowed:
                     allowed_names.add("fetch_url")
                     if research_decision.search_requested:
@@ -25447,6 +25689,27 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
             observed_prompt = prompt
             self._active_task_intent = None
+            self._active_aliases = frozenset()
+            self._active_qfile_path = ""
+            prompt, aliases, qfile_path, alias_blocker = _resolve_user_context_aliases(
+                prompt,
+                self.workspace,
+                self._last_created_artifacts,
+            )
+            if alias_blocker:
+                if callback is not None:
+                    callback("status", "Wrapper alias binding needs one explicit file target; no model or project search started.")
+                with suppress(Exception):
+                    self.history.extend(
+                        [
+                            {"role": "user", "content": observed_prompt},
+                            {"role": "assistant", "content": alias_blocker},
+                        ]
+                    )
+                    self._compact_history()
+                return alias_blocker
+            self._active_aliases = aliases
+            self._active_qfile_path = qfile_path
             previous_task = getattr(self, "_last_actionable_task", {})
             correction = None
             if previous_task.get("workspace") == str(self.workspace.resolve()):
@@ -25628,6 +25891,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._focused_missing_postconditions = frozenset()
             self._active_discovery_context = ""
             self._tool_permission_broker.begin_turn(prompt, callback)
+            self._tool_permission_broker.active_user_aliases = aliases
+            self._tool_permission_broker.alias_qfile_path = qfile_path
             if self._bound_follow_up_repair:
                 self._tool_permission_broker.bind_follow_up_repair(
                     str(previous_task.get("prompt") or ""),
@@ -26097,6 +26362,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     },
                     key=str.casefold,
                 )
+                created_artifacts = _verified_created_alias_paths(
+                    self._tool_permission_broker._current_turn_evidence(),
+                    self.workspace,
+                )
+                if created_artifacts:
+                    self._last_created_artifacts = created_artifacts
                 retained_paths = verified_paths or list(self._active_follow_up_paths)
                 if semantic.requests("create", "edit", "open_browser") or (
                     self._turn_relation.depends_on_prior and retained_paths
