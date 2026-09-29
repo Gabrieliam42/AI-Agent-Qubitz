@@ -698,6 +698,7 @@ def _explicit_file_reference_tokens(
         prompt,
         re.IGNORECASE,
     )) if for_creation else []
+    clause_boundaries = list(re.finditer(r"[.!?;]\s+|\n+", prompt))
     for candidate in candidates:
         cleaned = str(candidate).strip().strip("`\"'").rstrip(".,;:")
         if not cleaned or re.match(r"^[a-z][a-z0-9+.-]*://", cleaned, re.IGNORECASE):
@@ -716,17 +717,65 @@ def _explicit_file_reference_tokens(
             or named_file is not None
         ):
             continue
+        eligible_mentions = []
+        for occurrence in re.finditer(re.escape(cleaned), prompt, re.IGNORECASE):
+            clause_start = max(
+                (boundary.end() for boundary in clause_boundaries if boundary.end() <= occurrence.start()),
+                default=0,
+            )
+            prefix = prompt[clause_start:occurrence.start()]
+            explicit_destination = bool(re.search(
+                r"\b(?:file|script|document|path|output)\s+(?:named|called|as)\s*[`\"']?$|"
+                r"\b(?:filename|file\s+name)\s*[`\"']?$",
+                prefix,
+                re.IGNORECASE,
+            ))
+            technology_reference = bool(
+                "/" not in normalized
+                and not explicit_destination
+                and not re.search(r"\b(?:local|our|workspace|project)\b", prefix, re.IGNORECASE)
+                and (
+                    re.search(
+                        r"\b(?:library|framework|package|dependency|sdk|api)\b"
+                        r".{0,64}\b(?:such\s+as|like|including|named|called)\s*$",
+                        prefix,
+                        re.IGNORECASE,
+                    )
+                    or re.search(
+                        r"\b(?:use|using|with|via|import)\b.{0,64}"
+                        r"\b(?:library|framework|package|dependency|sdk|api)\b.{0,64}$",
+                        prefix,
+                        re.IGNORECASE,
+                    )
+                    or (
+                        re.search(r"\b(?:use|using|with|via|import)\b.{0,64}$", prefix, re.IGNORECASE)
+                        and re.match(
+                            r"\s+(?:library|framework|package|dependency|sdk|api)\b",
+                            prompt[occurrence.end():],
+                            re.IGNORECASE,
+                        )
+                    )
+                )
+            )
+            if not technology_reference:
+                eligible_mentions.append((occurrence, clause_start, explicit_destination))
+        if not eligible_mentions:
+            continue
         if for_creation:
             destination = False
-            for occurrence in re.finditer(re.escape(cleaned), prompt, re.IGNORECASE):
-                preceding = [verb for verb in creation_verbs if verb.end() <= occurrence.start()]
+            for occurrence, clause_start, explicit_destination in eligible_mentions:
+                preceding = [
+                    verb for verb in creation_verbs
+                    if clause_start <= verb.start() and verb.end() <= occurrence.start()
+                ]
                 if not preceding:
                     continue
                 between = prompt[preceding[-1].end():occurrence.start()]
-                if not re.search(
-                    r"\b(?:based\s+on|using|from|read(?:s|ing)?|pars(?:e|es|ing)|"
-                    r"inspect(?:s|ing)?|reference(?:s|d|ing)?|about|regarding|"
-                    r"copy|run|verify|test|open|link(?:s|ing)?)\b",
+                if explicit_destination or not re.search(
+                    r"\b(?:based\s+on|use|using|with|via|such\s+as|like|from|"
+                    r"read(?:s|ing)?|pars(?:e|es|ing)|inspect(?:s|ing)?|"
+                    r"reference(?:s|d|ing)?|about|regarding|copy|run|verify|"
+                    r"test|open|link(?:s|ing)?)\b",
                     between,
                     re.IGNORECASE,
                 ):
@@ -10414,6 +10463,8 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
     if server_cls is None or getattr(server_cls, "_qubitz_launch_fit_installed", False):
         return
     original_launch_command = server_cls._launch_command
+    original_ensure_started = server_cls.ensure_started
+    original_shutdown = server_cls.shutdown
     safety_margin_mib = 1536
 
     def _native_probe_path(executable: str) -> str:
@@ -10648,7 +10699,86 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
         command.extend(fit_args)
         return command
 
+    def _ensure_started_with_owner(self) -> None:
+        if self.process is None or self.process.poll() is not None:
+            self._qubitz_owned_launch_epoch = time.time()
+        try:
+            original_ensure_started(self)
+        except BaseException:
+            self._qubitz_owned_launch_epoch = None
+            raise
+
+    def _stop_owned_windows_child(self) -> None:
+        launch_epoch = getattr(self, "_qubitz_owned_launch_epoch", None)
+        if self.process is None or launch_epoch is None or self.model_path is None or not base.in_wsl():
+            return
+        executable = self.resolve_executable()
+        if not executable.lower().endswith(".exe"):
+            return
+        command = _build_powershell_management_command(base, "")
+        if command is None:
+            return
+        from urllib.parse import urlsplit
+
+        port = urlsplit(base.normalize_base_url(self.base_url)).port or base.DEFAULT_LLAMACPP_PORT
+        expected_executable = base.wsl_path_to_windows_path(executable)
+        expected_model = base.wsl_path_to_windows_path(self.model_path)
+
+        def quote(value: Any) -> str:
+            return "'" + str(value).replace("'", "''") + "'"
+
+        script = "\n".join([
+            "$ErrorActionPreference = 'Stop'",
+            f"$expectedExecutable = {quote(expected_executable)}",
+            f"$expectedModel = {quote(expected_model)}",
+            f"$expectedAlias = {quote(self.config.model_name)}",
+            f"$expectedPort = {quote(port)}",
+            f"$launchEpochMs = {int(launch_epoch * 1000)}",
+            "$earliest = [DateTimeOffset]::FromUnixTimeMilliseconds($launchEpochMs).UtcDateTime.AddSeconds(-2)",
+            "$latest = $earliest.AddMinutes(5)",
+            "$matches = @()",
+            "foreach ($candidate in @(Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\")) {",
+            "    if (-not $candidate.ExecutablePath -or -not $candidate.CommandLine) { continue }",
+            "    if (-not [string]::Equals($candidate.ExecutablePath, $expectedExecutable,",
+            "            [StringComparison]::OrdinalIgnoreCase)) { continue }",
+            "    $created = $candidate.CreationDate.ToUniversalTime()",
+            "    if ($created -lt $earliest -or $created -gt $latest) { continue }",
+            "    $line = [string]$candidate.CommandLine",
+            "    if ($line.IndexOf($expectedModel, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }",
+            "    if ($line.IndexOf($expectedAlias, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }",
+            r"    $portMatch = [regex]::Match($line, '(?i)(?:^|\s)--port(?:\s+|=)(?<port>\d+)(?:\s|$)')",
+            "    if (-not $portMatch.Success -or $portMatch.Groups['port'].Value -ne $expectedPort) { continue }",
+            "    $matches += $candidate",
+            "}",
+            "if ($matches.Count -eq 1) {",
+            "    $result = Invoke-CimMethod -InputObject $matches[0] -MethodName Terminate",
+            "    if ($result.ReturnValue -ne 0) { throw 'Owned llama-server termination failed' }",
+            "}",
+        ])
+        import base64
+
+        command[-2:] = [
+            "-EncodedCommand",
+            base64.b64encode(script.encode("utf-16-le")).decode("ascii"),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout or "").strip().replace("\n", " ")[:300]
+            print(f"[warning] Owned llama-server cleanup failed: {detail}", file=sys.stderr)
+
+    def _shutdown_owned(self) -> None:
+        try:
+            with suppress(OSError, subprocess.SubprocessError):
+                _stop_owned_windows_child(self)
+        finally:
+            try:
+                original_shutdown(self)
+            finally:
+                self._qubitz_owned_launch_epoch = None
+
     server_cls._launch_command = _launch_command_with_fit
+    server_cls.ensure_started = _ensure_started_with_owner
+    server_cls.shutdown = _shutdown_owned
     server_cls._qubitz_launch_fit_installed = True
 
 
@@ -13002,7 +13132,7 @@ class LocalOnlyApp:
                     "uninstall",
                     "upgrade",
                 )
-                file_tokens = getattr(base, "extract_file_tokens", lambda _text: [])(cleaned)
+                file_tokens = _explicit_file_reference_tokens(base, cleaned)
                 entrypoint = self._resolve_existing_entrypoint_for_prompt(cleaned)
                 missing_context_markers = (
                     "that file",
@@ -15986,6 +16116,8 @@ class _ToolPermissionBroker:
         self.failed_result_counts: dict[str, int] = {}
         self.failed_route_counts: dict[str, int] = {}
         self.failed_result_block_counts: dict[str, int] = {}
+        self.repeated_snapshot_reads: dict[str, int] = {}
+        self.repeated_snapshot_recovery_used = False
         self.failed_test_generations: set[tuple[str, int]] = set()
         self.failed_test_outputs: dict[str, str] = {}
         self.workspace_generation = 0
@@ -16058,6 +16190,8 @@ class _ToolPermissionBroker:
         self.failed_result_counts.clear()
         self.failed_route_counts.clear()
         self.failed_result_block_counts.clear()
+        self.repeated_snapshot_reads.clear()
+        self.repeated_snapshot_recovery_used = False
         self.failed_test_generations.clear()
         self.failed_test_outputs.clear()
         self.workspace_generation = 0
@@ -16872,6 +17006,7 @@ class _ToolPermissionBroker:
                 self.stop_callback("MCP initialization timed out after one bounded startup retry")
         categories: set[str] = set()
         verified_paths: list[str] = []
+        repeated_snapshot_key = ""
 
         if normalized == "read_file_snapshot" and success:
             target = self._resolved_argument_path(arguments, "path")
@@ -16887,6 +17022,10 @@ class _ToolPermissionBroker:
                                 {"data": current_data, "mode": target.stat().st_mode, "sha256": snapshot_hash},
                             )
                         self.transaction_snapshot_hashes[key] = snapshot_hash
+                        if status == "text_snapshot":
+                            repeated_snapshot_key = self._result_fingerprint(
+                                normalized, {**arguments, "sha256": snapshot_hash}
+                            )
 
         if normalized in {"read_file", "read_file_snapshot"} and success:
             target = self._resolved_argument_path(arguments, "path")
@@ -17172,6 +17311,25 @@ class _ToolPermissionBroker:
         fingerprint = self._result_fingerprint(normalized, arguments)
         self._audit("completed" if success else "failed", normalized, arguments, fingerprint, status)
         self._track_transaction_recovery_progress()
+        if repeated_snapshot_key and self.completion_interrupt_enabled:
+            read_count = self.repeated_snapshot_reads.get(repeated_snapshot_key, 0) + 1
+            self.repeated_snapshot_reads[repeated_snapshot_key] = read_count
+            if (
+                read_count >= 3
+                and "changed_files" in self.required_postconditions
+                and not self.transaction_changed_hashes
+                and not self.transaction_recovery_required
+                and not self.repeated_snapshot_recovery_used
+                and self.transaction_recovery_callback is not None
+            ):
+                self.repeated_snapshot_recovery_used = True
+                self.mark_transaction_recovery_required()
+                self.transaction_recovery_interrupt_requested = True
+                self._emit(
+                    "The same unchanged file snapshot was read three times during an edit task; "
+                    "switching once to a focused snapshot-and-patch continuation."
+                )
+                self.transaction_recovery_callback()
         if (
             self.current_prompt
             and self.completion_interrupt_enabled
@@ -17446,6 +17604,23 @@ class _ToolPermissionBroker:
                 verified.discard("changed_files")
                 if operation == "copy":
                     verified.discard("created_outputs")
+        edit_targets: set[str] = set()
+        if named_operation is not None and named_operation["operation"] == "edit":
+            edit_targets.add(str(Path(str(named_operation["target"])).resolve()))
+        elif self.follow_up_repair_prompt or (
+            len(self.transaction_explicit_file_targets) == 1
+            and not _analyze_semantic_intent(effective_prompt).requests("create")
+        ):
+            edit_targets.update(self.transaction_explicit_file_targets)
+        if "changed_files" in required and edit_targets:
+            verified_edit_paths = {
+                path
+                for evidence in evidence_items
+                if evidence.get("success") and "changed_files" in evidence.get("categories", [])
+                for path in evidence.get("paths", [])
+            }
+            if not edit_targets.issubset(verified_edit_paths):
+                verified.discard("changed_files")
         requested_browser = _requested_browser_name(effective_prompt)
         browser_evidence = [
             evidence for evidence in evidence_items
