@@ -673,7 +673,10 @@ def _explicit_file_reference_tokens(
         prompt,
         re.IGNORECASE,
     )
-    candidates = list(base.extract_file_tokens(prompt))
+    prompt_without_urls = prompt
+    for url in _extract_external_urls(prompt):
+        prompt_without_urls = prompt_without_urls.replace(url, " ")
+    candidates = list(base.extract_file_tokens(prompt_without_urls))
     candidates.extend(quoted or bare for quoted, bare in named_candidates)
     creation_verbs = list(re.finditer(
         r"\b(?:create|generate|write|save|make|draft|compose|produce|construct|design)\b",
@@ -776,7 +779,11 @@ def _creation_tool_name(prompt: str) -> str | None:
         return None
     if re.search(r"\.(?:docx?|xlsx?|xlsm|pptx?|pdf|png|jpe?g|zip|exe|gguf)\b", prompt, re.IGNORECASE):
         return None
-    if re.search(r"\b(?:directory|folder)\b", prompt, re.IGNORECASE) and not re.search(r"\.[a-zA-Z0-9]{1,9}\b", prompt):
+    if re.search(
+        r"\b(?:create|make|add|generate)\s+(?:(?:a|an|new|the)\s+)?(?:directory|folder)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
         return "make_directory"
     return "write_file"
 
@@ -811,6 +818,42 @@ _SCOPED_TEXT_ARTIFACT_SUFFIXES = {
 }
 
 
+def _creation_requires_existing_workspace_context(base: Any, prompt: str) -> bool:
+    """Separate source files and existing project state from creation destinations."""
+    references = {
+        token.casefold() for token in _explicit_file_reference_tokens(base, prompt)
+    }
+    destinations = {
+        token.casefold()
+        for token in _explicit_file_reference_tokens(base, prompt, for_creation=True)
+    }
+    if references - destinations:
+        return True
+    return bool(re.search(
+        r"\b(?:this|our|my|current|existing)\s+"
+        r"(?:codebase|project|repo(?:sitory)?|sources?|source\s+code)\b|"
+        r"\b(?:the|this|my|our|current)\s+workspace\s+project\b|"
+        r"\b(?:current|existing|previous)\s+(?:files?|scripts?|documents?|configs?|configuration|"
+        r"code|styles?|templates?|design)\b|"
+        r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:sources?|files?|code|structure|"
+        r"conventions?|configs?|configuration|styles?|templates?)\b",
+        prompt,
+        re.IGNORECASE,
+    ))
+
+
+def _standalone_creation_without_local_source(prompt: str, semantic: SemanticIntent) -> bool:
+    """A new text artifact may have a workspace destination or web source, but no local source."""
+    return bool(
+        semantic.speech_act == "request"
+        and semantic.requests("create")
+        and not semantic.prohibited_actions.intersection({"create", "edit"})
+        and not semantic.requested_actions - {"create", "edit"}
+        and _creation_tool_name(prompt) in {"write_file", "make_directory"}
+        and not _creation_requires_existing_workspace_context(_APP.base, prompt)
+    )
+
+
 def _scoped_project_action_request(access_mode: Any, prompt: str) -> dict[str, str] | None:
     """Identify one new text artifact that needs no existing workspace context."""
     if _normalize_access_mode(access_mode) != ACCESS_MODE_FULL:
@@ -824,13 +867,8 @@ def _scoped_project_action_request(access_mode: Any, prompt: str) -> dict[str, s
         or _creation_tool_name(prompt) != "write_file"
     ):
         return None
-    if re.search(
-        r"https?://|\b(?:according\s+to|based\s+on|before|after|download|existing|fix|inspect|"
-        r"integrate|match|modify|read|refactor|repair|research|review|search|update)\b|"
-        r"\b(?:current|existing|this)\s+(?:codebase|project|repo(?:sitory)?|source|workspace)\b|"
-        r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:conventions?|files?|structure)\b",
-        prompt,
-        re.IGNORECASE,
+    if re.search(r"https?://", prompt, re.IGNORECASE) or _creation_requires_existing_workspace_context(
+        _APP.base, prompt,
     ):
         return None
     artifact_match = re.search(
@@ -871,40 +909,58 @@ def _classify_query_scope(
     scoped_project_action: bool = False,
 ) -> QueryClassification:
     query_type = "task" if semantic.speech_act == "request" else "question"
-    project_reference = bool(
-        file_token_count
-        or re.search(
-            r"\b(?:this|the|my|our|current|active)\s+"
-            r"(?:codebase|directory|file|folder|project|repo(?:sitory)?|script|source|workspace)\b|"
-            r"\b(?:in|inside|from|under|within)\s+(?:this|the|my|our|current|active)\s+"
-            r"(?:codebase|directory|project|repo(?:sitory)?|workspace)\b|"
-            r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:directory|file|files|root|structure)\b",
+    standalone_creation = _standalone_creation_without_local_source(prompt, semantic)
+    external_project_only = bool(
+        not standalone_creation
+        and not file_token_count
+        and _named_source_urls(prompt)
+        and re.search(
+            r"\b(?:projects?|repo(?:sitor(?:y|ies))?|codebases?)\b.{0,120}https?://",
+            prompt,
+            re.IGNORECASE | re.DOTALL,
+        )
+        and not re.search(
+            r"\b(?:this|my|our|current|active)\s+(?:workspace\s+)?"
+            r"(?:codebase|project|repo(?:sitory)?|workspace)\b|"
+            r"\bthe\s+workspace\b|"
+            r"\b(?:workspace|project|repo(?:sitory)?)\s+(?:files?|sources?|code|structure)\b",
             prompt,
             re.IGNORECASE,
         )
+        and not semantic.requested_actions.intersection(
+            {
+                "clone_repository", "copy", "create", "delete", "edit", "execute", "install",
+                "move", "open_project", "restart", "start", "stop", "uninstall", "upgrade",
+            }
+        )
+    )
+    project_reference = bool(
+        not (standalone_creation or external_project_only)
+        and (
+            file_token_count
+            or re.search(
+                r"\b(?:this|the|my|our|current|active)\s+"
+                r"(?:codebase|directory|file|folder|project|repo(?:sitory)?|script|source|workspace)\b|"
+                r"\b(?:in|inside|from|under|within)\s+(?:this|the|my|our|current|active)\s+"
+                r"(?:codebase|directory|project|repo(?:sitory)?|workspace)\b|"
+                r"\b(?:project|repo(?:sitory)?|workspace)\s+(?:directory|file|files|root|structure)\b",
+                prompt,
+                re.IGNORECASE,
+            )
+        )
     )
     workspace_action = bool(
-        named_operation
-        or scoped_project_action
-        or semantic.requested_actions.intersection(
-            {
-                "clone_repository",
-                "copy",
-                "delete",
-                "edit",
-                "execute",
-                "install",
-                "mcp_call",
-                "mcp_discover",
-                "move",
-                "open_project",
-                "restart",
-                "start",
-                "stop",
-                "uninstall",
-                "upgrade",
-                "verify",
-            }
+        not (standalone_creation or external_project_only)
+        and (
+            named_operation
+            or scoped_project_action
+            or semantic.requested_actions.intersection(
+                {
+                    "clone_repository", "copy", "delete", "edit", "execute", "install",
+                    "mcp_call", "mcp_discover", "move", "open_project", "restart", "start",
+                    "stop", "uninstall", "upgrade", "verify",
+                }
+            )
         )
     )
     project_related = bool(project_reference or workspace_action or scoped_project_action)
@@ -916,6 +972,14 @@ def _classify_query_scope(
         context_required = False
         inspection_level = "none"
         reason = "The request creates one new text artifact without depending on existing project state."
+    elif standalone_creation:
+        context_required = False
+        inspection_level = "none"
+        reason = "The workspace is only an output destination; no existing project content is needed."
+    elif external_project_only:
+        context_required = False
+        inspection_level = "none"
+        reason = "The named project URL is an external source, not the current workspace project."
     elif not project_related:
         context_required = False
         inspection_level = "none"
@@ -980,11 +1044,8 @@ def _named_text_creation_request(
     )
     if (
         not re.search(description, prompt, re.IGNORECASE)
-        or re.search(
-            r"\b(?:first|before|after|if|unless|read|inspect|search|research|download|install|existing|according)\b|https?://",
-            prompt,
-            re.IGNORECASE,
-        )
+        or re.search(r"https?://", prompt, re.IGNORECASE)
+        or _creation_requires_existing_workspace_context(base, prompt)
     ):
         return None
     candidates: set[str] = set()
@@ -2504,6 +2565,17 @@ def _prompt_is_browser_only_url_action(prompt: str) -> bool:
 
 def _named_source_urls(prompt: str) -> list[str]:
     if _prompt_is_browser_only_url_action(prompt):
+        return []
+    if re.search(
+        r"\b(?:link|hyperlink|anchor|bookmark|href)\b.{0,80}https?://",
+        prompt,
+        re.IGNORECASE | re.DOTALL,
+    ) and not re.search(
+        r"\b(?:analy[sz]e|based\s+on|check|compare|extract|fetch|inspect|read|"
+        r"research|review|search|summarize|verify|about)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
         return []
     return _extract_external_urls(prompt, limit=8)
 
@@ -23317,6 +23389,19 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     fallback_routes=["tool_loop", "ask_user_missing_info"],
                 )
             elif (
+                mode == ACCESS_MODE_FULL
+                and named_operation is None
+                and dependency_manifest is None
+                and _standalone_creation_without_local_source(prompt, semantic)
+                and not (isinstance(relation, TurnRelation) and relation.depends_on_prior)
+            ):
+                decision = base.replace(
+                    decision,
+                    selected_route="project_independent",
+                    reason="Create the requested artifact without unrelated workspace discovery.",
+                    fallback_routes=["tool_loop", "ask_user_missing_info"],
+                )
+            elif (
                 classification.project_scope == "project_unrelated"
                 and not (
                     isinstance(relation, TurnRelation)
@@ -24573,6 +24658,11 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return preserve_explicit_tools(scoped_tools, scoped_tools)
             if selected_route == "project_independent":
                 allowed_names: set[str] = set()
+                current_prompt = self._tool_permission_broker.current_prompt or prompt
+                if _standalone_creation_without_local_source(current_prompt, semantic):
+                    creation_tool = _creation_tool_name(current_prompt)
+                    if creation_tool is not None:
+                        allowed_names.add(creation_tool)
                 if network_research_allowed:
                     allowed_names.add("fetch_url")
                     if research_decision.search_requested:
