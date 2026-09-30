@@ -721,17 +721,15 @@ def _resolve_named_workspace_path(base: Any, workspace: Path, candidate: str) ->
     return target
 
 
-_QSPACE_ALIAS = re.compile(r"(?<![\w./\\-])qspace(?![\w.-])", re.IGNORECASE)
-_QFILE_ALIAS = re.compile(r"(?<![\w./\\-])qfile(?![\w./\\-])", re.IGNORECASE)
-
-
 def _user_context_aliases(prompt: str) -> frozenset[str]:
     """Only the current user's prose may activate aliases; fenced examples remain data."""
     prose = " ".join(re.split(r"```[\s\S]*?```", str(prompt or ""))[::2])
     aliases: set[str] = set()
-    if _QSPACE_ALIAS.search(prose):
+    if re.search(r"(?<![\w./\\-])qspace(?![\w-]|\.[A-Za-z0-9])", prose, re.IGNORECASE):
         aliases.add("qspace")
-    if _QFILE_ALIAS.search(prose):
+    if re.search(r"(?<![\w./\\-])qfiles(?![\w/\\-]|\.[A-Za-z0-9])", prose, re.IGNORECASE):
+        aliases.add("qfiles")
+    if re.search(r"(?<![\w./\\-])qfile(?![\w/\\-]|\.[A-Za-z0-9])", prose, re.IGNORECASE):
         aliases.add("qfile")
     return frozenset(aliases)
 
@@ -756,36 +754,83 @@ def _verified_created_alias_paths(evidence_items: Sequence[dict[str, Any]], work
     return tuple(sorted(paths, key=str.casefold))
 
 
+def _verified_recent_alias_paths(
+    base: Any,
+    prompt: str,
+    evidence_items: Sequence[dict[str, Any]],
+    workspace: Path,
+    inherited_paths: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """Bind the latest turn to edited, explicitly discussed, or read local files."""
+    root = workspace.resolve()
+
+    def existing_files(values: Sequence[str]) -> tuple[str, ...]:
+        paths: set[str] = set()
+        for value in values:
+            with suppress(OSError, ValueError):
+                candidate = _resolve_named_workspace_path(base, workspace, str(value))
+                if not candidate.is_symlink() and candidate.is_file():
+                    target = candidate.resolve()
+                    if target.is_relative_to(root):
+                        paths.add(str(target))
+        return tuple(sorted(paths, key=str.casefold))
+
+    changed = existing_files([
+        str(path)
+        for item in evidence_items
+        if item.get("success") and "changed_files" in item.get("categories", ())
+        for path in item.get("paths", ())
+    ])
+    if changed:
+        return changed
+    discussed = existing_files(_explicit_file_reference_tokens(base, prompt))
+    if discussed:
+        return discussed
+    read = existing_files([
+        str(path)
+        for item in evidence_items
+        if item.get("success") and item.get("tool") in {"read_file", "read_file_snapshot"}
+        for path in item.get("paths", ())
+    ])
+    return read or existing_files(inherited_paths)
+
+
 def _resolve_user_context_aliases(
     prompt: str,
     workspace: Path,
     created_paths: Sequence[str],
 ) -> tuple[str, frozenset[str], str, str]:
-    """Resolve qspace/qfile without inferring a file from unverified conversation text."""
+    """Resolve user aliases from the immediately preceding relevant turn."""
     aliases = _user_context_aliases(prompt)
     qfile_path = ""
+    bound_paths: list[str] = []
+    if aliases.intersection({"qfile", "qfiles"}):
+        for value in created_paths:
+            candidate = Path(value)
+            with suppress(OSError, ValueError):
+                target = candidate.resolve()
+                if not candidate.is_symlink() and target.is_relative_to(workspace.resolve()) and target.is_file():
+                    bound_paths.append(str(target))
+        if len(bound_paths) != len(created_paths):
+            return prompt, aliases, "", "A recent file alias no longer names an existing file in this workspace. Please name the file(s)."
+        if not bound_paths:
+            if "qfile" in aliases:
+                return prompt, aliases, "", "`qfile` is not uniquely bound. No recent file is available. Please name the file."
+            return prompt, aliases, "", "`qfiles` has no recent file set. Please name the files."
+        if len(bound_paths) > 32:
+            return prompt, aliases, "", "The recent file set is too large for `qfiles`. Please name the relevant files."
     if "qfile" in aliases:
-        if len(created_paths) != 1:
+        if len(bound_paths) != 1:
             reason = (
-                "No verified created file is available in this workspace."
-                if not created_paths
-                else "The latest creation produced multiple files."
+                "No recent file is available in this workspace."
+                if not bound_paths else "The latest relevant turn involved multiple files."
             )
             return prompt, aliases, "", f"`qfile` is not uniquely bound. {reason} Please name the file."
-        candidate = Path(created_paths[0])
-        with suppress(OSError, ValueError):
-            target = candidate.resolve()
-            if (
-                not candidate.is_symlink()
-                and target.is_relative_to(workspace.resolve())
-                and target.is_file()
-            ):
-                qfile_path = str(target)
-        if not qfile_path:
-            return prompt, aliases, "", "`qfile` no longer names a verified existing file here. Please name the file."
+        qfile_path = bound_paths[0]
 
     parts = re.split(r"(```[\s\S]*?```)", prompt)
     relative_file = Path(qfile_path).relative_to(workspace.resolve()).as_posix() if qfile_path else ""
+    relative_files = [Path(path).relative_to(workspace.resolve()).as_posix() for path in bound_paths]
     for index in range(0, len(parts), 2):
         prose = parts[index]
         if "qspace" in aliases:
@@ -796,13 +841,25 @@ def _resolve_user_context_aliases(
                 flags=re.IGNORECASE,
             )
             prose = re.sub(
-                r"(?<![\w./\\-])(?:(?:the|my|our|this|current)\s+)?qspace(?![\w./\\-])",
+                r"(?<![\w./\\-])(?:(?:the|my|our|this|current)\s+)?qspace(?![\w/\\-]|\.[A-Za-z0-9])",
                 "the workspace",
                 prose,
                 flags=re.IGNORECASE,
             )
         if qfile_path:
-            prose = _QFILE_ALIAS.sub(f"`{relative_file}`", prose)
+            prose = re.sub(
+                r"(?<![\w./\\-])qfile(?![\w/\\-]|\.[A-Za-z0-9])",
+                f"`{relative_file}`",
+                prose,
+                flags=re.IGNORECASE,
+            )
+        if "qfiles" in aliases:
+            prose = re.sub(
+                r"(?<![\w./\\-])qfiles(?![\w/\\-]|\.[A-Za-z0-9])",
+                ", ".join(f"`{path}`" for path in relative_files),
+                prose,
+                flags=re.IGNORECASE,
+            )
         parts[index] = prose
     return "".join(parts), aliases, qfile_path, ""
 
@@ -813,6 +870,7 @@ def _expand_alias_tool_paths(
     workspace: Path,
     qfile_path: str,
     active_aliases: frozenset[str],
+    qfiles_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Expand aliases only in filesystem path fields, never in content or commands."""
     if name not in {
@@ -828,6 +886,8 @@ def _expand_alias_tool_paths(
             return value
         if "qfile" in active_aliases and value.casefold() == "qfile" and qfile_path:
             return qfile_path
+        if "qfiles" in active_aliases and value.casefold() == "qfiles" and len(qfiles_paths) == 1:
+            return qfiles_paths[0]
         if "qspace" in active_aliases:
             if value.casefold() == "qspace":
                 return str(workspace.resolve())
@@ -847,7 +907,17 @@ def _expand_alias_tool_paths(
         if isinstance(updated.get(key), list):
             updated[key] = [expand_fields(item) if isinstance(item, dict) else item for item in updated[key]]
     if isinstance(updated.get("paths"), list):
-        updated["paths"] = [expand(item) for item in updated["paths"]]
+        paths: list[Any] = []
+        for item in updated["paths"]:
+            if (
+                "qfiles" in active_aliases
+                and isinstance(item, str)
+                and item.casefold() == "qfiles"
+            ):
+                paths.extend(qfiles_paths)
+            else:
+                paths.append(expand(item))
+        updated["paths"] = paths
     return updated
 
 
@@ -22551,6 +22621,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     broker.workspace,
                     str(getattr(broker, "alias_qfile_path", "")),
                     frozenset(getattr(broker, "active_user_aliases", ())),
+                    tuple(getattr(broker, "alias_qfiles_paths", ())),
                 )
             handled_batch, batched_result = await self._consume_parallel_read_only_batch(
                 name,
@@ -22885,9 +22956,12 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             super().__init__(config)
             self._cancel_source = ""
             self._wrapper_interrupt_event = threading.Event()
-            self._last_created_artifacts: tuple[str, ...] = ()
+            self._last_referenced_artifacts: tuple[str, ...] = ()
+            self._last_referenced_request_index = 0
+            self._alias_request_index = 0
             self._active_aliases: frozenset[str] = frozenset()
             self._active_qfile_path = ""
+            self._active_qfiles_paths: tuple[str, ...] = ()
             self._turn_relation = TurnRelation(
                 "new_request",
                 "No current prompt has been classified yet.",
@@ -23052,6 +23126,13 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 alias_facts.append(
                     f"- User alias qfile means the verified existing file {self._active_qfile_path}; "
                     "use this exact target, not another file inferred from history."
+                )
+            if self._active_qfiles_paths:
+                root = self.workspace.resolve()
+                alias_facts.append(
+                    "- User alias qfiles means exactly these recent existing workspace files: "
+                    + ", ".join(str(Path(path).relative_to(root)) for path in self._active_qfiles_paths)
+                    + "; use each explicit path, not qfiles as one tool path."
                 )
             return "\n".join((block, access_fact, *alias_facts))
 
@@ -25688,13 +25769,20 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
 
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
             observed_prompt = prompt
+            self._alias_request_index += 1
             self._active_task_intent = None
             self._active_aliases = frozenset()
             self._active_qfile_path = ""
+            self._active_qfiles_paths = ()
+            recent_paths = (
+                self._last_referenced_artifacts
+                if self._last_referenced_request_index == self._alias_request_index - 1
+                else ()
+            )
             prompt, aliases, qfile_path, alias_blocker = _resolve_user_context_aliases(
                 prompt,
                 self.workspace,
-                self._last_created_artifacts,
+                recent_paths,
             )
             if alias_blocker:
                 if callback is not None:
@@ -25710,6 +25798,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 return alias_blocker
             self._active_aliases = aliases
             self._active_qfile_path = qfile_path
+            self._active_qfiles_paths = tuple(recent_paths) if "qfiles" in aliases else ()
             previous_task = getattr(self, "_last_actionable_task", {})
             correction = None
             if previous_task.get("workspace") == str(self.workspace.resolve()):
@@ -25893,6 +25982,7 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
             self._tool_permission_broker.begin_turn(prompt, callback)
             self._tool_permission_broker.active_user_aliases = aliases
             self._tool_permission_broker.alias_qfile_path = qfile_path
+            self._tool_permission_broker.alias_qfiles_paths = self._active_qfiles_paths
             if self._bound_follow_up_repair:
                 self._tool_permission_broker.bind_follow_up_repair(
                     str(previous_task.get("prompt") or ""),
@@ -26362,12 +26452,15 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                     },
                     key=str.casefold,
                 )
-                created_artifacts = _verified_created_alias_paths(
+                recent_artifacts = _verified_recent_alias_paths(
+                    base,
+                    observed_prompt,
                     self._tool_permission_broker._current_turn_evidence(),
                     self.workspace,
+                    recent_paths if aliases.intersection({"qfile", "qfiles"}) else (),
                 )
-                if created_artifacts:
-                    self._last_created_artifacts = created_artifacts
+                self._last_referenced_artifacts = recent_artifacts
+                self._last_referenced_request_index = self._alias_request_index if recent_artifacts else 0
                 retained_paths = verified_paths or list(self._active_follow_up_paths)
                 if semantic.requests("create", "edit", "open_browser") or (
                     self._turn_relation.depends_on_prior and retained_paths
