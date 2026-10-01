@@ -1,7 +1,3 @@
-# Qubitz
-
-Exhausted of testing relatively small LLMs with AI agents that often ignore instructions, misuse tools, or wander off task?
-
 Qubitz is a local-first AI agent with a specialized harness and Agent Behavioral Contracts, that aims to make 7B–35B and also 35B-80B MCP/tool-capable LLMs more predictable and useful. It keeps routing, workspace handling, retrieval, and tool orchestration under wrapper control, so smaller models are not left to decide everything on their own.
 
 ***
