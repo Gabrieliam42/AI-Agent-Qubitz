@@ -1,0 +1,43 @@
+- Current release set: 39 user-facing launchers in `variants/`, requiring project-root `qubitz_runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
+
+- `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 Dense
+- `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q5 Dense
+*****
+- `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB VRAM GPU `Z.AI's` GLM-4.7-Flash 30B A3B MoE Q4
+- `AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py` - 24 GB VRAM GPU `Kwaipilot's` KAT-Coder-V2.5-Dev 35B A3B MoE Q4
+- `AI_Agent_Qubitz_Macaron-V1-Tall-35B-A3B.i1-Q4.py` - 24 GB VRAM GPU `MindLab Research's` Macaron-V1-Tall 35B A3B MoE MTP i1 Q4
+- `AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` - 24 GB VRAM GPU `Cohere's` North-Mini-Code-1.0 30B A3B MoE Q4
+- `AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-Cascade-2 30B A3B MoE IQ4
+- `AI_Agent_Qubitz_Nemotron-3.5-Lightning-30B-A3B-IQ4.py` - 24 GB VRAM GPU `NVIDIA's` Nemotron-3.5-Lightning 30B A3B MoE IQ4
+- `AI_Agent_Qubitz_GPT-OSS-20B_F16.py` - 24 GB VRAM GPU `OpenAI's` GPT-OSS-20B F16 A3B MoE F16
+- `AI_Agent_Qubitz_Ornith-1.5-35B-A3B-Q4.py` - 24 GB VRAM GPU `Ornith AI's` Ornith-1.5-35B A3B MoE MTP Q4
+- `AI_Agent_Qubitz_CalibForge-35B-A3B.i1-Q4.py` - 24 GB VRAM GPU `AweAI Team's` CalibForge-35B A3B MoE i1 Q4
+- `AI_Agent_Qubitz_Qwen3.6-35B-A3B_MTP_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.6-35B A3B MoE MTP Q4
+- `AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py` - 24 GB VRAM GPU `Google's` Gemma-4-31B-IT-QAT Q4 Dense
+- `AI_Agent_Qubitz_Qwen3.8-27B_Q4.py` - 24 GB VRAM GPU `Qwen Team's` Qwen-3.8-27B Q4 Dense
+- `AI_Agent_Qubitz_LFM2.5-24B-A2B-Q5.py` - 24 GB VRAM GPU `Liquid AI's` LFM2.5-24B-A2B hybrid MoE Q5_K_M, text/tool only
+- `AI_Agent_Qubitz_Mellum2.1-12B-A2.5B-Thinking-Q6.py` - 24 GB VRAM GPU `JetBrains'` Mellum2.1-12B-A2.5B Thinking MoE Q6_K, text/tool only
+- `AI_Agent_Qubitz_Holo4-27B-Q4.py` - 24 GB VRAM GPU `H Company'` Holo4-27B Q4_K_M, text/tool copy only; vision projector not enabled
+- `AI_Agent_Qubitz_Occamy-1.0-35B-A3B-Q4.py` - 24 GB VRAM GPU `Accio Lab's` Occamy-1.0 35B A3B MoE Q4_K_L, text/tool copy only; vision projector not enabled
+- `AI_Agent_Qubitz_AREX-2-27B.i1-Q6.py` - 24 GB VRAM GPU `BAAI's` AREX-2 27B Q6_K, text/tool copy only; vision projector not enabled
+- `AI_Agent_Qubitz_MiniCPM-V-4.7-35B-A3B-Q4_1.py` - 24 GB VRAM GPU `OpenBMB's` MiniCPM-V 4.7 35B A3B Q4_1, text/tool copy only; vision projector not enabled
+- `AI_Agent_Qubitz_Muse-Glimmer-30B_Q5.py` - 24 GB VRAM GPU `Meta Superintelligence Labs'` Muse-Glimmer-30B Q5 Dense
+- `AI_Agent_Qubitz_Nex-N2.5-mini-35B-A3B.i1-Q4.py` - 24 GB VRAM GPU `Nex AGI's` Nex-N2.5-mini 35B A3B MoE i1 Q4
+- `AI_Agent_Qubitz_Granite-4.2-30B_Q5.py` - 24 GB VRAM GPU `IBM's` Granite-4.2-30B Q5_K_M Dense
+- `AI_Agent_Qubitz_Granite-4.2-8B.i1-Q6.py` - 24 GB VRAM GPU `IBM's` Granite-4.2-8B imatrix Q6_K Dense
+- `AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py` - 24 GB VRAM GPU `Mistral AI's` Devstral-Small-2 24B Q4 Dense
+- `AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` - 24 GB VRAM GPU `Qwen Team's` AgenticQwen-30B A3B MoE Q4
+- `AI_Agent_Qubitz_Laguna-XS-2.1-33B-A3B_Q4.py` - 24 GB VRAM GPU `poolside's` Laguna-XS-2.1 33B A3B MoE Q4
+- `AI_Agent_Qubitz_SERA-32B.i1-Q5.py` - 24 GB VRAM GPU `Ai2's` SERA-32B dense Qwen3 repository coding agent i1 Q5_K_S
+- `AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py` - 24 GB VRAM GPU `peculiar-ragdoll's` Tiel-Coder 35B A3B MoE MTP UD-Q4_K_XL
+*****
+- `AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM, `Multiverse Computing's` Hypernova-60B-2605 sparse MoE Q5
+- `AI_Agent_Qubitz_GPT-OSS-120B_F16.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `OpenAI's` GPT-OSS-120B MoE, Unsloth F16 GGUF (native MXFP4 expert weights)
+- `AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM, `Moonshot AI's` Kimi-Linear 48B A3B hybrid-attention MoE i1 Q6_K
+- `AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM, `NVIDIA's` Llama-3.3-Nemotron-Super-49B-v1.5 UD-Q6_K_XL
+- `AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM with fitting/CPU overflow when needed, `Qwen Team's` Qwen3-Coder-Next 80B A3B hybrid-attention MoE UD-Q4_K_S
+- `AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `Qwen Team's` Qwen3.8-Flash-Next 125B A6B MoE UD-IQ4_XS
+- `AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` - two 24 GB VRAM GPUs plus available system RAM, `Ornith AI's` Qwen3.5-family Ornith-1.5-122B MoE UD-Q5_K_XL; text/tool only
+- `AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py` - two 24 GB VRAM GPUs plus available system RAM, `NVIDIA's` Nemotron-H Mamba/attention hybrid MoE UD-Q6_K_XL; text/tool only, vision projector not enabled
+- `AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `DeepSeek AI's` DeepSeek-V4-Flash-0731 MoE UD-IQ4_XS
+- `AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `InclusionAI's` Ling-3.0-flash 124B A5.1B hybrid-linear MoE AD-Q5_K_M

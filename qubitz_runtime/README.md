@@ -1,0 +1,37 @@
+# Shared Qubitz Runtime
+
+## Runtime Layout
+
+The 39 user-facing launchers live in project-root `variants/` and require this complete package. Three developer-only local launchers are excluded from the public release. Normal menus and `--list-variants` expose only the public variants without importing them. Each launcher has a literal `_QUBITZ_VARIANT_SPEC` containing its model-specific source sections and a validated project-root import bootstrap. Universal source is stored once in `v2/base.py.in`, `v2/wrapper.py.in`, and their `*.shared.py.in` symbol registries. The root templates retain layout-1 support; current launchers use layout 2.
+
+`loader.initialize_variant` composes trusted project source and executes it in the launcher's own globals. Existing module names, `__file__`, main entrypoint, ownership behavior, and class patches are preserved. Mutable classes and application state are not shared between variants. This lossless composition is deliberately not an ordinary import of one mutable application class.
+
+Ordinary universal modules can be registered with `QUBITZ_SHARED_MODULE` entries. The GUI FIFO logger lives in `gui_diagnostics.py`; its exact source is composed into each private namespace and standalone export. Queues, locks, counters, and shutdown state remain GUI-owned. Module aliases and escaped source paths are rejected.
+
+Application runtime storage stays at the project root while `__file__` and process launch paths identify the real file in `variants/`. `paths.py` defaults to public discovery and rejects directory/file aliases rather than substituting another script; `all_variant_paths()` is the separate maintenance inventory. `variant_policy.py` holds the developer-only exclusions and is composed into standalone selectors too. Neither helper redirects user file tools or historical evidence paths.
+
+`catalog.py` reads literal per-variant defaults without importing them. Menu colors refresh bounded local file-set checks on opening: white for available sets, gray for missing/unknown, with all entries selectable. No Hub query, weight download, full model hash, or model invocation is involved. These indicators are not proof of model integrity or hardware compatibility.
+
+The GUI reader delivers scan results through Unix Tcl file events, so completed scans do not depend on wall-clock timer deadlines. Unsupported platforms use timer polling. Workers never call Tk; GUI destruction closes the notifier and prevents a late worker from writing to a reused descriptor. Repeated requests coalesce into one subsequent scan.
+
+`read_variant_source(Path(...))` returns effective source without importing the variant. Static checks, profile maintenance, source freezes, and artifact metadata use this source or include the package dependencies. Runtime tracebacks and `inspect` use the assembled source with the original launcher filename; physical launcher line numbers are not effective-source line numbers.
+
+## Maintenance
+
+Pause live measurement before changing runtime source. Edit universal behavior in the applicable shared template or symbol registry, not a variant's universal-reference markers. Use a sequential project-root backup and changelog entry before editing Python source, including source registries. In the full local maintenance checkout, universal changes affect all 42 launchers; automated regressions and the release gate exercise only the 39 public variants. The three developer-only launchers, builder, and release gate are not shipped in this public runtime tree.
+
+In the full local maintenance checkout, keep all 42 model settings in `qubitz_variant_profiles.json` authoritative. Builder synchronization, profile application, and profile capture retain the full maintenance inventory; `--check` and the release gate use the public selection. After a deliberate shared edit, recapture the maintenance template from the effective public reference source with `--capture-template`, then run `--check` and the release gate. The profile JSON, builder, and its template are not shipped in this minimal public runtime tree.
+
+Development edits and backups resolve relative paths from the project root and reject sources, backup directories, or changelog targets that resolve outside it.
+
+## Standalone Export
+
+From the project root, using the project interpreter:
+
+```text
+python -m qubitz_runtime.development --export .cache/standalone_export
+```
+
+Choose a new project-local output directory. The export contains the 39 fully assembled public scripts and `HARNESS.enc`; it omits developer-only scripts, the plaintext harness, and the key. Copy the published key separately. Some composed paths still import `qubitz_runtime` modules, so retain the package unless the export is independently verified for the intended deployment.
+
+The initial shared-source extraction was source-lossless against the preserved originals. The later directory migration deliberately changes runtime-root discovery and selector behavior; preserved original source and launch receipts remain historical evidence. Neither source checks nor CPU tests guarantee inference speed, quality, or untested deployment compatibility.

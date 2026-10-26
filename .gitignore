@@ -1,39 +1,76 @@
-# Python bytecode and caches
+# Python
+# Local dependency and build outputs
+node_modules/
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Virtual environments
+# Caches
+.cache/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
 .venv/
-.venv*/
+/.venv*/
 venv/
 env/
 
-# Local runtime data
-.cache/
-.memory/
-.skills/
-.qubitz/
-models/
-data/
-node_modules/
+# IDE
+.vscode/
+.idea/
 
-# Logs and temp artifacts
-*.log
-launcher_out.txt
-launcher_err.txt
-files_list.txt
-changelog.txt
-tmp*/
-.tmp/
-
-# OS/editor noise
+# OS
 .DS_Store
 Thumbs.db
 Desktop.ini
-.vscode/
-.idea/
+
+# Project specific
+HARNESS.txt
+QUBITZ_HARNESS_KEY.local.txt
+.memory/
+MEMORY.md
+files_list.txt
+AI_Agent.txt
+PROJECT.md
+RULES.md
+changelog.txt
+*.bak
+*.bat
+*.log
+.env
+
+# Root-level helper executables are local utilities, not project source
+/*.exe
+
+# Local agent/runtime state
+/.claude/
+/.skills/
+/.qubitz/
+/backup/
+/conversations/
+/models/
+/data/
+
+# Disposable evaluations, probes, and captured console output
+/.tmp_*
+/tmp_*
+/tmp*/
+/answer.txt*
+/launcher_*.txt
+/smoke_workspaces/
+/evaluation/results/
+/evaluation/mcp_audit.jsonl
+
+# Local snapshots and malformed Windows-path output directories
+/*.7z
+/D*AI_Research*/
+
+# Unrelated local helper scripts and superseded derived notes
+/get_hacker_news_top_*.py
+/open_hacker_news_urls.py
+/open_hn_urls.ps1
+/num_ctx_values.md

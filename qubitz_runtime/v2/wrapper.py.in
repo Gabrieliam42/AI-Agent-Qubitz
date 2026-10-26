@@ -1,0 +1,2649 @@
+# <QUBITZ_VARIANT_SECTION:wrapper:000>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5384bfdb2df380b6>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bf27a6e31914ad01>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bf27a6e31914ad02>
+# <QUBITZ_SHARED_REFERENCE:wrapper:576a08f2a34c9d10>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c0a0e17c00000001>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c0a0e17c00000002>
+
+# Standalone local-only wrapper with vendored support code and embedded base module.
+# This file intentionally embeds both the wrapper implementation and its
+# corresponding base app so it can run independently.
+# <QUBITZ_SHARED_REFERENCE:wrapper:1a530f5446ff47d7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:034c9cdd42f8d88c>
+# <QUBITZ_VARIANT_SECTION:wrapper:001>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6f32a18263c4dfed>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3b3ea3cdc7068a9e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:261a9112a2918e2a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7c3859a2358b04fb>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3727adff524e0616>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a830333312c4c9c2>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b0dd8c25d7573574>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7002efbd1fd0861b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:463c91f978872b1f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:17ea74bb79ba96ed>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c517577851c489e4>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1cca2b85209ea21f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bfda8797d05a788b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7b2ddb8a2e64c616>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e177c8751e4f354a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ab270e34de38d99f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:cb59752d432fc81a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:eb159f5f1e4fbe4b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:74494dc56372da33>
+# <QUBITZ_SHARED_REFERENCE:wrapper:0f874086b692c2ec>
+# <QUBITZ_SHARED_REFERENCE:wrapper:10c0ced64ad2be8b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3cb9ffccba5146b2>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9255fe8b35bf7a50>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:200cbfda6f7409b7>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:919d2c74e6ad22b0>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1c62e9afec894be0>
+# <QUBITZ_SHARED_REFERENCE:wrapper:242eab6867970c06>
+# <QUBITZ_SHARED_REFERENCE:wrapper:63a282d35b5d8e94>
+# <QUBITZ_VARIANT_SECTION:wrapper:002>
+# <QUBITZ_SHARED_REFERENCE:wrapper:4d87548654a7e213>
+# <QUBITZ_SHARED_REFERENCE:wrapper:311f0ff967a569af>
+# <QUBITZ_SHARED_REFERENCE:wrapper:57c67af664ca6e9d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:92f2e86a85865ba1>
+# <QUBITZ_SHARED_REFERENCE:wrapper:64404a353bcdae14>
+# <QUBITZ_SHARED_REFERENCE:wrapper:96d7774e46b54a01>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d7fbe67003b4ddd5>
+# <QUBITZ_SHARED_REFERENCE:wrapper:43ffa340fc0513c3>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d1309a3211701684>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f4a2a44c6dd9f133>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ccdcd9e90e89984b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:8edc13964405174c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e3aebacd58feeb57>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3f2ddd0f311d88db>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a1bf802cd091b825>
+# <QUBITZ_SHARED_REFERENCE:wrapper:45b65e1baabd0d62>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6205e8293c0fc042>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f95da3649a941714>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b41e1a4201c325ad>
+# <QUBITZ_SHARED_REFERENCE:wrapper:001764677bbd12d2>
+# <QUBITZ_SHARED_REFERENCE:wrapper:08b305da5363dd51>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2eec25facf921f94>
+# <QUBITZ_SHARED_REFERENCE:wrapper:acfb537d2679ecbc>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c3c4e8bdcff335b1>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7af46e3735756a09>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:eb8b03b6bebaf9f8>
+# <QUBITZ_SHARED_REFERENCE:wrapper:701fd091ed2cf858>
+# <QUBITZ_SHARED_REFERENCE:wrapper:8006b6d615a5000d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:14f6f4fd51908338>
+# <QUBITZ_VARIANT_SECTION:wrapper:003>
+# <QUBITZ_SHARED_REFERENCE:wrapper:df17b3a6f68e032b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:8580a7b544da6aa4>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f18c57a1aedcb950>
+# <QUBITZ_SHARED_REFERENCE:wrapper:05303f67a3e6ad99>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3a91ea2fa59c61a8>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3cf7f4d2d9c9f651>
+# <QUBITZ_SHARED_REFERENCE:wrapper:54b1d2672256e879>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:96909cb6137123ae>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:56f41749a264c9b4>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:398c786383e78517>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:90eed8475585c9cc>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8c6e8414b1165a71>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5aafb27e74ef7bfe>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e12efdcf6bc64ce9>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e3d6b2e761305171>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0f50c724d2a06985>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7c2525b1ca3c7bed>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2eb8eb70cff5dd5e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7486585f4c6be7ba>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e260c8f75ee3a6e0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c48d5e812e997c90>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b26c46320e403ecc>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:121f14aabef4d17f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6fa0e1996812ddc7>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ab4c94de23948569>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:236ea2eefc1029d0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d9209c4bb3fe44ea>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3d55e4748b5452f6>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ce866ebf8619fc56>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c296c0f3146aec4d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:68dfc0b32d8ae12b>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1ff679e1487e2720>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:548b9a5d329fcca5>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cb026c837b615815>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:51de97669f152c91>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ac7861b53c7bacae>
+
+
+# FastMCP resolves annotations through module globals, not enclosing locals.
+# <QUBITZ_SHARED_REFERENCE:wrapper:23fbea526d9b55af>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4c56bb3d5d49fd5d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:beb1f811b0313b7f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:783d3ba4f67563f1>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9aee1487cb34788e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0c0df56cdfed0e74>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0caa2690f6ea1cab>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bccf6ddc08453dd2>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:337259c0d0e0a3c8>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7f47832b252941df>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bcda0d7d1c7109ff>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ffd8188f84f48f11>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0f566111d9e85f0c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cac780427d0a196f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:fb5a545ce2c29059>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8202ea30b839dab6>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:632088dc67314586>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a8e6faf41cb6fb3a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f78bf76f2ccf2111>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:97ae2640964c5f61>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2d4ed35c0a987f27>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:07a5a1fdee0c9a5b>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1f5a6b6ce1dd9704>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:12ff24e83df91d04>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1aec6aab907efb89>
+# <QUBITZ_SHARED_REFERENCE:wrapper:627f8a32c77040fe>
+# <QUBITZ_SHARED_REFERENCE:wrapper:dfd07080949b9443>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f95f8c303cf8194c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:311cff41753b32ff>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6f29c6986804133f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1ea600b0a6ede665>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:04ba662289893329>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:79c970f768bb7297>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:97030a086b88feeb>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:28c0bb886096c3fb>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:127ef22fe02e4ec7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:11ba21051c8236fd>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b7500ecd1f4ac22f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:650cac1a46cfb493>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9404f041d3eb9d6f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2fb00bf54dc61245>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:621b2b18844ec396>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0e7a5996e3bd1888>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d8c6a4a82e2cb6e7>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e1fa81fc75b384b4>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5f6c2acf49940d9d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3a608d244741b865>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1a7291399c3f16fd>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a4dd255cf8d153db>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:feb3a1f8c185509f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:df04ee6a4c835eb5>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:90191c298d6f8d1d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8b3c643b0e77cf63>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ccd9c880ecab9984>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ed1d8d8262513738>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3cf2dcab2c6449c4>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1b5a7bd528352375>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6da6cf649e5f6e37>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ccec82bb092c19d0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b85bcef3e2b6c20f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d8a90041f4291c49>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:82654988b591f95e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:becd9883feaa8585>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c2295bbc89e6fe9d>
+# A leading prepositional phrase such as "in the venv .venv312 ..." hides an
+# imperative from an anchored match. This matches that phrase only when an
+# action verb follows it, so it can never reclassify prose that has no verb.
+# The verb alternation is derived from the pattern above so the two cannot drift.
+# <QUBITZ_SHARED_REFERENCE:wrapper:fd6ba60d7c4a6a0b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b58d1559b4440958>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6aa8f606605c77d5>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4b42ddd1761ad9fa>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d0ff2b8996937eaa>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ffe5921240be9f16>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:eda5c3706adcce3d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5c1eeb96e8cc7737>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c72fcf8381a40e18>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:91028c2dcbdadcc8>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:712f84eb3e48ea7b>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bf11acdd05e56f82>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:44d6e9f04a9d929a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:06d76a87b8043e11>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0f218a46e83059b3>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a164be32f163791e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6382f0b51f055fd3>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:17429bcdef40d8e6>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:36f117ed44e7264a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d94f4350c0158681>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e2a5901ddbbb51d8>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f31ce5f09f0a2739>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f6738260d32d1cf1>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ccbb2c5efdc3654d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d0195fa1e3296e02>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d556ee7bbef89e93>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7966065d0bb6c5b0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:07af1d8d98b0a76b>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a00f983bca7700c2>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:47bfbac1eb8868dd>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b0c09c116e4b9488>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ed9fe4b18e952a0d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c60ae4a14a40b10c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d4d210c38c251be4>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:44e91da93408ce70>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c8e062ac0d51cd68>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f19d3d545d51eab2>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:aec78c8a83edce1f>
+# <QUBITZ_VARIANT_SECTION:wrapper:004>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a36759df859c8f17>
+# <QUBITZ_VARIANT_SECTION:wrapper:005>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ab3fb746798d7329>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f3577fddb94d324a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:4af099cdf7e34655>
+# <QUBITZ_SHARED_REFERENCE:wrapper:8dbf3fe10407b7f2>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9b9520bf79ef604b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f2f4c8befdd15ac0>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3432b2a6d4de0a68>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c236ff0a51cfe07e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:742b5bfc67880866>
+# <QUBITZ_SHARED_REFERENCE:wrapper:dfaabf00ea700059>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9ddee234f4607aa3>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e3e0407159ccea02>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ffce54e5f019965a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:48ec56faaa2f1407>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:36342cf5657a15d0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8a7c717ab9af0525>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4e250cfaab16dff2>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6ed4a8c708fd99df>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0376a98ef8689f3f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:408f816f25ac4b93>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:386e318fec2219a6>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ac40ed46213774fb>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8ce46a545317b658>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:aa03240199cac30f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a0edd8b4cc7d3f3a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:dbb1697c961e10dc>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4d8e49f346c5d9c4>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9e4e025d35431e2d>
+
+
+def _project_use_prompt_lacks_concrete_goal(
+    base: Any,
+    prompt: str,
+    entrypoint: dict[str, Any] | None,
+    file_tokens: Sequence[str],
+) -> bool:
+# <QUBITZ_SHARED_REFERENCE:wrapper:2fba08768ee6bf50>
+# <QUBITZ_SHARED_REFERENCE:wrapper:fc13f7181d568809>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6bffa0d85edf510c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c40e74d5531b9a48>
+# <QUBITZ_VARIANT_SECTION:wrapper:006>
+        return False
+# <QUBITZ_VARIANT_SECTION:wrapper:007>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:be0a7ee2656b2c2b>
+
+
+def _collect_browser_helper_candidates(workspace: Path) -> list[Path]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:a3b8e6aa79964184>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5d8fe84363468b89>
+# <QUBITZ_VARIANT_SECTION:wrapper:008>
+        for candidate in workspace.glob(pattern):
+            if not candidate.is_file():
+                continue
+            key = str(candidate.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+# <QUBITZ_SHARED_REFERENCE:wrapper:07e0995ea35b8923>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:fc0754a3c59dc7b0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:926192a084b3cdaa>
+
+
+def _extract_start_process_urls(script_text: str) -> list[str]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:4536a747c271f4cc>
+    for match in START_PROCESS_URL_PATTERN.finditer(script_text):
+        target = match.group("target").strip()
+        if not target:
+            continue
+        urls.append(DIRECT_RESULT_MISSING_URL if target == "#" else target)
+# <QUBITZ_VARIANT_SECTION:wrapper:009>
+            break
+# <QUBITZ_SHARED_REFERENCE:wrapper:c5272bcfd038ca9e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:16e317764f98fb04>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5408a28324d9d445>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:23fb14944a94d297>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b1ea5ccf2e1a1a67>
+
+
+# <QUBITZ_VARIANT_SECTION:wrapper:010>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a96b38203d56eef5>
+# <QUBITZ_VARIANT_SECTION:wrapper:011>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f56adbe354e025a4>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:012>
+# <QUBITZ_SHARED_REFERENCE:wrapper:756560054701c48c>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:013>
+# <QUBITZ_SHARED_REFERENCE:wrapper:81b4de22ae842f6f>
+# <QUBITZ_VARIANT_SECTION:wrapper:014>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:152be97353db6a0f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:963964c3ea2db168>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:22e4f9dfb50a5a15>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3979c875c762c488>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0b5b4779cf8ba388>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2d08984635aa4c3a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:16045b6ab9c55624>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b1e814f282181c2e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7db1104cee68cea1>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a2b7872395a6b0a1>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9f404c6970fc6a5d>
+
+
+def _structured_evidence_count(value: Any) -> int:
+# <QUBITZ_SHARED_REFERENCE:wrapper:82f211fab41b43a9>
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in {"count", "opened_count", "result_count", "total", "total_count"}:
+                with suppress(TypeError, ValueError):
+                    counts.append(max(0, int(item)))
+            elif normalized in {
+# <QUBITZ_VARIANT_SECTION:wrapper:015>
+            } and isinstance(item, (list, tuple, set)):
+                counts.append(len(item))
+            counts.append(_structured_evidence_count(item))
+    elif isinstance(value, (list, tuple, set)):
+        counts.append(len(value))
+        counts.extend(_structured_evidence_count(item) for item in value)
+# <QUBITZ_SHARED_REFERENCE:wrapper:0a55087fd16b7d78>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0c133179242fad71>
+
+
+# <QUBITZ_VARIANT_SECTION:wrapper:016>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b21ebdaaff8dce67>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a668443ec45a5bdd>
+# <QUBITZ_VARIANT_SECTION:wrapper:017>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:151487620fbbae3c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:43423911a5194073>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:959b69eac115a65a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1e8c0d010e52d87d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ae21967a3483163e>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:018>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e45ffb8e1e5921f1>
+# <QUBITZ_VARIANT_SECTION:wrapper:019>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:72e1f01f4c39a309>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cc591dc6a2aa395f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:572fc4eee00ba831>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a89ab9470a311530>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7286b8dca16ed96c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:27e547effdaa1767>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7662cd63dbb3d842>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d7ca0ce2f23609cd>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:20b12dc93b6ab8e7>
+# <QUBITZ_VARIANT_SECTION:wrapper:020>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d8bd0d8e82aa2bd3>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6ba4cf85506beef8>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3dc59187c9bde2af>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8b4c2861ca6c18c1>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bc4353c2a9b3f0e9>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:372142c96d76228d>
+# <QUBITZ_VARIANT_SECTION:wrapper:021>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3fb091d2d9b1d11c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bbbf3465214312c8>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ec251c6271622abf>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5df568813718591a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bca491eb0d4b0aa2>
+
+
+# <QUBITZ_VARIANT_SECTION:wrapper:022>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1f8a2bdfa32c365b>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ae5a9474ec981c30>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:000b290481a9ed5e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f3b78941c639cd02>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:fdaf04cba15242d0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:dd8c5ada98fbcabf>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:eef0899c96cb8557>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f2c8dc323979e4ba>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:023>
+# <QUBITZ_SHARED_REFERENCE:wrapper:49156c9eedcce3ac>
+
+
+class LocalBackgroundJobManager:
+# <QUBITZ_SHARED_REFERENCE:wrapper:19975e9c01708972>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5d429fc23036ae51>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2ccca2de865ea700>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d22a60cdbb36df11>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bb735b42ae570cc9>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c81ca36bcecfd738>
+# <QUBITZ_VARIANT_SECTION:wrapper:024>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e069f3be9691355b>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ba0a41e4019ceaf0>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bb0fc36aed9c4532>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:045486624e7f7484>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c503cd45d7adfc33>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:fbd8c2050a264136>
+
+
+# <QUBITZ_VARIANT_SECTION:wrapper:025>
+# <QUBITZ_SHARED_REFERENCE:wrapper:06ebcf9a6012b7d0>
+# <QUBITZ_VARIANT_SECTION:wrapper:026>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9963cc08bdd436ba>
+# <QUBITZ_VARIANT_SECTION:wrapper:027>
+# <QUBITZ_SHARED_REFERENCE:wrapper:28e27e3ae6d2473d>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:028>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3eed99047cdbd0ab>
+# <QUBITZ_VARIANT_SECTION:wrapper:029>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ca8e5418fa0e8b6f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0907cce0f8feedd3>
+# <QUBITZ_VARIANT_SECTION:wrapper:030>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f6bdfb2ce23cc457>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:fcc881a909a109ea>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:34f1238cf7bd8682>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a3e8af235faf83d0>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d4d2e698b1820ece>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b9475277d7efe727>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:51b77cbf3dbe547c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1746a82692b786b7>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:043090841ae379eb>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6380f43b34860131>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cc83965769761b33>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cc46d7883c50c0e1>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f133a33652140aca>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:88656a919438e7a7>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:afa7ed5ae26da6c3>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:031>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ec169d30b7cc6f42>
+# <QUBITZ_VARIANT_SECTION:wrapper:032>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0e21a2c81d4d8ed8>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:033>
+# <QUBITZ_SHARED_REFERENCE:wrapper:400c7f920739aded>
+# <QUBITZ_VARIANT_SECTION:wrapper:034>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:400daf7f40ee022d>
+
+
+def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path, launch_script: Path) -> Any:
+# <QUBITZ_SHARED_REFERENCE:wrapper:fd5890e7e9af7d22>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d735f5f7f5012ab0>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a040e91ee334d603>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2e4a30e13c2d3a5b>
+# <QUBITZ_VARIANT_SECTION:wrapper:035>
+# <QUBITZ_SHARED_REFERENCE:wrapper:26f86103efc80551>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d1638881c2415a6f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:08c78f66ab5b7aff>
+# <QUBITZ_VARIANT_SECTION:wrapper:036>
+# <QUBITZ_SHARED_REFERENCE:wrapper:82d0dcbfd3be605d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:8b3f2d9e4f85ab19>
+# <QUBITZ_SHARED_REFERENCE:wrapper:100b5dd9cef0190e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7fa80371076fd685>
+# <QUBITZ_SHARED_REFERENCE:wrapper:723c779a0bc0911d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ce1d9e03d966ceca>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f9b71e7ffd7de048>
+# <QUBITZ_SHARED_REFERENCE:wrapper:16587d4ebcdee1d0>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:57a7dcbc46fda79f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a97a6bf13b6fb3f6>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:15a5f42cfe62cb8e>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:146a7681a52c4b1f>
+
+    @server.resource("workspace://summary")
+    def workspace_summary() -> str:
+        return json.dumps(
+            {
+                "workspace": workspace.as_posix(),
+                "runtime_workspace": runtime_workspace.as_posix(),
+                "memory_file": base.relative_path(current_memory_path, runtime_workspace),
+# <QUBITZ_VARIANT_SECTION:wrapper:037>
+                "local_only_config": local_config.__dict__,
+                "plugin_count": len(plugin_registry.plugins),
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9b39e2da331ab43a>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:038>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:039>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:30ca6c8db2fc5265>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a612ccfde9d4ed19>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:75e2dd8f7a2b292f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d51395736158f774>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:26a6dc1b7eaad109>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:233440b3c04db5df>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:93eac9009f4f9073>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:57b960b7a3262eb2>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cb4a2f447b9513dc>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0bc173fdd9933dd8>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:12fc406d5f542040>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a4418ef9be3a8a98>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:040>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:041>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:042>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:043>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:044>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f44798d125853eca>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:485690a0eb944d5d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a3f526425c181cca>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5fe23092105a7ac2>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e94356a5066f7f9b>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6fa4ae5a5e12d139>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8dc01ada4e1c3f63>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1684b0b53b608eec>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f53bd77fab705036>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:045>
+
+    @server.tool(
+        description=(
+# <QUBITZ_VARIANT_SECTION:wrapper:046>
+        )
+    )
+    def start_project_mcp_server(
+        server_script: str,
+        cwd: str = ".",
+        python_path: str | None = None,
+        arguments: list[str] | None = None,
+        name: str = "",
+        connection_uri: str = "",
+        ready_substring: str = "",
+        wait_seconds: int = 15,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:67e4b8ee58b93e8e>
+
+    @server.tool(
+        description=(
+# <QUBITZ_VARIANT_SECTION:wrapper:047>
+            "A persistent managed server_id is also accepted."
+        )
+    )
+    def list_project_mcp_tools(
+        server_id: str = "",
+        server_reference: str = "",
+        cwd: str = ".",
+        python_path: str | None = None,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:b42af4fd7233477b>
+
+    @server.tool(
+        description=(
+# <QUBITZ_VARIANT_SECTION:wrapper:048>
+            "A persistent managed server_id is also accepted."
+        )
+    )
+    def call_project_mcp_tool(
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+        server_id: str = "",
+        server_reference: str = "",
+        cwd: str = ".",
+        python_path: str | None = None,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:86a182dcc5f22fc9>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d880a1ff62a87476>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c623dfac3c6946ff>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:049>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:050>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:051>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:052>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:053>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:054>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:055>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:056>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:057>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:058>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:059>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:060>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:061>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6426c5eb8aba3a89>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d211983f71799eb7>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3d41220b3896d859>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a02411d1b51fcac9>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d862c12c43e6fa5b>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:242c47005142c351>
+# <QUBITZ_VARIANT_SECTION:wrapper:062>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9d925751367c9dae>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f5df386d27249b33>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a7ec50b9d3f13c0e>
+
+
+def _patch_local_only_dependencies(base: Any) -> None:
+# <QUBITZ_SHARED_REFERENCE:wrapper:0112ecda03f1ce48>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:063>
+# <QUBITZ_SHARED_REFERENCE:wrapper:88c49cc46bb12be5>
+
+    @staticmethod
+    def _reachable_transports(base_url: str) -> list[Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:9fdf5260bd80b052>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7496e336b6eb1afe>
+# <QUBITZ_SHARED_REFERENCE:wrapper:936fa09d75e36e3f>
+        if (
+            callable(getattr(base, "in_wsl", None))
+            and base.in_wsl()
+            and _wsl_windows_executable_interop_available(base)
+# <QUBITZ_VARIANT_SECTION:wrapper:064>
+            and not base.llamacpp_native_server_executable(_APP.runtime_workspace).exists()
+        ):
+            bridge = base.WindowsBridgeHTTPTransport(base_url)
+            try:
+                probe = bridge.probe_json("/v1/models")
+                if int(probe.get("status_code") or 0) == 200 or base.LlamaCppClient._probe_reports_loading(probe):
+                    transports.append(bridge)
+            except Exception:
+                pass
+# <QUBITZ_SHARED_REFERENCE:wrapper:c1d3d0776085bdad>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a2f387a284c07f10>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b96e809bad0fdee0>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:af2cf038fe852352>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7057b61db57dab34>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:50e39f0b202170b2>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:73190ea697cc2d24>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c6eb9975cca35ec6>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3ffc23606324e1cb>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5672b80a823d2b6f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7cab72664ec8b6fa>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cef62a550a7bf678>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5b7fdb1b6d3fdb38>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2bd88f7c2180de06>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d962acb1ee5bed4f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b3098a81d1a2c812>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c68a515214cdfa45>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1a5320e681108166>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d6f8127e4b31ce56>
+# <QUBITZ_SHARED_REFERENCE:wrapper:62184f6a70bb5242>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f2865e4f8f0405cd>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9734ca66a47853cc>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b332807de888e64e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e9d30b5dcbc42ce0>
+# <QUBITZ_VARIANT_SECTION:wrapper:065>
+# <QUBITZ_SHARED_REFERENCE:wrapper:05f16465345cde45>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b12f64672ac81c9c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8c1e52d42bed220a>
+# <QUBITZ_VARIANT_SECTION:wrapper:066>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:067>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:068>
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+# <QUBITZ_VARIANT_SECTION:wrapper:069>
+    "        import torch\n"
+    "        import torch.nn.functional as torch_f\n"
+    "        from transformers import AutoModel, AutoTokenizer\n",
+    "        import torch\n"
+    "        import torch.nn.functional as torch_f\n"
+    "        import transformers.modeling_utils as transformers_modeling_utils\n"
+    "        from transformers.pytorch_utils import Conv1D as TransformersConv1D\n"
+    "        if not hasattr(transformers_modeling_utils, \"Conv1D\"):\n"
+    "            transformers_modeling_utils.Conv1D = TransformersConv1D\n"
+    "        from transformers import AutoModel, AutoTokenizer\n",
+# <QUBITZ_VARIANT_SECTION:wrapper:070>
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    "        except Exception as exc:\n"
+    "            if target_device != \"cuda\":\n"
+    "                raise\n"
+    "            self.load_warning = f\"CUDA embedder load failed, falling back to CPU: {type(exc).__name__}: {exc}\"\n"
+    "            self._report(self.load_warning)\n"
+    "            if torch.cuda.is_available():\n"
+    "                torch.cuda.empty_cache()\n"
+    "            self._model = self._load_model(AutoModel, base_load_kwargs)\n"
+    "            self.device = \"cpu\"\n"
+    "            load_kwargs = dict(base_load_kwargs)\n",
+    "        except Exception as exc:\n"
+    "            if target_device != \"cuda\":\n"
+    "                raise\n"
+    "            if load_kwargs.get(\"attn_implementation\") == \"flash_attention_2\":\n"
+    "                self._report(\n"
+    "                    f\"CUDA embedder load with FlashAttention2 failed: {type(exc).__name__}: {exc}; retrying CUDA without FlashAttention2.\"\n"
+    "                )\n"
+    "                if torch.cuda.is_available():\n"
+    "                    torch.cuda.empty_cache()\n"
+    "                load_kwargs = dict(base_load_kwargs)\n"
+    "                load_kwargs[\"dtype\"] = torch.float16\n"
+    "                try:\n"
+    "                    self._model = self._load_model(AutoModel, load_kwargs)\n"
+    "                    self.device = target_device\n"
+    "                except Exception as retry_exc:\n"
+    "                    self.load_warning = f\"CUDA embedder load failed, falling back to CPU: {type(retry_exc).__name__}: {retry_exc}\"\n"
+    "                    self._report(self.load_warning)\n"
+    "                    if torch.cuda.is_available():\n"
+    "                        torch.cuda.empty_cache()\n"
+    "                    self._model = self._load_model(AutoModel, base_load_kwargs)\n"
+    "                    self.device = \"cpu\"\n"
+    "                    load_kwargs = dict(base_load_kwargs)\n"
+    "            else:\n"
+    "                self.load_warning = f\"CUDA embedder load failed, falling back to CPU: {type(exc).__name__}: {exc}\"\n"
+    "                self._report(self.load_warning)\n"
+    "                if torch.cuda.is_available():\n"
+    "                    torch.cuda.empty_cache()\n"
+    "                self._model = self._load_model(AutoModel, base_load_kwargs)\n"
+    "                self.device = \"cpu\"\n"
+    "                load_kwargs = dict(base_load_kwargs)\n",
+)
+# <QUBITZ_VARIANT_SECTION:wrapper:071>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b14c1c5d76aadcb5>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6bd555664d169480>
+if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_NO_PROGRESS_OLD) != 1:
+    raise RuntimeError("Embedded model-loop progress state block was not found exactly once.")
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    _EMBEDDED_NO_PROGRESS_OLD,
+    _EMBEDDED_NO_PROGRESS_NEW,
+)
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c1590ddcb3362bdf>
+# <QUBITZ_SHARED_REFERENCE:wrapper:43f02116a852d15f>
+if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_TOOL_PROGRESS_OLD) != 1:
+    raise RuntimeError("Embedded tool-progress reset block was not found exactly once.")
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    _EMBEDDED_TOOL_PROGRESS_OLD,
+    _EMBEDDED_TOOL_PROGRESS_NEW,
+)
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:46df6186d4b86338>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c6f7ce2086379080>
+if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_EMPTY_STEP_OLD) != 1:
+    raise RuntimeError("Embedded empty model-step recovery block was not found exactly once.")
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    _EMBEDDED_EMPTY_STEP_OLD,
+    _EMBEDDED_EMPTY_STEP_NEW,
+)
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b8afc08a74689aad>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7eb73c26733fad18>
+if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_POWERSHELL_LAUNCH_OLD) != 1:
+    raise RuntimeError("Embedded llama-server PowerShell launch block was not found exactly once.")
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    _EMBEDDED_POWERSHELL_LAUNCH_OLD,
+    _EMBEDDED_POWERSHELL_LAUNCH_NEW,
+)
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:216031618ccf2637>
+# <QUBITZ_SHARED_REFERENCE:wrapper:942448bd9f13cec9>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7929c6e8fd1a866e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d2d24a34521f01d5>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:baa99c6f64f3167a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b3011b0052a0b913>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d544773292afdd65>
+if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_UNTRUSTED_CONTEXT_OLD) != 1:
+    raise RuntimeError("Embedded retrieval context formatter was not found exactly once.")
+_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
+    _EMBEDDED_UNTRUSTED_CONTEXT_OLD,
+    _EMBEDDED_UNTRUSTED_CONTEXT_NEW,
+)
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9fb6c337a3530112>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:072>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9d377e345b19fdc2>
+
+
+# <QUBITZ_VARIANT_SECTION:wrapper:073>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2b0ca5217ec5a222>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:074>
+# <QUBITZ_SHARED_REFERENCE:wrapper:988b67ebaaf91df7>
+# <QUBITZ_VARIANT_SECTION:wrapper:075>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bba31f13818b0f49>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4c06e499e4b6db83>
+# <QUBITZ_VARIANT_SECTION:wrapper:076>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2ca2fbe9bec8b189>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b7f5d070bc676e13>
+
+
+class LocalOnlyApp:
+    def __init__(self, base_module_name: str, wrapper_script: str, display_name: str) -> None:
+# <QUBITZ_SHARED_REFERENCE:wrapper:15e13a0a21b67e14>
+# <QUBITZ_SHARED_REFERENCE:wrapper:133889a3ef794edb>
+# <QUBITZ_SHARED_REFERENCE:wrapper:68b048950d18604b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b4763811cb2a4b48>
+# <QUBITZ_VARIANT_SECTION:wrapper:077>
+        _patch_local_only_dependencies(self.base)
+        _patch_streaming_chat(self.base)
+        _patch_harness_loader(self.base)
+# <QUBITZ_VARIANT_SECTION:wrapper:078>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d0db4e40ed013c5b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c2500c7d362dc95c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:8c090325570950b5>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3f45572dab27e55d>
+
+    def _build_agent_runner_class(self) -> type[Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:a6983c25ad70030e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:087e5622fe68f979>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ae0716a3c70f6fdd>
+
+        class EnhancedAgentRunner(base.AgentRunner):
+# <QUBITZ_SHARED_REFERENCE:wrapper:b71df45687e88c20>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3d62fbc36d9d127d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9d93af6603270856>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c93ba6fdd97540f2>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:43cea638744211e8>
+
+            def _is_retryable_final_answer(self, prompt: str, answer: str) -> bool:
+# <QUBITZ_SHARED_REFERENCE:wrapper:4e5f9fd64144c416>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1eeb7772bca2cfa5>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5846df1e76434e88>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f924ace15a3afbec>
+# <QUBITZ_SHARED_REFERENCE:wrapper:0c3be322d53e2d20>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3ebe23116386b347>
+# <QUBITZ_SHARED_REFERENCE:wrapper:36f28ba0c3c806a4>
+# <QUBITZ_VARIANT_SECTION:wrapper:079>
+                    return False
+# <QUBITZ_SHARED_REFERENCE:wrapper:b24361b0f9c12450>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a454e2246f6c6bfd>
+
+            def _retry_step_cap_for_failed_answer(self, prompt: str, answer: str) -> tuple[int | None, str]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:ce071a93ec1a80ce>
+# <QUBITZ_SHARED_REFERENCE:wrapper:61d7b5d51e86369d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:36f28ba0c3c806a4>
+# <QUBITZ_VARIANT_SECTION:wrapper:080>
+                    return SIMPLE_DIRECT_QUESTION_RETRY_STEP_CAP, "simple direct question"
+# <QUBITZ_VARIANT_SECTION:wrapper:081>
+                    return FOREGROUND_EXISTING_SCRIPT_RETRY_STEP_CAP, "foreground existing-entrypoint task"
+# <QUBITZ_SHARED_REFERENCE:wrapper:d70f23890fe371ff>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:443dea6e58e42f48>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b43534f7e1bda6ed>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bcd6b5b0a4eac2fb>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bce43450084319bd>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:31317a6040448fd1>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6da0b429c6932d5d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d7e31d354c08fe66>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:082>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9c6d4fb28d83aff1>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:083>
+                scores = {
+# <QUBITZ_VARIANT_SECTION:wrapper:084>
+                }
+# <QUBITZ_VARIANT_SECTION:wrapper:085>
+                if max(scores.values()) <= 0:
+# <QUBITZ_VARIANT_SECTION:wrapper:086>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f915fbe8363134c6>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:087>
+                features, entrypoint = self._extract_route_features(prompt)
+                scores = self._score_routes(features)
+                selected_route = max(
+                    scores.items(),
+                    key=lambda item: (
+                        item[1],
+# <QUBITZ_VARIANT_SECTION:wrapper:088>
+                    ),
+                )[0]
+# <QUBITZ_VARIANT_SECTION:wrapper:089>
+                    entry_label = str((entrypoint or {}).get("label", "") or "existing entrypoint")
+# <QUBITZ_VARIANT_SECTION:wrapper:090>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:091>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:092>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:093>
+                    return (
+                        "Wrapper route: simple_answer. Hard-skip repository retrieval, embeddings, local plugins or skills, "
+                        "and MCP tool loading unless the direct answer path fails."
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:094>
+                    return (
+# <QUBITZ_VARIANT_SECTION:wrapper:095>
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:096>
+                    return "Wrapper route: read_only_workspace. Prefer focused repository context and read-only inspection first."
+# <QUBITZ_VARIANT_SECTION:wrapper:097>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0b5d68a63eee6be8>
+# <QUBITZ_VARIANT_SECTION:wrapper:098>
+                self,
+                prompt: str,
+                callback: Callable[[str, str], None] | None,
+# <QUBITZ_VARIANT_SECTION:wrapper:099>
+                entrypoint = self._resolve_existing_entrypoint_for_prompt(prompt)
+                if entrypoint is None:
+# <QUBITZ_VARIANT_SECTION:wrapper:100>
+                entrypoint_label = str(entrypoint.get("label", "") or "entrypoint")
+                if str(entrypoint.get("origin", "") or "") == "implicit_discovery":
+                    self._emit(
+                        callback,
+                        "status",
+                        f"Wrapper direct path: discovered workspace entrypoint {entrypoint_label} from the project-use prompt.",
+                    )
+                self._emit(
+                    callback,
+                    "status",
+                    f"Wrapper direct path: running existing entrypoint {entrypoint_label}.",
+                )
+# <QUBITZ_VARIANT_SECTION:wrapper:101>
+                try:
+                    entrypoint_kind = str(entrypoint.get("kind", ""))
+                    if entrypoint_kind == "file":
+                        script_path = Path(str(entrypoint["path"]))
+                        suffix = script_path.suffix.lower()
+                        if suffix == ".py":
+# <QUBITZ_VARIANT_SECTION:wrapper:102>
+                            if direct_python is None:
+                                self._emit(
+                                    callback,
+                                    "status",
+                                    (
+                                        "Wrapper direct path: no compatible workspace-local Python interpreter was found "
+                                        "for this session; falling back to the model loop."
+                                    ),
+                                )
+# <QUBITZ_VARIANT_SECTION:wrapper:103>
+                            interpreter_path, launch_mode = direct_python
+# <QUBITZ_VARIANT_SECTION:wrapper:104>
+                            if launch_mode == "powershell":
+                                command = (
+                                    f"& {_powershell_single_quote(_workspace_relative_command_path(base, self.workspace, interpreter_path))} "
+                                    f"{_powershell_single_quote(_workspace_relative_command_path(base, self.workspace, script_path))}"
+                                )
+                                result = _run_powershell_command(
+# <QUBITZ_VARIANT_SECTION:wrapper:105>
+                                )
+# <QUBITZ_VARIANT_SECTION:wrapper:106>
+                            else:
+                                relative_text = str(base.relative_path(script_path, self.workspace))
+                                command = f"{_shell_quote_path(interpreter_path)} {_shell_quote_path(relative_text)}"
+                                result = _run_shell_command(
+# <QUBITZ_VARIANT_SECTION:wrapper:107>
+                                )
+# <QUBITZ_VARIANT_SECTION:wrapper:108>
+                        elif suffix == ".ps1":
+                            command = f"& {_powershell_single_quote(_workspace_relative_command_path(base, self.workspace, script_path))}"
+                            result = _run_powershell_command(
+# <QUBITZ_VARIANT_SECTION:wrapper:109>
+                            )
+# <QUBITZ_VARIANT_SECTION:wrapper:110>
+                        elif suffix == ".sh":
+                            relative_text = str(base.relative_path(script_path, self.workspace))
+                            command = (
+                                f"bash {_shell_quote_path(relative_text)}"
+                                if shutil.which("bash") is not None or os.name != "nt"
+                                else _shell_quote_path(relative_text)
+                            )
+                            result = _run_shell_command(
+# <QUBITZ_VARIANT_SECTION:wrapper:111>
+                            )
+# <QUBITZ_VARIANT_SECTION:wrapper:112>
+                        elif suffix in {".bat", ".cmd"}:
+                            command = _workspace_relative_command_path(base, self.workspace, script_path)
+                            result = _run_shell_command(
+# <QUBITZ_VARIANT_SECTION:wrapper:113>
+                            )
+# <QUBITZ_VARIANT_SECTION:wrapper:114>
+                        else:
+# <QUBITZ_VARIANT_SECTION:wrapper:115>
+                    elif entrypoint_kind in {"uv_run", "package_script", "make_target"}:
+                        command = str(entrypoint.get("command", "")).strip()
+                        if not command:
+# <QUBITZ_VARIANT_SECTION:wrapper:116>
+                        result = _run_shell_command(
+# <QUBITZ_VARIANT_SECTION:wrapper:117>
+                        )
+# <QUBITZ_VARIANT_SECTION:wrapper:118>
+                    else:
+# <QUBITZ_VARIANT_SECTION:wrapper:119>
+                except Exception as exc:
+                    self._emit(
+                        callback,
+                        "status",
+                        (
+                            f"Wrapper direct path: existing entrypoint {entrypoint_label} failed before completion "
+                            f"({type(exc).__name__}: {exc}); falling back to the model loop."
+                        ),
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:120>
+                _record_direct_entrypoint_execution(
+                    base, self.workspace, entrypoint, result,
+                    "powershell" if "return_code" in result else "shell",
+                    interpreter_path if entrypoint_kind == "file" and suffix == ".py" else None,
+                )
+                return_code = int(result.get("return_code", result.get("returncode", 0)))
+# <QUBITZ_VARIANT_SECTION:wrapper:121>
+                browser_helper_path: Path | None = None
+                browser_helper_text = ""
+                for candidate in _collect_browser_helper_candidates(self.workspace):
+                    candidate_key = str(candidate.resolve())
+                    mtime = candidate.stat().st_mtime
+                    if candidate_key not in before_helpers or mtime > before_helpers[candidate_key]:
+                        browser_helper_path = candidate
+                        break
+                if browser_helper_path is None:
+                    for candidate in _collect_browser_helper_candidates(self.workspace):
+                        with suppress(Exception):
+                            candidate_text = candidate.read_text(encoding="utf-8", errors="ignore")
+                            if START_PROCESS_URL_PATTERN.search(candidate_text):
+                                browser_helper_path = candidate
+                                browser_helper_text = candidate_text
+                                break
+# <QUBITZ_VARIANT_SECTION:wrapper:122>
+                    with suppress(Exception):
+# <QUBITZ_VARIANT_SECTION:wrapper:123>
+                changed_artifacts = _changed_text_artifacts(base, self.workspace, before_artifacts)
+# <QUBITZ_VARIANT_SECTION:wrapper:124>
+                browser_urls = _extract_start_process_urls(browser_helper_text)
+# <QUBITZ_VARIANT_SECTION:wrapper:125>
+                evidence_texts.extend(text for _, text in changed_artifacts)
+# <QUBITZ_VARIANT_SECTION:wrapper:126>
+                seen_rows: set[str] = set()
+                for evidence_text in evidence_texts:
+                    for row in _extract_structured_result_rows(evidence_text):
+                        normalized_row = _normalize_result_row(dict(row))
+                        key = json.dumps(normalized_row, ensure_ascii=True, sort_keys=True, default=str)
+                        if key not in seen_rows:
+                            seen_rows.add(key)
+# <QUBITZ_VARIANT_SECTION:wrapper:127>
+                output_urls = _validated_external_urls(
+                    [
+                        *browser_urls,
+                        *(url for evidence_text in evidence_texts for url in _extract_external_urls(evidence_text)),
+                    ],
+# <QUBITZ_VARIANT_SECTION:wrapper:128>
+                )
+# <QUBITZ_VARIANT_SECTION:wrapper:129>
+                requires_url = requested_browser_open or "url" in requested_fields
+# <QUBITZ_VARIANT_SECTION:wrapper:130>
+                    target_count,
+                )
+                reported_opened_urls = _reported_entrypoint_browser_urls(
+                    entrypoint,
+# <QUBITZ_VARIANT_SECTION:wrapper:131>
+                    browser_helper_text,
+                    output_urls,
+                    requested_browser_open=requested_browser_open,
+                    return_code=return_code,
+                )
+# <QUBITZ_VARIANT_SECTION:wrapper:132>
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:133>
+                ):
+                    browser_result = _run_inline_browser_open(
+                        base,
+                        self.workspace,
+# <QUBITZ_VARIANT_SECTION:wrapper:134>
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:135>
+                broker = _TOOL_CALL_CONTEXT.get()
+                if broker is not None and hasattr(broker, "evidence"):
+# <QUBITZ_VARIANT_SECTION:wrapper:136>
+                    count_requirement = _requested_count_postcondition(prompt)
+# <QUBITZ_VARIANT_SECTION:wrapper:137>
+                        categories.append("created_outputs")
+                    if browser_open_ran:
+                        categories.append("opened_urls")
+                    broker.evidence.append(
+                        {
+                            "turn_id": broker.turn_id,
+                            "tool": "wrapper_direct_existing_entrypoint",
+# <QUBITZ_VARIANT_SECTION:wrapper:138>
+                            "categories": categories,
+                            "paths": [str(path) for path, _ in changed_artifacts],
+# <QUBITZ_VARIANT_SECTION:wrapper:139>
+                            "return_code": return_code,
+# <QUBITZ_VARIANT_SECTION:wrapper:140>
+                        }
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:141>
+                    )
+                    self._emit(
+                        callback,
+                        "status",
+# <QUBITZ_VARIANT_SECTION:wrapper:142>
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:143>
+                self._emit(
+                    callback,
+                    "status",
+                    (
+# <QUBITZ_VARIANT_SECTION:wrapper:144>
+                    ),
+                )
+# <QUBITZ_VARIANT_SECTION:wrapper:145>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:476ae96ae26ec25c>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:146>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a385db412077916b>
+# <QUBITZ_VARIANT_SECTION:wrapper:147>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f7779b681e9d6455>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:51844bccc6ccd278>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d93136817e8f5cdd>
+
+            def _select_task_guidance(self, prompt: str) -> str:
+# <QUBITZ_SHARED_REFERENCE:wrapper:4da998ce0252e10e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:36f28ba0c3c806a4>
+# <QUBITZ_VARIANT_SECTION:wrapper:148>
+                    return (
+# <QUBITZ_VARIANT_SECTION:wrapper:149>
+                    )
+# <QUBITZ_VARIANT_SECTION:wrapper:150>
+                    capabilities = self._runtime_capabilities()
+                    guidance = [
+# <QUBITZ_VARIANT_SECTION:wrapper:151>
+                        "- Prefer the named existing entrypoint before exploratory tool use.",
+                        "- Use the wrapper-detected execution facts below; do not invent a different environment story.",
+                    ]
+                    if capabilities.get("workspace_has_wsl_python"):
+                        guidance.append("- This workspace has a WSL project interpreter at .venv/bin/python; prefer that path first.")
+                    if capabilities.get("can_run_windows_project_python"):
+                        guidance.append("- This workspace also has a Windows project interpreter that is executable from the current session.")
+                    if self._wsl_windows_interop_unavailable():
+                        guidance.append(
+                            "- WSL Windows-executable interop is unavailable here, so do not use powershell.exe, Activate.ps1, or Windows .exe paths."
+                        )
+                    elif self._wsl_windows_interop_available():
+                        guidance.append(
+                            "- WSL Windows-executable interop is available here, but still prefer the shortest wrapper-approved path."
+                        )
+                    guidance.extend(
+                        [
+# <QUBITZ_VARIANT_SECTION:wrapper:152>
+                            "- Do not create a temporary helper script when an existing workspace entrypoint already covers the task unless the direct entrypoint path has already failed.",
+# <QUBITZ_VARIANT_SECTION:wrapper:153>
+                            "- Do not claim the task is complete unless you actually have the requested final result in hand.",
+# <QUBITZ_VARIANT_SECTION:wrapper:154>
+                        ]
+                    )
+                    return "\n".join(guidance)
+# <QUBITZ_VARIANT_SECTION:wrapper:155>
+                    return (
+                        "- This is a read-only workspace task.\n"
+# <QUBITZ_VARIANT_SECTION:wrapper:156>
+                        "- Return only the requested result, concisely.\n"
+                        "- Do not add reasoning, assumptions, evidence-status, or next-step sections unless the user requested them.\n"
+# <QUBITZ_VARIANT_SECTION:wrapper:157>
+                    )
+# <QUBITZ_SHARED_REFERENCE:wrapper:9551ec4557391d9c>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3ba5def644d68274>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:31140d944fc39c8d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f798de270cffa93d>
+
+            def _prioritize_tools_for_prompt(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:307963e72323124b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:36f28ba0c3c806a4>
+# <QUBITZ_VARIANT_SECTION:wrapper:158>
+                    return []
+# <QUBITZ_VARIANT_SECTION:wrapper:159>
+                    if self._build_read_only_workspace_context(prompt):
+                        return []
+                    read_only_names = {"read_file", "list_files", "search_text"}
+                    return [
+                        tool
+                        for tool in tools
+                        if self._tool_name(tool) in read_only_names
+                    ]
+# <QUBITZ_VARIANT_SECTION:wrapper:160>
+                    return self._filter_tools_by_intent(prompt, tools)
+# <QUBITZ_VARIANT_SECTION:wrapper:161>
+# <QUBITZ_SHARED_REFERENCE:wrapper:48e15372d88ae9ee>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9d291e7cb2d5f1d9>
+# <QUBITZ_SHARED_REFERENCE:wrapper:339758512bfb71d7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5b0aa4a5bb7ed4f1>
+# <QUBITZ_VARIANT_SECTION:wrapper:162>
+                    "read_file",
+                    "list_files",
+                    "search_text",
+                    "run_project_command",
+# <QUBITZ_VARIANT_SECTION:wrapper:163>
+                }
+                if powershell_available_for_workspace:
+# <QUBITZ_VARIANT_SECTION:wrapper:164>
+                    "start_project_mcp_server",
+                    "list_project_mcp_tools",
+                    "stop_project_mcp_server",
+                    "read_project_mcp_server_log",
+# <QUBITZ_VARIANT_SECTION:wrapper:165>
+                }
+# <QUBITZ_VARIANT_SECTION:wrapper:166>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5cd9290353a935b4>
+# <QUBITZ_SHARED_REFERENCE:wrapper:41c4ef4a74f34fda>
+                for index, tool in enumerate(tools):
+                    name = self._tool_name(tool)
+# <QUBITZ_VARIANT_SECTION:wrapper:167>
+                    if (
+                        not powershell_available_for_workspace
+                        and (name == "run_powershell_command" or name.startswith("sandbox_run_powershell"))
+                    ) or (
+                        interop_unavailable
+                        and name in {
+                            "start_project_mcp_server",
+                            "list_project_mcp_tools",
+                            "stop_project_mcp_server",
+                            "read_project_mcp_server_log",
+                        }
+                    ):
+                        continue
+# <QUBITZ_VARIANT_SECTION:wrapper:168>
+                        bucket = 0
+# <QUBITZ_VARIANT_SECTION:wrapper:169>
+                        bucket = 2
+                    else:
+                        continue
+                    ordered_tools.append(((bucket, index), tool))
+# <QUBITZ_SHARED_REFERENCE:wrapper:8e463cef27c1a9ea>
+# <QUBITZ_SHARED_REFERENCE:wrapper:11ff782e81cf5202>
+
+            def __init__(self, config: Any) -> None:
+# <QUBITZ_SHARED_REFERENCE:wrapper:1b07865a0dc6e13c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6554be0ccfa6a4ce>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d7017ee2459600da>
+# <QUBITZ_SHARED_REFERENCE:wrapper:82423d599bc5a472>
+# <QUBITZ_SHARED_REFERENCE:wrapper:cadc0bd7063b4181>
+# <QUBITZ_SHARED_REFERENCE:wrapper:021ff185289f20a3>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ed67e8e1c2c1bc19>
+# <QUBITZ_SHARED_REFERENCE:wrapper:61fddf32cf266ba1>
+# <QUBITZ_SHARED_REFERENCE:wrapper:eac21e061e0f1ed2>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bf70f0fcbc942df5>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6c362e4af5ed9520>
+# <QUBITZ_VARIANT_SECTION:wrapper:170>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a2418d4aa287d4a5>
+# <QUBITZ_VARIANT_SECTION:wrapper:171>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a1491a57e5b66abe>
+# <QUBITZ_VARIANT_SECTION:wrapper:172>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bcc08ad6f05bd49b>
+
+            def _run_sync_locked(
+                self,
+                prompt: str,
+                callback: Callable[[str, str], None] | None = None,
+            ) -> str:
+# <QUBITZ_SHARED_REFERENCE:wrapper:a119d053431ba9f8>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7363a688bcff33ef>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ad3b49cb78b0f528>
+
+                def timed_callback(kind: str, message: str) -> None:
+                    if kind == "status":
+                        if message.startswith("Wrapper route:") or "asking for clarification" in message:
+                            mark("route_ready")
+                        if message.startswith(("Preparing repository context", "Retrieval cache", "Loaded cached retrieval")):
+                            mark("retrieval_start")
+                        if message.startswith(("Loading embedder ", "Restoring the embedder to CUDA")):
+                            mark("embedder_start")
+                        if message.startswith(("Embedder active on ", "Keeping the embedder on CPU")):
+                            mark("embedder_ready")
+                        if message.startswith("Encoding ") and " query chunk(s)" in message:
+                            mark("query_embedding_start")
+                        if message.startswith("Repository context ready"):
+                            mark("retrieval_ready")
+                            mark("query_embedding_ready")
+                        if message.startswith("Detecting the local llama.cpp"):
+                            mark("model_ready_start")
+                        if message.startswith("llama.cpp model ready:"):
+                            mark("model_ready")
+# <QUBITZ_VARIANT_SECTION:wrapper:173>
+                        if message.startswith("Model step 1/"):
+                            mark("first_model_step")
+                    elif kind in {"tool", "assistant_delta"}:
+                        mark("first_model_response")
+# <QUBITZ_SHARED_REFERENCE:wrapper:0884b2fdeb15b659>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:37334165a32d2060>
+
+            async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
+# <QUBITZ_SHARED_REFERENCE:wrapper:122dce7d3a46746e>
+# <QUBITZ_VARIANT_SECTION:wrapper:174>
+                    self._emit(
+                        callback,
+                        "status",
+                        "The project-use request lacks a concrete result or target; skipping retrieval and asking for clarification.",
+                    )
+                    return PROJECT_GOAL_CLARIFICATION
+# <QUBITZ_VARIANT_SECTION:wrapper:175>
+                self._local_plugin_context = (
+# <QUBITZ_VARIANT_SECTION:wrapper:176>
+                    else "None"
+                )
+# <QUBITZ_SHARED_REFERENCE:wrapper:d143d5ba66bf408f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:605aa977a18cf256>
+                if self._local_plugin_context != "None":
+                    self._emit(callback, "status", "Activated local plugin guidance from .qubitz/plugins.")
+                self._emit(
+                    callback,
+                    "status",
+                    (
+                        "Local-only mode active: use local runtimes and tools, and do not rely on paid cloud "
+                        "services, hosted inference APIs, or remote execution."
+                    ),
+                )
+# <QUBITZ_VARIANT_SECTION:wrapper:177>
+# <QUBITZ_SHARED_REFERENCE:wrapper:39dc4f62001be912>
+# <QUBITZ_SHARED_REFERENCE:wrapper:0ca93fb1512e960d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5303ff8558c58042>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5475c800348281d0>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e7465bb07f003803>
+# <QUBITZ_SHARED_REFERENCE:wrapper:dd4fbc8dac1d5d60>
+# <QUBITZ_SHARED_REFERENCE:wrapper:49b609a77e3da93b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:4ef122433f7213c3>
+# <QUBITZ_VARIANT_SECTION:wrapper:178>
+                    class _DisabledSkillRegistry:
+                        warnings: list[str] = []
+
+                        def count(self) -> int:
+                            return 0
+
+                        def select_for_prompt(self, _prompt: str) -> list[Any]:
+                            return []
+
+                        def render_active_context(self, _active_skills: list[Any]) -> str:
+                            return ""
+
+                    def _filtered_emit(
+                        callback_arg: Callable[[str, str], None] | None,
+                        kind: str,
+                        message: str,
+                    ) -> None:
+                        if kind == "status":
+                            if message == "Preparing repository context before loading the generation model to keep more VRAM free for embeddings.":
+                                return
+                            if " local skill(s) from .skills." in message:
+                                return
+                            if message.startswith("Retrieval GPU policy:"):
+                                return
+                            if message.startswith("Retrieval backend preference:"):
+                                return
+                            if message.startswith("Adaptive repository context budget:"):
+                                return
+                            if message == "Skipping repository retrieval for this explicit file-read request so the model can inspect the target file with read_file first.":
+                                message = "Repository retrieval and memory-context preparation were skipped for this simple direct question."
+                            elif message == "Memory context prepared; repository retrieval was skipped.":
+                                return
+                        return original_emit(callback_arg, kind, message)
+
+                    self._simple_direct_mode = True
+                    self._local_plugin_context = "None"
+# <QUBITZ_VARIANT_SECTION:wrapper:179>
+                    original_format_context = self.retriever.format_context
+                    self.skills = _DisabledSkillRegistry()
+                    self._emit = _filtered_emit
+                    self._should_skip_repo_retrieval = lambda _prompt: True
+                    self.memory.build_context = lambda _prompt: ""
+                    self.retriever.format_context = lambda _prompt: (
+                        "Repository retrieval was intentionally skipped because this is a simple direct question "
+                        "that does not require workspace context."
+                    )
+                    self._tool_definitions_cache = []
+                    self._tool_count_cache = 0
+                elif foreground_existing_script_task:
+# <QUBITZ_VARIANT_SECTION:wrapper:180>
+                    self._tool_definitions_cache = None
+                    self._tool_count_cache = 0
+                elif read_only_workspace_task:
+                    read_only_context = self._build_read_only_workspace_context(user_prompt)
+                    if read_only_context:
+                        class _DisabledSkillRegistry:
+                            warnings: list[str] = []
+
+                            def count(self) -> int:
+                                return 0
+
+                            def select_for_prompt(self, _prompt: str) -> list[Any]:
+                                return []
+
+                            def render_active_context(self, _active_skills: list[Any]) -> str:
+                                return ""
+
+                        def _filtered_emit(
+                            callback_arg: Callable[[str, str], None] | None,
+                            kind: str,
+                            message: str,
+                        ) -> None:
+                            if kind == "status":
+                                if message == "Preparing repository context before loading the generation model to keep more VRAM free for embeddings.":
+                                    message = "Wrapper read-only path prepared direct file context without embedding generation."
+                                elif " local skill(s) from .skills." in message or message.startswith("Retrieval GPU policy:") or message.startswith("Retrieval backend preference:") or message.startswith("Adaptive repository context budget:"):
+                                    return
+                                elif message == "Repository and memory context prepared.":
+                                    message = "Read-only file context prepared; memory context was skipped."
+                            return original_emit(callback_arg, kind, message)
+
+                        self._emit(
+                            callback,
+                            "status",
+                            "Wrapper read-only path: using explicit file excerpts and skipping embeddings, local skills, memory context, and MCP tool loading.",
+                        )
+# <QUBITZ_VARIANT_SECTION:wrapper:181>
+                        original_format_context = self.retriever.format_context
+                        self.skills = _DisabledSkillRegistry()
+                        self._emit = _filtered_emit
+                        self._should_skip_repo_retrieval = lambda _prompt: False
+                        self.memory.build_context = lambda _prompt: ""
+                        self.retriever.format_context = lambda _prompt: read_only_context
+                        self._tool_definitions_cache = []
+                        self._tool_count_cache = 0
+                    else:
+                        self._emit(
+                            callback,
+                            "status",
+                            "Wrapper read-only path found no explicit readable file target; falling back to focused retrieval.",
+                        )
+# <QUBITZ_VARIANT_SECTION:wrapper:182>
+
+                if not bypass_retrieval and not foreground_existing_script_task and not read_only_workspace_task:
+                    staged_context = self._build_focused_file_context(user_prompt)
+                    staged_label = "focused-file"
+                    if not staged_context:
+                        staged_context = self._build_metadata_or_lexical_context(user_prompt)
+                        staged_label = "metadata/lexical"
+                    if staged_context:
+                        if staged_label == "focused-file" and self._explicit_file_scope_is_sufficient(user_prompt):
+                            self._should_skip_repo_retrieval = lambda _prompt: True
+                            self.memory.build_context = lambda _prompt: staged_context
+                            self._emit(
+                                callback,
+                                "status",
+                                "Wrapper explicit-file path: all named files and test targets are available; "
+                                "using direct local context and skipping semantic retrieval.",
+                            )
+                        else:
+                            original_format_context = self.retriever.format_context
+                            self.retriever.format_context = lambda _prompt: staged_context
+                            self._emit(
+                                callback,
+                                "status",
+                                f"Wrapper {staged_label} path: using verified local context before semantic retrieval.",
+                            )
+
+# <QUBITZ_VARIANT_SECTION:wrapper:183>
+                async def _prompt_aware_list_tools(host_self: Any) -> list[Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:9ee3f55743e83cf8>
+# <QUBITZ_VARIANT_SECTION:wrapper:184>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:185>
+                self._emit(callback, "status", _sampling_profile_status(sampling_profile))
+# <QUBITZ_SHARED_REFERENCE:wrapper:6b5d29fe2e617795>
+                self._filter_cached_tool_definitions(prompt)
+                base.set_qubitz_stream_callback(
+                    lambda delta: self._emit(callback, "assistant_delta", delta)
+                )
+# <QUBITZ_VARIANT_SECTION:wrapper:186>
+                try:
+# <QUBITZ_VARIANT_SECTION:wrapper:187>
+                    answer = await super()._run_async(prompt, callback)
+# <QUBITZ_VARIANT_SECTION:wrapper:188>
+                    if retry_step_cap is not None:
+# <QUBITZ_VARIANT_SECTION:wrapper:189>
+                        self._emit(
+                            callback,
+                            "status",
+                            f"First {retry_label} attempt did not produce a usable final answer; retrying once with step cap {retry_step_cap}.",
+                        )
+                        self._prompt_step_retry_override = retry_step_cap
+# <QUBITZ_VARIANT_SECTION:wrapper:190>
+                        answer = await super()._run_async(prompt, callback)
+# <QUBITZ_VARIANT_SECTION:wrapper:191>
+                            self._emit(
+                                callback,
+                                "status",
+                                "Fast simple direct question paths did not produce a usable final answer; continuing with an unlimited fallback path until a final answer is produced.",
+                            )
+                            self._prompt_step_retry_override = -1
+# <QUBITZ_VARIANT_SECTION:wrapper:192>
+                            answer = await super()._run_async(prompt, callback)
+# <QUBITZ_VARIANT_SECTION:wrapper:193>
+                    return answer
+# <QUBITZ_VARIANT_SECTION:wrapper:194>
+                finally:
+                    base.set_qubitz_stream_callback(None)
+                    base.set_qubitz_reasoning_budget(None)
+                    base.set_qubitz_reasoning_mode(None)
+                    base.MCPHost.list_tools = original_list_tools
+# <QUBITZ_VARIANT_SECTION:wrapper:195>
+                    self._tool_definitions_cache = original_cache
+                    self._tool_count_cache = original_count
+                    if original_format_context is not None:
+                        self.retriever.format_context = original_format_context
+                    self.skills = original_skills
+                    self._emit = original_emit
+                    self._should_skip_repo_retrieval = original_should_skip_repo_retrieval
+                    self.memory.build_context = original_memory_build_context
+# <QUBITZ_VARIANT_SECTION:wrapper:196>
+                    self._local_plugin_context = "None"
+                    self._task_case_guidance = ""
+# <QUBITZ_VARIANT_SECTION:wrapper:197>
+                    self._runtime_fact_context = ""
+                    self._existing_script_preflight_context = ""
+# <QUBITZ_VARIANT_SECTION:wrapper:198>
+                    self._prompt_step_retry_override = None
+# <QUBITZ_VARIANT_SECTION:wrapper:199>
+
+            def _system_prompt(
+                self,
+                memory_context: str,
+                active_skill_context: str = "",
+                history_summary: str = "",
+            ) -> str:
+# <QUBITZ_SHARED_REFERENCE:wrapper:48609acd2870e1f8>
+# <QUBITZ_SHARED_REFERENCE:wrapper:63ec0add5e5e81dd>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b1a7885ac7485a64>
+# <QUBITZ_VARIANT_SECTION:wrapper:200>
+                if memory_context:
+# <QUBITZ_VARIANT_SECTION:wrapper:201>
+                if active_skill_context:
+# <QUBITZ_VARIANT_SECTION:wrapper:202>
+                if history_summary:
+# <QUBITZ_VARIANT_SECTION:wrapper:203>
+                if effort_section:
+                    combined = f"{combined}\n\nAdditional effort guidance:\n{effort_section}"
+# <QUBITZ_SHARED_REFERENCE:wrapper:75f43c7067dc7cd4>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:376f2be1e42d8ed9>
+
+    def _build_gui_class(self) -> type[Any]:
+# <QUBITZ_SHARED_REFERENCE:wrapper:a6983c25ad70030e>
+
+        class EnhancedGUI(base.QubitzGUI):
+# <QUBITZ_SHARED_REFERENCE:wrapper:5efc369a7ca15020>
+
+            def __init__(self, config: Any) -> None:
+# <QUBITZ_SHARED_REFERENCE:wrapper:6554be0ccfa6a4ce>
+# <QUBITZ_SHARED_REFERENCE:wrapper:7ad653e4860bc1f7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:76f1d8b47d37c6c7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2d2da268ae9abd40>
+# <QUBITZ_SHARED_REFERENCE:wrapper:0d2690481e63e832>
+# <QUBITZ_SHARED_REFERENCE:wrapper:86f16d578233587c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:888eccca46e00927>
+# <QUBITZ_SHARED_REFERENCE:wrapper:45eea7b37b1418ac>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c775e9077635576e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:24109c3936f299e4>
+# <QUBITZ_SHARED_REFERENCE:wrapper:10a6271a36f4d100>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1dd5f426692931ee>
+# <QUBITZ_SHARED_REFERENCE:wrapper:00978806189c9be3>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3c7f82f181f6b0aa>
+# <QUBITZ_SHARED_REFERENCE:wrapper:16a5d8f5d172ccb0>
+# <QUBITZ_SHARED_REFERENCE:wrapper:4374236293b6ed65>
+# <QUBITZ_SHARED_REFERENCE:wrapper:138fce16c5c768ea>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d55cc89c3638d84a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:dd908efe5d18847c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5e4d05b887addc87>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d7bab2772f57b7db>
+# <QUBITZ_SHARED_REFERENCE:wrapper:cbd8fd88b247d3cf>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ec0dc628d19d21dc>
+# <QUBITZ_VARIANT_SECTION:wrapper:204>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e3a6ed0443c04655>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5807bb100f2eaa96>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4c2aaf7360be9df6>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:205>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c84f98dc4227b636>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e3eece16446de7bf>
+# <QUBITZ_VARIANT_SECTION:wrapper:206>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0c343a8101e7250c>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a189d09b35faa8da>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:26104f41156c652e>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a3edcefdd49c8380>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ca00275669f84d7f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:819ea201c20b8a05>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:351a83f0b1901fb1>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ea78eea7e79e4bb9>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4bca052fbed402a4>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:54c02752758bc5fd>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6a13891e7284ba2f>
+
+            def _sync_runtime_settings(self) -> None:
+# <QUBITZ_SHARED_REFERENCE:wrapper:4d00c3b46fff8939>
+# <QUBITZ_VARIANT_SECTION:wrapper:207>
+# <QUBITZ_SHARED_REFERENCE:wrapper:309649e1dfeeef1b>
+
+            def _change_workspace(self) -> None:
+# <QUBITZ_VARIANT_SECTION:wrapper:208>
+# <QUBITZ_SHARED_REFERENCE:wrapper:08e267eaa88c709a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e17d62764656e918>
+# <QUBITZ_VARIANT_SECTION:wrapper:209>
+
+            def send_prompt(self) -> None:
+# <QUBITZ_SHARED_REFERENCE:wrapper:89d0a1785c9ea198>
+                if raw_prompt:
+                    self._last_user_prompt = raw_prompt
+# <QUBITZ_VARIANT_SECTION:wrapper:210>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a3cdb5a0734ba304>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f74e1422b38defad>
+# <QUBITZ_SHARED_REFERENCE:wrapper:20a3933281360d30>
+# <QUBITZ_SHARED_REFERENCE:wrapper:00d45f82f96dfee9>
+# <QUBITZ_SHARED_REFERENCE:wrapper:86641520338e168b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:39fd93d5ae404953>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:fd29349742ec5f66>
+
+    def _build_config(self, args: Any, workspace: Path) -> Any:
+# <QUBITZ_VARIANT_SECTION:wrapper:211>
+# <QUBITZ_SHARED_REFERENCE:wrapper:64cb6b3cb697d9f9>
+# <QUBITZ_SHARED_REFERENCE:wrapper:12cab3cbf3914965>
+# <QUBITZ_SHARED_REFERENCE:wrapper:49da45d0a141822c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:94332e9bba7f053a>
+        if hasattr(args, "num_ctx"):
+            if "ollama_num_ctx" in getattr(self.base.AgentConfig, "__dataclass_fields__", {}):
+# <QUBITZ_VARIANT_SECTION:wrapper:212>
+            elif "num_ctx" in getattr(self.base.AgentConfig, "__dataclass_fields__", {}):
+# <QUBITZ_VARIANT_SECTION:wrapper:213>
+        if hasattr(args, "num_predict"):
+            if "ollama_num_predict" in getattr(self.base.AgentConfig, "__dataclass_fields__", {}):
+# <QUBITZ_VARIANT_SECTION:wrapper:214>
+            elif "num_predict" in getattr(self.base.AgentConfig, "__dataclass_fields__", {}):
+# <QUBITZ_VARIANT_SECTION:wrapper:215>
+# <QUBITZ_SHARED_REFERENCE:wrapper:905e50d65cf7ff4f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:16085575ed225e9f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:00783fdb61823e18>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bdf9e59c1154a46f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2c3c53f64bdcdfa6>
+# <QUBITZ_VARIANT_SECTION:wrapper:216>
+# <QUBITZ_SHARED_REFERENCE:wrapper:df1c005cbf37fc36>
+# <QUBITZ_SHARED_REFERENCE:wrapper:0dc31218da099e9d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:84e0652a97da3053>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5cd6d78f7c4eaee2>
+
+    def parse_args(self, argv: Sequence[str] | None = None) -> Any:
+# <QUBITZ_SHARED_REFERENCE:wrapper:2d2aa632df0ca7f9>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5e359b54dcb12428>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ea3ed6fb6159538a>
+# <QUBITZ_VARIANT_SECTION:wrapper:217>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2cacfeef015a5707>
+        while index < len(raw_args):
+            arg = raw_args[index]
+# <QUBITZ_VARIANT_SECTION:wrapper:218>
+            if arg == "--thinking-effort":
+                if index + 1 >= len(raw_args):
+                    raise SystemExit("--thinking-effort requires a value.")
+                thinking_effort = _parse_thinking_effort_cli_value(raw_args[index + 1])
+                index += 2
+                continue
+            if arg.startswith("--thinking-effort="):
+                thinking_effort = _parse_thinking_effort_cli_value(arg.split("=", 1)[1])
+                index += 1
+                continue
+            filtered_args.append(arg)
+            index += 1
+# <QUBITZ_SHARED_REFERENCE:wrapper:55d19a9dfe4cdd0d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:fe6e61f30cfae420>
+# <QUBITZ_VARIANT_SECTION:wrapper:219>
+# <QUBITZ_SHARED_REFERENCE:wrapper:902cfea8a19ff7ca>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9ab13a34ecb68b81>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:acb50da25eb55f60>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:54411119717e0b13>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cff24ff97391b55e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5bc2e93db281c2e5>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:50b8451724be16c3>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e6b0be43ce7f45d8>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:45be7d8931cc2be3>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3f86275c73f60692>
+# <QUBITZ_SHARED_REFERENCE:wrapper:cb2bf10a95d61a5c>
+# <QUBITZ_SHARED_REFERENCE:wrapper:671b4dcac51e8b00>
+# <QUBITZ_SHARED_REFERENCE:wrapper:32fd87576aadc34b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:379d44e9e20cfc47>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3774db75553286c9>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8022a3f5b79491bd>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ae278d16157021aa>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2a130d2ae2018a1a>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f4b550366a077069>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8c6e0524d18757d9>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c47a4ff4b6b5df80>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6fea4631ecbc1830>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:49fe20c523cbf44d>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:873942f7d33ec7ef>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5709cb49e5d5d9c9>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7936af4cfd941d00>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cff2f8fcc19d4301>
+# <QUBITZ_VARIANT_SECTION:wrapper:220>
+# <QUBITZ_SHARED_REFERENCE:wrapper:2ca542afe71fc3bc>
+# <QUBITZ_SHARED_REFERENCE:wrapper:8b0bacda5b72640f>
+# <QUBITZ_SHARED_REFERENCE:wrapper:28f1e25312d52f58>
+# <QUBITZ_SHARED_REFERENCE:wrapper:526770224e1b3b64>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a89521222fde4026>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:08f6c451a301fb0f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c6e370d45cdb39bc>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9a704d3378536c7e>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6b6a2895753d9060>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:762bf7508e02332b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:32033b81b2aba0b5>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cd5b9d710ba88e70>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a3442f1a931cee7f>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a46cb110f1132550>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:caf0ee37b0d0ec63>
+
+
+
+class _ToolPermissionBroker:
+# <QUBITZ_SHARED_REFERENCE:wrapper:b26641df7dc79570>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f6f8a6302652cb37>
+# <QUBITZ_SHARED_REFERENCE:wrapper:042b70164e0003e3>
+# <QUBITZ_SHARED_REFERENCE:wrapper:eb23b6e968e48d7d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:0930a973a7d39a9e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:974a436ae10c590f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:dd5ce9e959158884>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c1e9565b79f57d80>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f7554ec276a960c3>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:221>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ae11ab780d1bd37f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5f6fc16a45b95a82>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b749b5cbe346992a>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:03147870601162fd>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:beafb65b253c8167>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d9f9238764812b21>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:646ea8762544a4dc>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e12be51e24790c0e>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b13e5a5a61f0a978>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:222>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5fe53e69e823b944>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:0a47de43e4559ccb>
+# <QUBITZ_VARIANT_SECTION:wrapper:223>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e06385d528a1147f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c14c9df0040d61f5>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7133580ca78026ff>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:af6f39960b941323>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2e6106eda589cc54>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4698b7f40ccf9f83>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1280429da4b5002a>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:00d027692619bcc0>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f68d13a5722e214a>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6dfc7d3eb7640c6b>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:56194f2b490a6f85>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bb6d4850cbf4d234>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f0470196fbdf7895>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f841f46194d33dd2>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c4635fa07078dad9>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c39ad324265e9469>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:56cd0513b2e10ae0>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7f58d48d7df9986e>
+# <QUBITZ_VARIANT_SECTION:wrapper:224>
+# <QUBITZ_SHARED_REFERENCE:wrapper:cd16ead55590f17f>
+# <QUBITZ_VARIANT_SECTION:wrapper:225>
+# <QUBITZ_SHARED_REFERENCE:wrapper:5292b91b5174ba10>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7acb2fe48b4bdf5c>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:63cdb0c98f139112>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3e2f5700c6bfff82>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6de1415409900e9d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1171c7ed02486053>
+# <QUBITZ_VARIANT_SECTION:wrapper:226>
+# <QUBITZ_SHARED_REFERENCE:wrapper:b79ef6c639565f9b>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:227>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:04576da9bc541ffb>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6cf73fcc25395758>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:99f9034d841a7699>
+# <QUBITZ_VARIANT_SECTION:wrapper:228>
+# <QUBITZ_SHARED_REFERENCE:wrapper:363e10e75e47c817>
+# <QUBITZ_VARIANT_SECTION:wrapper:229>
+
+def _build_local_mcp_server(base: Any, workspace: Path, runtime_workspace: Path, launch_script: Path) -> Any:
+# <QUBITZ_SHARED_REFERENCE:wrapper:feb7bd91ff319b23>
+# <QUBITZ_SHARED_REFERENCE:wrapper:fd5890e7e9af7d22>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:02dad5a3141a4587>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4381e16655eaeceb>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cf4137ea5a0cd09a>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c5a9463ed9e4c09a>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:520838c2df3e51f8>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:702d4838af3afceb>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:230>
+# <QUBITZ_SHARED_REFERENCE:wrapper:d1a019184ffa15c6>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bc45d68258e13a2b>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:51c3397dc00011b9>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:15dad8f433fb9d73>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6426c5eb8aba3a89>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:01b37e440aac1f73>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:231>
+def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
+# <QUBITZ_SHARED_REFERENCE:wrapper:ce504d5cfd83419f>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:232>
+# <QUBITZ_SHARED_REFERENCE:wrapper:887833b99db56bc2>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e20877c5e89ab88a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9d97e225bebd6c39>
+# <QUBITZ_SHARED_REFERENCE:wrapper:053fb8e1a53e8ac7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ddd25fb2711e0907>
+# <QUBITZ_SHARED_REFERENCE:wrapper:04e88801def6313e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:9c16fcffb1e9509b>
+
+    def build_semantic_mcp_server(
+        tool_base: Any,
+        workspace: Path,
+        runtime_workspace: Path,
+        launch_script: Path,
+    ) -> Any:
+# <QUBITZ_SHARED_REFERENCE:wrapper:89ef750e2e5f24d8>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8a6fb81667a6ddd5>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:233>
+# <QUBITZ_SHARED_REFERENCE:wrapper:84e54f7134e164b0>
+# <QUBITZ_VARIANT_SECTION:wrapper:234>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:da213b9363b4b57d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:cd44b191f23ba975>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a3159bf2b285b4d0>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:1a850d5e3cfcd91e>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a5858e216b091068>
+
+    class HardenedMCPHost(original_host):
+# <QUBITZ_VARIANT_SECTION:wrapper:235>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d55b9f9453fbc990>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:236>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7ddc4a0ba8c9b1db>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:c0774b220de7b74c>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e708e1bd4b43feee>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:11fcc86c227c278b>
+
+    class HardenedAgentRunner(original_runner):
+# <QUBITZ_SHARED_REFERENCE:wrapper:4958eb011ca3d06c>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:6e324209816aecfd>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8593522281f1faec>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:237>
+# <QUBITZ_SHARED_REFERENCE:wrapper:0f483e77fad42a94>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:16de1b27a3b6e5d7>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ad8a9264e26c3a0c>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:238>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:f8c8d344fadda96d>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5374ad6f2dcf975b>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5e2918315e3eedea>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:2ce5222ccbfa4bcd>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:239>
+# <QUBITZ_SHARED_REFERENCE:wrapper:79c94f6a8a0e9ad7>
+# <QUBITZ_VARIANT_SECTION:wrapper:240>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b26fd120284fdd23>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9103b82e476d7c1b>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:3268da9ec953c57d>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:241>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3b8af07ccc0bc5eb>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9b23d86b24cbb8eb>
+# <QUBITZ_VARIANT_SECTION:wrapper:242>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4dfd415919ac00b8>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d3e6f55a4ad1043b>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:243>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bf34e1f496357703>
+# <QUBITZ_VARIANT_SECTION:wrapper:244>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:245>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a8b3bee421146e60>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8067021c623ed668>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bfdb7a31bf33d2a4>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:08c37299d1bd1fcb>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:246>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:94c7f5e0559995ae>
+
+        def _prioritize_tools_for_prompt(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
+# <QUBITZ_VARIANT_SECTION:wrapper:247>
+            task_prompt = broker.follow_up_repair_prompt or broker.current_prompt or prompt
+            focused = self._tool_permission_broker.update_focused_postconditions(
+                task_prompt
+            )
+            self._focused_missing_postconditions = frozenset(focused)
+            if focused:
+                return self._filter_tools_by_intent(task_prompt, tools)
+# <QUBITZ_VARIANT_SECTION:wrapper:248>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:bb22dba3d560cb28>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:992d3b4ea7422fe4>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ef9ddb60f03c2e60>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ffe8bc263e27c52f>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:7c8cd85196602b80>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a8d7d69c688f0e11>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:54df7ad977598ff9>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:4dd6f19ca85d10e4>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:d6bb42d0ff6d92ea>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e21d6bc6a321d336>
+
+    class HardenedGUI(original_gui):
+# <QUBITZ_SHARED_REFERENCE:wrapper:f8f483e0845b304e>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:249>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bd7797dc4962f09b>
+# <QUBITZ_VARIANT_SECTION:wrapper:250>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:83fc4440b383a54c>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:8391b0122e55a3ce>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:9e2e58028d6addaa>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:edad5d21b7c5a435>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:108f43d3fecdf5e9>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:5cd6628c822e3bbb>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:60169f9788c60549>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6042ba28fdd71041>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6042ba28fdd71042>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:ffa65f762a11ebc6>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:22efa31aa329ea4a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:bce8b5e8dbe3ac5b>
+# <QUBITZ_SHARED_REFERENCE:wrapper:3ac0727f6f95107d>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6479eccc2248d18e>
+# <QUBITZ_SHARED_REFERENCE:wrapper:c9d807657280c82a>
+# <QUBITZ_SHARED_REFERENCE:wrapper:077f53c3b62484fe>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:e5bead488ba92669>
+# <QUBITZ_SHARED_REFERENCE:wrapper:86e8d283285618f3>
+# <QUBITZ_SHARED_REFERENCE:wrapper:6fb16ae49a9b80cb>
+# <QUBITZ_SHARED_REFERENCE:wrapper:553ef37b46eb3ccd>
+# <QUBITZ_SHARED_REFERENCE:wrapper:f95e16e92c3b8f70>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:498ad8ddaef49e3c>
+
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:629a4f6450073c6c>
+
+# <QUBITZ_VARIANT_SECTION:wrapper:251>
+# <QUBITZ_SHARED_REFERENCE:wrapper:1e0a909430d1b82c>
+# <QUBITZ_VARIANT_SECTION:wrapper:252>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ed95925391793dca>
+
+
+# <QUBITZ_VARIANT_SECTION:wrapper:253>
+_install_agent_tool_hardening(_APP)
+# <QUBITZ_VARIANT_SECTION:wrapper:254>
+_install_gpu_thermal_gate(_APP)
+# <QUBITZ_VARIANT_SECTION:wrapper:255>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:b9c6f031e8a24d75>
+# <QUBITZ_SHARED_REFERENCE:wrapper:e37ad902b613f840>
+
+# <QUBITZ_SHARED_REFERENCE:wrapper:a52f2a6a75ae03c6>
+# <QUBITZ_SHARED_REFERENCE:wrapper:ae86241bd79a34e3>
+# <QUBITZ_SHARED_REFERENCE:wrapper:72deb35400f409a7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:52266971a32146c7>
+# <QUBITZ_SHARED_REFERENCE:wrapper:a56b12f0439dc088>
+
+
+if __name__ == "__main__":
+    main()
+# <QUBITZ_VARIANT_SECTION:wrapper:256>
