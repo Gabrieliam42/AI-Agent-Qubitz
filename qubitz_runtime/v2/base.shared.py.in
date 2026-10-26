@@ -433,16 +433,12 @@ class BGECodeEmbedder:
         }
         try:
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, **tokenizer_load_kwargs)
-        except Exception:
-            if not self.local_files_only:
-                raise
-            try:
-                self._download_missing_embedder_files()
-                self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, **tokenizer_load_kwargs)
-            except Exception as download_exc:
+        except Exception as exc:
+            if self.local_files_only:
                 raise RuntimeError(
-                    "Automatic embedder download failed after required local Hugging Face files were not found."
-                ) from download_exc
+                    f"Local embedder files for {self.model_name} are unavailable; downloads are disabled in local-only mode."
+                ) from exc
+            raise
         base_load_kwargs: dict[str, Any] = {
             "trust_remote_code": True,
             "local_files_only": self.local_files_only,
@@ -4328,7 +4324,30 @@ def fetch_latest_llamacpp_release() -> dict[str, Any]:
         payload = response.json()
     if not isinstance(payload, dict):
         raise RuntimeError("Unexpected GitHub release payload for llama.cpp.")
-    return payload
+    official_latest = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+    if DEFAULT_LLAMACPP_RELEASE_API_URL != official_latest:
+        return payload
+    try:
+        select_latest_llamacpp_cuda_assets(payload)
+    except RuntimeError:
+        pass
+    else:
+        return payload
+    with _httpx_client() as client:
+        response = client.get(official_latest.removesuffix("/latest"), params={"per_page": 100})
+        response.raise_for_status()
+        releases = response.json()
+    if not isinstance(releases, list):
+        raise RuntimeError("Unexpected GitHub release list for llama.cpp.")
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        try:
+            select_latest_llamacpp_cuda_assets(release)
+        except RuntimeError:
+            continue
+        return release
+    raise RuntimeError("No recent official llama.cpp release has a matching Windows CUDA 12 asset pair.")
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:9a6a7ffeed1af83c> module/If:If:0
 if __name__ == "__main__":

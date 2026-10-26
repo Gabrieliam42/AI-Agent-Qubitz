@@ -99,6 +99,27 @@ def _install_selected_model_acquisition(app):
         def _schedule_selected_model_acquisition(self):
             self.root.after_idle(self._start_selected_model_acquisition)
 
+        def _maybe_start_background_model_prewarm(self):
+            prewarm = getattr(super(), "_maybe_start_background_model_prewarm", None)
+            if prewarm is None or self._qubitz_acquisition_closed.is_set():
+                return
+            state = self._qubitz_model_acquisition_state["state"]
+            if state in {"pending", "checking", "downloading"}:
+                self.root.after(500, self._maybe_start_background_model_prewarm)
+                return
+            if state not in {"cached", "downloaded"}:
+                return
+            try:
+                resolved = base.resolve_gguf_model_path(
+                    base.config_runtime_workspace(self.config),
+                    self.config.model_path,
+                    self.config.selected_model_filename,
+                )
+            except (FileNotFoundError, OSError, ValueError):
+                return
+            if resolved is not None:
+                prewarm()
+
         def _start_selected_model_acquisition(self):
             if self._qubitz_acquisition_closed.is_set() or self._qubitz_model_acquisition_thread is not None:
                 return
