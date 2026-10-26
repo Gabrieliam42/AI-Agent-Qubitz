@@ -24,8 +24,8 @@ def symbol_sources(layer: str, directory: Path) -> dict[str, str]:
             or MODULE_PATTERN.sub("", BLOCK_PATTERN.sub("", text)).strip()):
         raise ValueError(f"Malformed universal source registry: {layer}")
     for match in modules:
-        path = directory.parent / match[3]
-        if path.is_symlink() or path.resolve() != directory.parent.resolve() / match[3]:
+        path = directory / match[3]
+        if path.is_symlink() or path.resolve() != directory.resolve() / match[3]:
             raise ValueError("Universal module source must be a real runtime-package file")
         values[match[2]] = path.read_text(encoding="utf-8")
         if not values[match[2]].endswith("\n"):

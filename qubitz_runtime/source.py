@@ -60,15 +60,18 @@ def launcher_spec(text: str) -> dict[str, Any] | None:
     return value
 
 
-def template_source(layer: str, schema_version: int = 1) -> str:
+def template_source(layer: str, schema_version: int = 2) -> str:
     if layer not in {"wrapper", "base"}:
         raise ValueError("Unknown Qubitz source layer")
-    directory = RUNTIME_DIRECTORY / "v2" if schema_version == 2 else RUNTIME_DIRECTORY
-    return (directory / f"{layer}.py.in").read_text(encoding="utf-8")
+    if schema_version != 2:
+        raise ValueError("Only schema-2 Qubitz source is supported")
+    return (RUNTIME_DIRECTORY / f"{layer}.py.in").read_text(encoding="utf-8")
 
 
 def compose_layer(layer: str, sections: dict[str, str], *, template: str | None = None,
-                  schema_version: int = 1, symbols: dict[str, str] | None = None) -> str:
+                  schema_version: int = 2, symbols: dict[str, str] | None = None) -> str:
+    if schema_version != 2:
+        raise ValueError("Only schema-2 Qubitz source is supported")
     template = template_source(layer, schema_version) if template is None else template
     matches = list(SECTION_PATTERN.finditer(template))
     keys = [match[2] for match in matches]
@@ -77,16 +80,14 @@ def compose_layer(layer: str, sections: dict[str, str], *, template: str | None 
             or any(not isinstance(value, str) for value in sections.values())):
         raise ValueError(f"Invalid or incomplete {layer} variant sections")
     result = SECTION_PATTERN.sub(lambda match: sections[match[2]], template)
-    if schema_version == 2:
-        values = symbols if symbols is not None else symbol_sources(layer, RUNTIME_DIRECTORY / "v2")
-        return expand_symbols(result, layer, values)
-    return result
+    values = symbols if symbols is not None else symbol_sources(layer, RUNTIME_DIRECTORY)
+    return expand_symbols(result, layer, values)
 
 
 def compose_variant(spec: dict[str, Any], filename: str, *, templates: dict[str, str] | None = None,
                     symbols: dict[str, dict[str, str]] | None = None) -> str:
     if (not isinstance(spec, dict) or set(spec) != {"schema_version", "filename", "wrapper", "base"}
-            or type(spec["schema_version"]) is not int or spec["schema_version"] not in {1, 2}
+            or type(spec["schema_version"]) is not int or spec["schema_version"] != 2
             or spec["filename"] != filename or Path(filename).name != filename):
         raise ValueError("Variant specification does not match its launcher")
     base = compose_layer("base", spec["base"], template=templates.get("base") if templates else None,

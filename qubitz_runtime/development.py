@@ -4,13 +4,11 @@ from __future__ import annotations
 import argparse
 import ast
 import difflib
-import hashlib
-import json
 import pprint
 from pathlib import Path
 from typing import Any
 
-from .paths import all_variant_paths, variant_paths
+from .paths import variant_paths
 from .source import (
     BASE_MARKER,
     LAUNCHER_BOOTSTRAP,
@@ -26,12 +24,6 @@ from .source import (
 from .symbols import REFERENCE_PATTERN, expand_symbols, symbol_sources
 
 ROOT = RUNTIME_DIRECTORY.parent
-REFERENCE = "AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py"
-PROFILE_NAMES = {
-    "DEFAULT_MODEL", "DEFAULT_HF_GGUF_REPO_ID", "DEFAULT_GGUF_MODEL_FILENAME",
-    "DEFAULT_GGUF_MODEL_LABEL", "DEFAULT_EMBED_MODEL", "DEFAULT_NUM_CTX", "DEFAULT_NUM_PREDICT",
-    "Q4_GGUF_MODEL_FILENAME", "Q5_GGUF_MODEL_FILENAME", "Q6_GGUF_MODEL_FILENAME",
-}
 
 
 def _project_path(path: Path) -> Path:
@@ -107,7 +99,7 @@ def split_sections(lines: list[str], intervals: list[tuple[int, int]], layer: st
     return "".join(pieces), sections
 
 
-def _template_intervals(layer: str, sections: dict[str, str], schema_version: int = 1) -> tuple[list[str], list[tuple[int, int]]]:
+def _template_intervals(layer: str, sections: dict[str, str], schema_version: int = 2) -> tuple[list[str], list[tuple[int, int]]]:
     template = template_source(layer, schema_version)
     parts = []
     intervals = []
@@ -144,26 +136,25 @@ def replace_variant_source(path: Path, candidate: str) -> bool:
     for layer in ("wrapper", "base"):
         previous, intervals = _template_intervals(layer, spec[layer], spec["schema_version"])
         candidate_layer = layers[layer]
-        if spec["schema_version"] == 2:
-            values = symbol_sources(layer, RUNTIME_DIRECTORY / "v2")
-            old_tokens = "".join(previous)
-            old_expanded = expand_symbols(old_tokens, layer, values).splitlines(keepends=True)
-            intervals_to_restore = []
-            references = []
-            cursor = 0
-            line = 0
-            for match in REFERENCE_PATTERN.finditer(old_tokens):
-                line += len(old_tokens[cursor:match.start()].splitlines(keepends=True))
-                count = len(values[match[2]].splitlines(keepends=True))
-                intervals_to_restore.append((line, line + count))
-                references.append(match[0])
-                line += count
-                cursor = match.end()
-            candidate_lines = candidate_layer.splitlines(keepends=True)
-            restored = _mapped_intervals(old_expanded, candidate_lines, intervals_to_restore)
-            for (start, end), reference in reversed(list(zip(restored, references, strict=True))):
-                candidate_lines[start:end] = [reference]
-            candidate_layer = "".join(candidate_lines)
+        values = symbol_sources(layer, RUNTIME_DIRECTORY)
+        old_tokens = "".join(previous)
+        old_expanded = expand_symbols(old_tokens, layer, values).splitlines(keepends=True)
+        intervals_to_restore = []
+        references = []
+        cursor = 0
+        line = 0
+        for match in REFERENCE_PATTERN.finditer(old_tokens):
+            line += len(old_tokens[cursor:match.start()].splitlines(keepends=True))
+            count = len(values[match[2]].splitlines(keepends=True))
+            intervals_to_restore.append((line, line + count))
+            references.append(match[0])
+            line += count
+            cursor = match.end()
+        candidate_lines = candidate_layer.splitlines(keepends=True)
+        restored = _mapped_intervals(old_expanded, candidate_lines, intervals_to_restore)
+        for (start, end), reference in reversed(list(zip(restored, references, strict=True))):
+            candidate_lines[start:end] = [reference]
+        candidate_layer = "".join(candidate_lines)
         lines = candidate_layer.splitlines(keepends=True)
         mapped = _mapped_intervals(previous, lines, intervals)
         template = template_source(layer, spec["schema_version"])
@@ -193,106 +184,23 @@ def replace_variant_source(path: Path, candidate: str) -> bool:
     return True
 
 
-def migrate(inventory_path: Path) -> None:
-    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-    paths = all_variant_paths(ROOT)
-    expected = {row["filename"]: row for row in inventory["variants"]}
-    if {path.name for path in paths} != set(expected):
-        raise ValueError("Variant registry changed after inventory")
-    original = {}
-    layers = {}
-    for path in paths:
-        if hashlib.sha256(path.read_bytes()).hexdigest() != expected[path.name]["sha256"]:
-            raise ValueError(f"Variant changed after inventory: {path.name}")
-        text = path.read_text(encoding="utf-8")
-        if launcher_spec(text) is not None:
-            raise ValueError("The selected variants have already migrated")
-        original[path.name] = text
-        layers[path.name] = source_layers(text)
-    templates = {}
-    specs = {path.name: {"schema_version": 1, "filename": path.name} for path in paths}
-    for layer in ("wrapper", "base"):
-        reference = layers[REFERENCE][layer].splitlines(keepends=True)
-        intervals = [tuple(pair) for pair in inventory["common"][layer]["common_intervals"]]
-        if layer == "base":
-            settings = set()
-            for node in ast.parse(layers[REFERENCE][layer]).body:
-                if isinstance(node, ast.Assign) and any(
-                    isinstance(target, ast.Name) and target.id in PROFILE_NAMES for target in node.targets
-                ):
-                    settings.update(range(node.lineno - 1, node.end_lineno))
-            divided = []
-            for start, end in intervals:
-                cursor = start
-                for line in sorted(settings & set(range(start, end))):
-                    if cursor < line:
-                        divided.append((cursor, line))
-                    cursor = line + 1
-                if cursor < end:
-                    divided.append((cursor, end))
-            intervals = divided
-        template, _ = split_sections(reference, intervals, layer)
-        templates[layer] = template
-        for path in paths:
-            other = layers[path.name][layer].splitlines(keepends=True)
-            mapped = _mapped_intervals(reference, other, intervals)
-            candidate_template, sections = split_sections(other, mapped, layer)
-            if candidate_template != template:
-                raise ValueError(f"Shared source extraction mismatch: {path.name}:{layer}")
-            specs[path.name][layer] = sections
-    # Validate all candidates before replacing even one entrypoint.
-    for path in paths:
-        candidate = compose_variant(specs[path.name], path.name, templates=templates)
-        if candidate != original[path.name]:
-            raise ValueError(f"Exact source reconstruction failed: {path.name}")
-        ast.parse(candidate)
-        ast.parse(launcher_text(specs[path.name]))
-    for layer, text in templates.items():
-        destination = RUNTIME_DIRECTORY / f"{layer}.py.in"
-        if destination.exists():
-            raise FileExistsError(destination)
-    for layer, text in templates.items():
-        (RUNTIME_DIRECTORY / f"{layer}.py.in").write_text(text, encoding="utf-8", newline="\n")
-    receipt = []
-    for path in paths:
-        if hashlib.sha256(path.read_bytes()).hexdigest() != expected[path.name]["sha256"]:
-            raise ValueError(f"Concurrent variant change detected: {path.name}")
-        preserved = backup(path, "Replace duplicated universal code with a lossless isolated shared-runtime launcher.")
-        path.write_text(launcher_text(specs[path.name]), encoding="utf-8", newline="\n")
-        if read_variant_source(path) != original[path.name]:
-            raise RuntimeError(f"Post-write source verification failed: {path.name}")
-        receipt.append({"variant": path.name, "backup": preserved.relative_to(ROOT).as_posix(),
-                        "original_sha256": expected[path.name]["sha256"],
-                        "effective_source_sha256": expected[path.name]["text_sha256"],
-                        "launcher_bytes": path.stat().st_size})
-        print(f"Migrated and source-verified {path.name}", flush=True)
-    (ROOT / ".cache/shared_runtime_migration_20261013.json").write_text(
-        json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--migrate", type=Path)
-    parser.add_argument("--export", type=Path)
+    parser.add_argument("--export", type=Path, required=True)
     args = parser.parse_args()
-    if args.migrate is not None:
-        migrate(args.migrate)
-    elif args.export is not None:
-        output = args.export.resolve()
-        if not output.is_relative_to(ROOT) or output == ROOT:
-            raise ValueError("Standalone export must use a separate project-local directory")
-        output.mkdir(parents=True, exist_ok=False)
-        for path in variant_paths(ROOT):
-            (output / path.name).write_text(read_variant_source(path), encoding="utf-8", newline="\n")
-        (output / "HARNESS.enc").write_bytes((ROOT / "HARNESS.enc").read_bytes())
-        (output / "README.txt").write_text(
-            "Standalone Qubitz Python exports, without a shared-runtime dependency.\n"
-            "The encrypted harness is included; no plaintext harness or private key is exported.\n"
-            "Provide the private harness key through the existing runtime mechanism and use the project dependencies.\n",
-            encoding="utf-8",
-        )
-    else:
-        parser.error("Select --migrate or --export")
+    output = args.export.resolve()
+    if not output.is_relative_to(ROOT) or output == ROOT:
+        raise ValueError("Standalone export must use a separate project-local directory")
+    output.mkdir(parents=True, exist_ok=False)
+    for path in variant_paths(ROOT):
+        (output / path.name).write_text(read_variant_source(path), encoding="utf-8", newline="\n")
+    (output / "HARNESS.enc").write_bytes((ROOT / "HARNESS.enc").read_bytes())
+    (output / "README.txt").write_text(
+        "Standalone Qubitz Python exports, without a shared-runtime dependency.\n"
+        "The encrypted harness is included; no plaintext harness or private key is exported.\n"
+        "Provide the private harness key through the existing runtime mechanism and use the project dependencies.\n",
+        encoding="utf-8",
+    )
     return 0
 
 

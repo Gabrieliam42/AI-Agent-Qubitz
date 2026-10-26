@@ -6493,7 +6493,9 @@ def _patch_streaming_chat(base: Any) -> None:
             result.append({"role": "user", "content": instruction})
         return result
 
-    def _file_creation_chat(self: Any, **kwargs: Any) -> dict[str, Any]:
+    def _file_creation_chat(
+        self: Any, *, allow_bounded_named: bool = False, **kwargs: Any,
+    ) -> dict[str, Any]:
         """Generate validated arguments; only the ordinary broker may execute them."""
         context = globals().get("_TOOL_CALL_CONTEXT")
         broker = context.get() if context is not None else None
@@ -6506,7 +6508,7 @@ def _patch_streaming_chat(base: Any) -> None:
             named_choice = _direct_text_creation_choice(
                 broker,
                 kwargs.get("tools") or [],
-                simple_only=True,
+                simple_only=not allow_bounded_named,
             )
             if named_choice is not None:
                 return {"mode": "named", "choice": named_choice}
@@ -7139,6 +7141,16 @@ def _patch_streaming_chat(base: Any) -> None:
         if (semantic.speech_act != "request" or not semantic.requests("create", "edit")
                 or semantic.prohibited_actions.intersection({"create", "edit"})):
             return response
+        message = response.get("message") or {}
+        if (response.get("finish_reason") == "stop"
+                and not message.get("tool_calls")
+                and not str(message.get("content") or "").strip()
+                and not broker.no_progress_recovery_exhausted
+                and len(broker.creation_targets) == 1
+                and (_direct_text_creation_choice(
+                    broker, kwargs["tools"], simple_only=False,
+                ) or {}).get("function", {}).get("name") == "write_file"):
+            return _file_creation_chat(self, allow_bounded_named=True, **kwargs)
         choice = _direct_text_creation_choice(broker, kwargs["tools"], simple_only=True)
         if choice is None and _scoped_text_creation_choice(broker, kwargs["tools"]) is not None:
             choice = {"type": "function", "function": {"name": "write_file"}}
