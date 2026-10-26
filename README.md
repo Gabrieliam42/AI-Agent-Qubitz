@@ -10,8 +10,8 @@ providers can use the network when enabled.
 - Windows 11 with WSL2 and a Python 3.12 project environment. Install the
   applicable dependencies from [requirements.txt](requirements.txt) into that
   environment before launch.
-- A compatible GPU, enough VRAM and RAM, and free disk space for the selected
-  model. Some large variants target two 24 GB GPUs; see the
+- A compatible GPU, with enough VRAM(at least 12 GB) and RAM, and free disk space for the selected
+  model. Some larger variants target one or two 24 GB GPUs; see the
   [48 GB VRAM+ tier](documentation/48gb_vram_tier.md) and each variant guide.
 - Network access for a first run with missing model weights or llama.cpp
   runtimes. The selected variant prepares its supported missing artifacts on
