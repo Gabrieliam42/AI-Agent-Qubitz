@@ -40,7 +40,7 @@ in this public Tk/CLI/MCP runtime tree. This is a conservative file set, not a t
 
 ## Dependencies
 
-`requirements.txt` contains the project CUDA/ML, retrieval, MCP, and document dependencies, including `openpyxl>=3.1.5`, `pypdf>=6.16.1`, and `xlrd>=2.0.2`. `requirements-ci.txt` contains CI/test-only dependencies.
+`requirements.txt` contains the project CUDA/ML, retrieval, MCP, and document dependencies, including `openpyxl>=3.1.5`, `pypdf>=6.16.1`, and `xlrd>=2.0.2`. Developer test/lint tooling is not required for normal use.
 
 Package installation targets the active workspace environment and follows the harness approval and compatibility rules. A package requested for a specific workspace is not implicitly treated as a request to install every entry in a repository requirements file.
 
