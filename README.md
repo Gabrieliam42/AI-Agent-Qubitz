@@ -12,7 +12,7 @@ providers can use the network when enabled.
   environment before launch.
 - A compatible GPU, with enough VRAM (at least 12 GB) and RAM, and free disk space for the selected
   model. Some larger variants target one or two 24 GB GPUs; see the
-  [48 GB VRAM+ tier](documentation/48gb_vram_tier.md) and each variant guide.
+  [48 GB VRAM+ tier](documentation/multiGPU_tier_48gb.md) and each variant guide.
 - Network access for a first run with missing model weights or llama.cpp
   runtimes. The selected variant prepares its supported missing artifacts on
   demand; offline mode requires complete local artifacts. Download success does

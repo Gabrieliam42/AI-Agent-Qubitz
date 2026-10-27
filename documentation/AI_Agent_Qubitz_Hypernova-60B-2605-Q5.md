@@ -23,7 +23,7 @@ Local-inference Qubitz variant for Hypernova 60B 2605 i1 Q5.
 - Reads each GPU's current free memory and reserves 1536 MiB per device with matching fit targets. The backend balances layer placement; no explicit `--tensor-split` is supplied because the pinned backend rejects that override when automatic weight fitting is needed.
 - Uses `--fit on --fit-ctx 131072`, preserving the existing requested context while allowing CPU-resident weights when free VRAM is insufficient. No fixed system-RAM capacity is imposed; successful loading still requires enough available memory for weights, KV cache and compute buffers.
 - Validates both GPUs, available capacity, model size, and required llama.cpp flags before launch. It fails with a direct diagnostic when a safe two-GPU plan is unavailable.
-- The placement policy is variant-specific; all ten public large-tier variants support two GPUs and RAM overflow. See [tier memory policy](48gb_vram_tier.md).
+- The placement policy is variant-specific; all ten public large-tier variants support two GPUs and RAM overflow. See [tier memory policy](multiGPU_tier_48gb.md).
 - Uses local llama.cpp GGUF inference only; no required API, cloud account, subscription, or paid hosted inference service.
 
 ## Qubitz Behavior
