@@ -21,7 +21,6 @@ env/
 
 # IDE
 .vscode/
-.idea/
 
 # OS
 .DS_Store
@@ -33,7 +32,6 @@ Desktop.ini
 /mcp_capabilities.example.json
 .memory/
 MEMORY.md
-AI_Agent.txt
 PROJECT.md
 RULES.md
 changelog.txt
@@ -46,7 +44,6 @@ changelog.txt
 /*.exe
 
 # Local agent/runtime state
-/.claude/
 /.skills/
 /.qubitz/
 /backup/
@@ -66,7 +63,6 @@ changelog.txt
 
 # Local snapshots and malformed Windows-path output directories
 /*.7z
-/D*AI_Research*/
 
 # Unrelated local helper scripts and superseded derived notes
 /num_ctx_values.md
