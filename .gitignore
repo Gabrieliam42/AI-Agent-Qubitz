@@ -2,7 +2,7 @@
 # Local dependency and build outputs
 node_modules/
 __pycache__/
-*.py[cod]
+*.py[co]
 *$py.class
 *.egg-info/
 dist/
@@ -33,7 +33,6 @@ Desktop.ini
 .memory/
 MEMORY.md
 PROJECT.md
-RULES.md
 changelog.txt
 *.bak
 *.bat
@@ -55,7 +54,6 @@ changelog.txt
 /.tmp_*
 /tmp_*
 /tmp*/
-/answer.txt*
 /launcher_*.txt
 /smoke_workspaces/
 /evaluation/results/
@@ -68,8 +66,4 @@ changelog.txt
 /num_ctx_values.md
 
 # Required binary-only policy runtime; never publish its private build sources
-!/runtime/_policy_runtime*.pyd
-/runtime/_policy_runtime*.pyx
-/runtime/_policy_runtime*.c
-/runtime/_policy_runtime*.cpp
 /runtime/*.pdb
