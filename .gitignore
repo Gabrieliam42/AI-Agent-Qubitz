@@ -29,8 +29,6 @@ Thumbs.db
 Desktop.ini
 
 # Project specific
-HARNESS.txt
-QUBITZ_HARNESS_KEY.local.txt
 /MCP_CAPABILITIES.md
 /mcp_capabilities.example.json
 .memory/
