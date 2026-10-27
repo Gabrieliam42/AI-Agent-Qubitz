@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "bundle_id": "819fe34a15e27e9a5678c9402c31c696",
+  "algorithm": "fernet",
+  "artifacts": {
+    "linux-x86_64-cp312": {
+      "filename": "_policy_runtime.cpython-312-x86_64-linux-gnu.so",
+      "sha256": "bf61965b8e9b02ff000ad3cdc78259af533dfe68cc628f9c3cb84ff20ad9c557"
+    },
+    "windows-amd64-cp312": {
+      "filename": "_policy_runtime.cp312-win_amd64.pyd",
+      "sha256": "e070b3daad0c0b7f0344bbc95b1790021f0084914b9df7f8e2595a2ccb186620"
+    }
+  }
+}

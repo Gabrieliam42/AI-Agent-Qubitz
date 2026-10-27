@@ -40,7 +40,7 @@ def launcher_spec(text: str) -> dict[str, Any] | None:
     expected_text = (
         '\"\"\"Variant-specific configuration and source for the shared Qubitz runtime.\"\"\"\n'
         "from __future__ import annotations\n"
-        "from qubitz_runtime import initialize_variant as _initialize_variant\n"
+        "from runtime import initialize_variant as _initialize_variant\n"
         + SPEC_NAME + " = None\n"
         + "_initialize_variant(globals(), " + SPEC_NAME + ")\n"
     )
@@ -49,7 +49,7 @@ def launcher_spec(text: str) -> dict[str, Any] | None:
         if isinstance(node, ast.Assign) and node.value is original:
             node.value = ast.Constant(value=None)
     expected_bootstrap = expected_text.replace(
-        "from qubitz_runtime import", LAUNCHER_BOOTSTRAP + "from qubitz_runtime import", 1,
+        "from runtime import", LAUNCHER_BOOTSTRAP + "from runtime import", 1,
     )
     allowed = {ast.dump(ast.parse(text), include_attributes=False) for text in (expected_text, expected_bootstrap)}
     if ast.dump(tree, include_attributes=False) not in allowed:
@@ -107,10 +107,10 @@ def read_variant_source(path: Path) -> str:
 
 
 def runtime_dependency_paths(root: Path) -> list[Path]:
-    directory = root / "qubitz_runtime"
+    directory = root / "runtime"
     paths = [path for path in directory.rglob("*")
              if path.is_file() and "__pycache__" not in path.parts
-             and (path.suffix in {".py", ".json"} or path.name.endswith(".py.in"))]
+             and (path.suffix in {".py", ".json", ".so", ".pyd"} or path.name.endswith(".py.in"))]
     launcher = root / "AI Agent Qubitz.py"
     if launcher.is_file():
         paths.append(launcher)

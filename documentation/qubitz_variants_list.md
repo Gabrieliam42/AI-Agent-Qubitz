@@ -1,4 +1,4 @@
-- Current release set: 39 user-facing launchers in `variants/`, requiring project-root `qubitz_runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
+- Current release set: 39 user-facing launchers in `variants/`, requiring project-root `runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 Dense
 - `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q5 Dense

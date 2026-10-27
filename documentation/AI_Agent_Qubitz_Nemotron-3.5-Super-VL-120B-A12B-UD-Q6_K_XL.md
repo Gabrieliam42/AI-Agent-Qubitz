@@ -1,6 +1,6 @@
 # Nemotron 3.5 Super VL 120B A12B UD-Q6_K_XL
 
-- Launcher: `variants/AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py`; requires project-root `qubitz_runtime/`. Select it through `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py` or run that variant directly.
+- Launcher: `variants/AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py`; requires project-root `runtime/`. Select it through `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py` or run that variant directly.
 - Model: [Unsloth's requested GGUF](https://huggingface.co/unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF/tree/main/UD-Q6_K_XL), based on NVIDIA's 120B-total / 12B-active hybrid Mamba-2, attention and MoE model, not a dense 120B model.
 - Base: the existing Nemotron-3.5-Lightning-30B-A3B variant has the closest Nemotron-H language architecture; the Ornith 122B adapter supplies only complete-shard acquisition and dual-GPU/RAM fitting.
 - Four exact `NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL-0000N-of-00004.gguf` files live under `.cache/models/unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF/UD-Q6_K_XL/`. Startup selects shard one only after checking all four siblings. Published aggregate size is 120,985,852,968 bytes, about 112.7 GiB; the tiny first shard alone is not the model's memory requirement.

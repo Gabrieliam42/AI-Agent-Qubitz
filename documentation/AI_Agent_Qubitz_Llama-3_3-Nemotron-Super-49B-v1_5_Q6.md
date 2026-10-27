@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` and requires project-root `qubitz_runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../qubitz_runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for Llama-3.3-Nemotron-Super-49B-v1.5 UD-Q6_K_XL.
 

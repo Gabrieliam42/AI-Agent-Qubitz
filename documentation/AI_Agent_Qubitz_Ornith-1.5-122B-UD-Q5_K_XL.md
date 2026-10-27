@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` and requires project-root `qubitz_runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated.
+The normal launcher is `variants/AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated.
 
 ## Model And Lineage
 

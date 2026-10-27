@@ -10,7 +10,7 @@ if _qubitz_bootstrap_root.name == 'variants':
 if str(_qubitz_bootstrap_root) not in _qubitz_bootstrap_sys.path:
     _qubitz_bootstrap_sys.path.insert(0, str(_qubitz_bootstrap_root))
 
-from qubitz_runtime import initialize_variant as _initialize_variant
+from runtime import initialize_variant as _initialize_variant
 
 _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
  'filename': 'AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py',

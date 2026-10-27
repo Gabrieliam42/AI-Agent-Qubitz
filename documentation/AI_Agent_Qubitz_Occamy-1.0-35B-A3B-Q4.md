@@ -2,7 +2,7 @@
 
 ## Launcher
 
-`variants/AI_Agent_Qubitz_Occamy-1.0-35B-A3B-Q4.py` requires project-root `qubitz_runtime/`. Select it in the GUI or use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Occamy-1.0-35B-A3B-Q4.py`.
+`variants/AI_Agent_Qubitz_Occamy-1.0-35B-A3B-Q4.py` requires project-root `runtime/`. Select it in the GUI or use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Occamy-1.0-35B-A3B-Q4.py`.
 
 ## Model
 

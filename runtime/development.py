@@ -5,6 +5,7 @@ import argparse
 import ast
 import difflib
 import pprint
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from .source import (
     embedded_source,
     launcher_spec,
     read_variant_source,
+    runtime_dependency_paths,
     template_source,
 )
 from .symbols import REFERENCE_PATTERN, expand_symbols, symbol_sources
@@ -61,7 +63,7 @@ def launcher_text(spec: dict[str, Any]) -> str:
         '"""Variant-specific configuration and source for the shared Qubitz runtime."""\n'
         "from __future__ import annotations\n\n"
         + LAUNCHER_BOOTSTRAP
-        + "from qubitz_runtime import initialize_variant as _initialize_variant\n\n"
+        + "from runtime import initialize_variant as _initialize_variant\n\n"
         + SPEC_NAME + " = " + pprint.pformat(spec, width=120, sort_dicts=False) + "\n\n"
         + "_initialize_variant(globals(), " + SPEC_NAME + ")\n"
     )
@@ -194,11 +196,16 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=False)
     for path in variant_paths(ROOT):
         (output / path.name).write_text(read_variant_source(path), encoding="utf-8", newline="\n")
+    for path in runtime_dependency_paths(ROOT):
+        if path.is_relative_to(RUNTIME_DIRECTORY):
+            destination = output / path.relative_to(ROOT)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, destination)
     (output / "HARNESS.enc").write_bytes((ROOT / "HARNESS.enc").read_bytes())
     (output / "README.txt").write_text(
-        "Standalone Qubitz Python exports, without a shared-runtime dependency.\n"
-        "The encrypted harness is included; no plaintext harness or private key is exported.\n"
-        "Provide the private harness key through the existing runtime mechanism and use the project dependencies.\n",
+        "Assembled Qubitz Python exports with the required runtime package.\n"
+        "The encrypted harness and native policy bundle are included; no plaintext harness, key file or private build source is exported.\n"
+        "Use CPython 3.12 x86-64 and the project dependencies; keep runtime/ alongside these scripts.\n",
         encoding="utf-8",
     )
     return 0

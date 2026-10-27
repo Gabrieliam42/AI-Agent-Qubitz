@@ -10,7 +10,7 @@ if _qubitz_bootstrap_root.name == 'variants':
 if str(_qubitz_bootstrap_root) not in _qubitz_bootstrap_sys.path:
     _qubitz_bootstrap_sys.path.insert(0, str(_qubitz_bootstrap_root))
 
-from qubitz_runtime import initialize_variant as _initialize_variant
+from runtime import initialize_variant as _initialize_variant
 
 _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
  'filename': 'AI_Agent_Qubitz_Mellum2.1-12B-A2.5B-Thinking-Q6.py',

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Qubitz is a WSL2 AI coding agent built around local GGUF inference, with 39 user-facing Python launchers for different models and VRAM budgets. Universal GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification code lives in `qubitz_runtime/`; each launcher retains its variant-specific source and an isolated runtime namespace.
+Qubitz is a WSL2 AI coding agent built around local GGUF inference, with 39 user-facing Python launchers for different models and VRAM budgets. Universal GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification code lives in `runtime/`; each launcher retains its variant-specific source and an isolated runtime namespace.
 
 The project supports private local inference without requiring an API, cloud account, subscription, or paid hosted inference service. Optional online research and configured MCP providers are available when enabled and relevant to the task. Windows-hosted and WSL-hosted workspaces are supported through the existing WSL-to-Windows execution paths.
 
@@ -10,19 +10,20 @@ The project supports private local inference without requiring an API, cloud acc
 
 - `AI Agent Qubitz.py`: normal Tk GUI launcher; loads only the selected variant.
 - `variants/AI_Agent_Qubitz_*.py`: 39 user-facing release launchers; three developer-only local launchers are excluded from this release.
-- `qubitz_runtime/`: required shared runtime source, loader, and development/export tools.
+- `runtime/`: required shared runtime source, loader, and development/export tools.
 - `documentation/`: public model/context catalog and 39 user-facing model guides.
 - `HARNESS.enc`: runtime harness artifact loaded by variants.
-- `QUBITZ_HARNESS_KEY.local.txt`: published key matching `HARNESS.enc`.
+- `runtime/policy_bundle.json` and `_policy_runtime` binaries: version-bound native harness loader; no user key file is required.
 - `.cache/`: project-local model, llama.cpp, retrieval, and evaluation caches.
 - `backup/`: local project backups and recovery copies; not shipped.
 
 For a conservative user runtime bundle, retain the normal root launcher (unless launching
 one selected variant directly), the selected public launcher, the complete
-`qubitz_runtime/` package including its `.py.in` source, `HARNESS.enc`, and the matching
-published key, supplied through `QUBITZ_HARNESS_KEY` or `QUBITZ_HARNESS_KEY.local.txt`. Use the
-project Python 3.12 environment and applicable dependencies. Plaintext `HARNESS.txt` is not
-shipped, but the published key makes the encrypted harness readable to anyone. Model weights, downloaded runtimes, caches,
+`runtime/` package including its `.py.in` source, native loader binaries and bundle manifest,
+and `HARNESS.enc`. Use a CPython 3.12 x86-64 environment and applicable dependencies. Users do not
+need a harness key, Cython, or a native compiler. Plaintext `HARNESS.txt`, the authoring key and
+private native build sources are not shipped. This packaging discourages casual inspection;
+it does not prevent extraction of the harness on a user-controlled machine. Model weights, downloaded runtimes, caches,
 evaluation artifacts, maintainer-only builder tooling, and the optional browser frontend are not shipped
 in this public Tk/CLI/MCP runtime tree. This is a conservative file set, not a tested pruned-package export.
 
@@ -45,13 +46,13 @@ Package installation targets the active workspace environment and follows the ha
 
 ## Runtime And Harness
 
-Variants load only the encrypted harness. After editing the harness, regenerate `HARNESS.enc` and verify exact plaintext equality through the release gate. The matching key is public in this release; do not treat the encryption as protection for confidential instructions.
+Variants load only the encrypted harness through the version-bound native policy loader. Keep the compiled Linux/WSL `.so`, Windows `.pyd`, bundle manifest, and `HARNESS.enc` from the same release. Missing binaries, unsupported Python/architecture, integrity mismatch and invalid ciphertext fail explicitly; there is no runtime plaintext or environment-key fallback. Private authoring and bundle rebuilds remain developer-only, followed by exact plaintext parity and release checks. Binary obfuscation does not protect a prompt from the owner of the local inference server.
 
 Automatic retrieval and embedding indexes exclude the encrypted harness, private harness source, `CLAUDE.md`, `PROJECT.md`, and `RULES.md` case-insensitively. Explicit file tools remain available when the user directly requests one of these files. `README.md` remains retrievable as untrusted factual project context, not instruction authority.
 
-Normal launchers require the complete project-root `qubitz_runtime/` package. Their import bootstrap works from `variants/` without relying on the current working directory. Models, caches, memory, harness, plugins, and the project interpreter remain rooted at the project, not `variants/`. Builder JSON templates and profile tooling remain maintenance-only dependencies. The loader assembles trusted source in each launcher's own namespace, preserving its entrypoint identity and private mutable classes/state. It does not execute model-provided source as part of this composition.
+Normal launchers require the complete project-root `runtime/` package. Their import bootstrap works from `variants/` without relying on the current working directory. Models, caches, memory, harness, plugins, and the project interpreter remain rooted at the project, not `variants/`. Builder JSON templates and profile tooling remain maintenance-only dependencies. The loader assembles trusted source in each launcher's own namespace, preserving its entrypoint identity and private mutable classes/state. It does not execute model-provided source as part of this composition.
 
-Universal code is maintained once in the shared runtime and composed into each launcher's private namespace from validated template symbols and registered source modules. This keeps GUI queues, locks, counters, and mutable model state local to each variant while avoiding a runtime dependency on the builder. Exports contain the composed implementation; normal launchers use the project runtime package. Some composed paths still import `qubitz_runtime` modules, so do not assume an export is package-free.
+Universal code is maintained once in the shared runtime and composed into each launcher's private namespace from validated template symbols and registered source modules. This keeps GUI queues, locks, counters, and mutable model state local to each variant while avoiding a runtime dependency on the builder. Exports contain the composed implementation; normal launchers use the project runtime package. Some composed paths still import `runtime` modules, so do not assume an export is package-free.
 
 Launch from the project root with the project interpreter:
 
@@ -66,7 +67,7 @@ The root launcher's default is the existing GLM-4.7-Flash 24GB reference variant
 
 Variant menu entries are white when the exact default GGUF file/shard set is locally available and gray when missing or unknown; both remain selectable. Opening the menu starts read-only local checks in one background reader, keeping the GUI responsive; entries remain gray until verified and update on the Tk event loop. Repeated requests are coalesced. No weights are downloaded and other variants are not imported. The check rejects empty/misnamed files and invalid GGUF prefixes but is not a full weight-integrity, launch-success, hardware-fit, or performance guarantee. Variant-specific warmup and download policies are unchanged when selecting a model.
 
-For composed export scripts, use `python -m qubitz_runtime.development --export .cache/standalone_export` with the project interpreter and a new output directory. The export includes `HARNESS.enc`, not the plaintext harness or key; copy the published key separately. The composed source still imports `qubitz_runtime.managed_process` and `qubitz_runtime.catalog` on some paths; retain the package unless an isolated export is tested for the intended use. See [shared-runtime maintenance](../qubitz_runtime/README.md).
+For composed export scripts, use `python -m runtime.development --export .cache/standalone_export` with the project interpreter and a new output directory. The export includes `HARNESS.enc` and the required `runtime/` package, including the native policy bundle, but no plaintext harness, key file or private build source. Keep that package alongside the assembled scripts. See [shared-runtime maintenance](../runtime/README.md).
 
 Documentation is stored in this directory. Commands and code paths in these documents are relative to the project root, not the documentation directory. See the [variant catalog](qubitz_variants_list.md) and [context values](num_ctx_values.md).
 

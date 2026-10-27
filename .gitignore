@@ -76,3 +76,10 @@ changelog.txt
 /open_hacker_news_urls.py
 /open_hn_urls.ps1
 /num_ctx_values.md
+
+# Required binary-only policy runtime; never publish its private build sources
+!/runtime/_policy_runtime*.pyd
+/runtime/_policy_runtime*.pyx
+/runtime/_policy_runtime*.c
+/runtime/_policy_runtime*.cpp
+/runtime/*.pdb

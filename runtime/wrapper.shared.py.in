@@ -570,7 +570,7 @@ class _CommandResult(dict[str, Any]):
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:045486624e7f7484> module/ClassDef:LocalBackgroundJobManager:0/FunctionDef:cancel_job:0
     def cancel_job(self, job_id: str) -> dict[str, Any]:
-        from qubitz_runtime.managed_process import ManagedServerProcess
+        from runtime.managed_process import ManagedServerProcess
 
         with self._lifecycle_lock:
             meta = self._read_meta(job_id)
@@ -2903,7 +2903,7 @@ NETWORK_MODE_ONLINE = "online"
                     "list_project_mcp_tools": manager.list_tools,
                     "call_project_mcp_tool": manager.call_tool,
                 }
-                from qubitz_runtime.managed_process import settle_owned_call
+                from runtime.managed_process import settle_owned_call
 
                 payload = None
                 operation, cancellation = await settle_owned_call(operations[name], **arguments)
@@ -3394,7 +3394,7 @@ import subprocess
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:19975e9c01708972> module/ClassDef:LocalBackgroundJobManager:0/FunctionDef:__init__:0
     def __init__(self, runtime_workspace: Path, launch_script: Path) -> None:
-        from qubitz_runtime.managed_process import STATE_LOCK
+        from runtime.managed_process import STATE_LOCK
 
         self._lifecycle_lock = STATE_LOCK
         self.runtime_workspace = runtime_workspace.resolve()
@@ -7406,7 +7406,7 @@ _HARNESS_BLOCK_MARKER = "### BLOCK:"
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:2ccca2de865ea700> module/ClassDef:LocalBackgroundJobManager:0/FunctionDef:_write_meta:0
     def _write_meta(self, job_id: str, payload: dict[str, Any]) -> None:
-        from qubitz_runtime.managed_process import _write
+        from runtime.managed_process import _write
 
         path = self._meta_path(job_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -9892,7 +9892,7 @@ class LocalMCPServerManager:
         return payload
 
     def _owned_session(self, payload: dict[str, Any]):
-        from qubitz_runtime.managed_process import ManagedServerProcess
+        from runtime.managed_process import ManagedServerProcess
 
         server_id = str(payload.get("server_id") or "")
         if not re.fullmatch(r"[a-f0-9]{12}", server_id):
@@ -10079,7 +10079,7 @@ class LocalMCPServerManager:
         env: dict[str, str] | None = None,
         log_path: Path,
     ) -> tuple[Any, list[str]]:
-        import qubitz_runtime.managed_process as managed
+        import runtime.managed_process as managed
 
         merged_env = os.environ.copy()
         merged_env.update(self._normalize_env(env))
@@ -10992,7 +10992,9 @@ def _patch_harness_loader(base: Any) -> None:
                 f"Missing required runtime harness {encrypted_name} in {workspace}. "
                 f"{plaintext_name} is an editable source only and is never loaded by a Qubitz variant."
             )
-        return base.decrypt_harness_bytes(encrypted_path.read_bytes(), workspace)
+        from runtime.policy_loader import load_harness
+
+        return load_harness(encrypted_path)
 
     def _write_encrypted_harness(workspace: Path) -> Path:
         plaintext_name = getattr(base, "DEFAULT_HARNESS_NAME", "HARNESS.txt")
@@ -14933,7 +14935,7 @@ def _preferred_project_python(workspace: Path) -> Path | None:
 # <QUBITZ_SHARED_SYMBOL:wrapper:68b048950d18604b> module/ClassDef:LocalOnlyApp:0/FunctionDef:__init__:0/Assign:Attribute(value=Name(id='self', ctx=Load()), attr='runtime_workspace', ctx=Store()):0
         self.runtime_workspace = self.wrapper_script.parent.resolve()
         if (self.runtime_workspace.name == "variants"
-                and (self.runtime_workspace.parent / "qubitz_runtime" / "__init__.py").is_file()):
+                and (self.runtime_workspace.parent / "runtime" / "__init__.py").is_file()):
             self.runtime_workspace = self.runtime_workspace.parent
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:68dfc0b32d8ae12b> module/FunctionDef:_explicit_file_reference_tokens:0
@@ -19880,7 +19882,8 @@ def _embedded_encrypted_only_harness_source(source: str) -> str:
         "            f\"Missing required runtime harness {DEFAULT_ENCRYPTED_HARNESS_NAME} in {workspace}. \"\n"
         "            f\"{DEFAULT_HARNESS_NAME} is an editable source only and is never loaded at runtime.\"\n"
         "        )\n"
-        "    return decrypt_harness_bytes(encrypted_path.read_bytes(), workspace)\n"
+        "    from runtime.policy_loader import load_harness\n"
+        "    return load_harness(encrypted_path)\n"
     )
     return f"{source[:start]}{replacement}{source[end:]}"
 # </QUBITZ_SHARED_SYMBOL>
@@ -26402,7 +26405,7 @@ def _direct_text_creation_choice(
 
             def cache_states(filenames: Sequence[str]) -> dict[str, bool | None]:
                 try:
-                    from qubitz_runtime.catalog import cached_model_states
+                    from runtime.catalog import cached_model_states
                 except ImportError:
                     # A flat standalone export remains usable without the package;
                     # unknown cache state is gray, never a false cached guarantee.
@@ -28140,7 +28143,7 @@ def _semantic_actions_for_verb(verb: str, objects: set[str]) -> set[str]:
         job_dir.mkdir(parents=True, exist_ok=True)
         log_path = job_dir / "job.log"
         command = self._build_command(config, workspace, prompt)
-        from qubitz_runtime.managed_process import launch_command_session
+        from runtime.managed_process import launch_command_session
 
         env = {"QUBITZ_ALLOW_EMBED_ONLINE": os.environ.get("QUBITZ_ALLOW_EMBED_ONLINE", "1"),
                "QUBITZ_BACKGROUND_JOB": "1"}
@@ -28412,7 +28415,7 @@ def _run_owned_process(
     shell: bool = False,
     windows_token: str = "",
 ) -> tuple[int, bytes, bytes]:
-    from qubitz_runtime.managed_process import launch_command_session
+    from runtime.managed_process import launch_command_session
 
     if cancel_event is not None and cancel_event.is_set():
         raise InterruptedError("Command cancelled before the launch boundary")
@@ -30875,7 +30878,7 @@ _INSTALL_REQUIREMENT_PATTERN = re.compile(
         job_dir = self.root / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         log_path = job_dir / "job.log"
-        from qubitz_runtime.managed_process import launch_command_session
+        from runtime.managed_process import launch_command_session
 
         with log_path.open("w", encoding="utf-8", errors="ignore") as handle:
             process = launch_command_session(normalized_command, cwd=workspace, directory=job_dir,

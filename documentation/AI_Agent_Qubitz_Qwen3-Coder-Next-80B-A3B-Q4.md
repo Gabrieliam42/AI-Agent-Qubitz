@@ -2,7 +2,7 @@
 
 ## Launcher
 
-`variants/AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py` requires project-root `qubitz_runtime/`. Select it in the GUI, run it directly, or use:
+`variants/AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py` requires project-root `runtime/`. Select it in the GUI, run it directly, or use:
 
 ```sh
 .venv/bin/python "AI Agent Qubitz.py" --variant AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py
