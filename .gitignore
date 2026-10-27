@@ -33,7 +33,6 @@ Desktop.ini
 /mcp_capabilities.example.json
 .memory/
 MEMORY.md
-files_list.txt
 AI_Agent.txt
 PROJECT.md
 RULES.md
@@ -70,9 +69,6 @@ changelog.txt
 /D*AI_Research*/
 
 # Unrelated local helper scripts and superseded derived notes
-/get_hacker_news_top_*.py
-/open_hacker_news_urls.py
-/open_hn_urls.ps1
 /num_ctx_values.md
 
 # Required binary-only policy runtime; never publish its private build sources
