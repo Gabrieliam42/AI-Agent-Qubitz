@@ -13,9 +13,9 @@ if str(_qubitz_bootstrap_root) not in _qubitz_bootstrap_sys.path:
 from runtime import initialize_variant as _initialize_variant
 
 _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
- 'filename': 'AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py',
+ 'filename': 'AI_Agent_Qubitz_Ministral-3-8B-Instruct-2512-Q5_12G.py',
  'wrapper': {'000': '',
-             '001': 'import base64\n',
+             '001': '',
              '002': '',
              '003': 'THINKING_EFFORT_STEP_CAPS: dict[str, int] = {\n'
                     '    "low": 8,\n'
@@ -23,17 +23,6 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     '    "high": 48,\n'
                     '    "xhigh": 128,\n'
                     '}\n'
-                    'AGENTIC_QWEN_12G_TARGET_VRAM_GIB = 12.0\n'
-                    'AGENTIC_QWEN_12G_OTHER_GPU_NUM_CTX = 101376\n'
-                    'AGENTIC_QWEN_12G_RTX3090_NUM_CTX = 101376\n'
-                    'AGENTIC_QWEN_12G_DEFAULT_NUM_CTX = AGENTIC_QWEN_12G_OTHER_GPU_NUM_CTX\n'
-                    'AGENTIC_QWEN_12G_MAX_NUM_CTX = AGENTIC_QWEN_12G_OTHER_GPU_NUM_CTX\n'
-                    'AGENTIC_QWEN_12G_DEFAULT_NUM_PREDICT = 8096\n'
-                    'AGENTIC_QWEN_12G_MAX_NUM_PREDICT = 8096\n'
-                    'AGENTIC_QWEN_12G_EMBED_DEVICE = "cuda"\n'
-                    'AGENTIC_QWEN_12G_KV_CACHE_TYPE = "q4_0"\n'
-                    'AGENTIC_QWEN_12G_GPU_NAME_QUERY = ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")\n'
-                    'AGENTIC_QWEN_12G_CTX_CACHE: int | None = None\n'
                     'DIRECT_SCRIPT_COMPLETION_TIMEOUT_SECONDS = 300\n'
                     'DIRECT_SCRIPT_COMPLETION_MAX_URLS = 64\n',
              '004': 'SCRIPT_BROWSER_GLOB_PATTERNS = ("open*.ps1", "open*.bat", "open*.cmd")\n',
@@ -118,139 +107,8 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
              '018': '',
              '019': '',
              '020': '',
-             '021': '\n'
-                    '\n'
-                    'def _detect_qwen_target_num_ctx() -> int:\n'
-                    '    global AGENTIC_QWEN_12G_CTX_CACHE\n'
-                    '    if AGENTIC_QWEN_12G_CTX_CACHE is not None:\n'
-                    '        return AGENTIC_QWEN_12G_CTX_CACHE\n'
-                    '    try:\n'
-                    '        completed = subprocess.run(\n'
-                    '            list(AGENTIC_QWEN_12G_GPU_NAME_QUERY),\n'
-                    '            capture_output=True,\n'
-                    '            text=True,\n'
-                    '            timeout=10,\n'
-                    '            check=False,\n'
-                    '        )\n'
-                    '        gpu_names = [\n'
-                    '            line.strip().lower()\n'
-                    '            for line in (completed.stdout or "").splitlines()\n'
-                    '            if line.strip()\n'
-                    '        ]\n'
-                    '    except Exception:\n'
-                    '        gpu_names = []\n'
-                    '    AGENTIC_QWEN_12G_CTX_CACHE = (\n'
-                    '        AGENTIC_QWEN_12G_RTX3090_NUM_CTX\n'
-                    '        if any("rtx 3090" in name for name in gpu_names)\n'
-                    '        else AGENTIC_QWEN_12G_OTHER_GPU_NUM_CTX\n'
-                    '    )\n'
-                    '    return AGENTIC_QWEN_12G_CTX_CACHE\n'
-                    '\n'
-                    '\n'
-                    'def _clamp_agentic_qwen_12g_num_ctx(value: Any) -> int:\n'
-                    '    target_num_ctx = _detect_qwen_target_num_ctx()\n'
-                    '    try:\n'
-                    '        numeric = int(value)\n'
-                    '    except (TypeError, ValueError):\n'
-                    '        numeric = target_num_ctx\n'
-                    '    return max(1, min(numeric, target_num_ctx))\n'
-                    '\n'
-                    '\n'
-                    'def _clamp_agentic_qwen_12g_num_predict(value: Any) -> int:\n'
-                    '    try:\n'
-                    '        numeric = int(value)\n'
-                    '    except (TypeError, ValueError):\n'
-                    '        numeric = AGENTIC_QWEN_12G_DEFAULT_NUM_PREDICT\n'
-                    '    return max(1, min(numeric, AGENTIC_QWEN_12G_MAX_NUM_PREDICT))\n'
-                    '\n'
-                    '\n'
-                    'def _apply_agentic_qwen_12g_profile(base: Any) -> None:\n'
-                    '    target_num_ctx = _detect_qwen_target_num_ctx()\n'
-                    '    base.DEFAULT_NUM_CTX = target_num_ctx\n'
-                    '    base.DEFAULT_NUM_PREDICT = AGENTIC_QWEN_12G_DEFAULT_NUM_PREDICT\n'
-                    '    field_defaults = {\n'
-                    '        "num_ctx": target_num_ctx,\n'
-                    '        "num_predict": AGENTIC_QWEN_12G_DEFAULT_NUM_PREDICT,\n'
-                    '        "embed_device": AGENTIC_QWEN_12G_EMBED_DEVICE,\n'
-                    '    }\n'
-                    '    for field_name, default_value in field_defaults.items():\n'
-                    '        with suppress(Exception):\n'
-                    '            base.AgentConfig.__dataclass_fields__[field_name].default = default_value\n'
-                    '    if getattr(base.LlamaCppServerProcess, "_qubitz_agentic_qwen_12g_patched", False):\n'
-                    '        return\n'
-                    '    original_launch_command = base.LlamaCppServerProcess._launch_command\n'
-                    '\n'
-                    '    def _launch_command_agentic_qwen_12g(server_self: Any) -> list[str]:\n'
-                    '        if hasattr(server_self.config, "num_ctx"):\n'
-                    '            server_self.config.num_ctx = '
-                    '_clamp_agentic_qwen_12g_num_ctx(server_self.config.num_ctx)\n'
-                    '        if hasattr(server_self.config, "num_predict"):\n'
-                    '            server_self.config.num_predict = '
-                    '_clamp_agentic_qwen_12g_num_predict(server_self.config.num_predict)\n'
-                    '        command = original_launch_command(server_self)\n'
-                    '        cache_k_present = "--cache-type-k" in command\n'
-                    '        cache_v_present = "--cache-type-v" in command\n'
-                    '        if cache_k_present and cache_v_present:\n'
-                    '            return command\n'
-                    '        executable = str(command[0]).lower() if command else ""\n'
-                    '        if executable.endswith("powershell.exe") or executable.endswith("pwsh.exe") or '
-                    'executable.endswith("pwsh"):\n'
-                    '            encoded_index = next(\n'
-                    '                (index for index, value in enumerate(command[:-1]) if str(value).lower() == '
-                    '"-encodedcommand"),\n'
-                    '                -1,\n'
-                    '            )\n'
-                    '            command_index = next(\n'
-                    '                (index for index, value in enumerate(command[:-1]) if str(value).lower() == '
-                    '"-command"),\n'
-                    '                -1,\n'
-                    '            )\n'
-                    '            if encoded_index != -1:\n'
-                    '                payload = str(command[encoded_index + 1])\n'
-                    '                try:\n'
-                    '                    decoded = base64.b64decode(payload).decode("utf-16-le")\n'
-                    '                except Exception:\n'
-                    '                    decoded = ""\n'
-                    '                if decoded:\n'
-                    '                    if "--cache-type-k" not in decoded:\n'
-                    '                        decoded += f" \'--cache-type-k\' \'{AGENTIC_QWEN_12G_KV_CACHE_TYPE}\'"\n'
-                    '                    if "--cache-type-v" not in decoded:\n'
-                    '                        decoded += f" \'--cache-type-v\' \'{AGENTIC_QWEN_12G_KV_CACHE_TYPE}\'"\n'
-                    '                    command[encoded_index + 1] = '
-                    'base64.b64encode(decoded.encode("utf-16-le")).decode("ascii")\n'
-                    '                    return command\n'
-                    '            if command_index != -1:\n'
-                    '                payload = str(command[command_index + 1])\n'
-                    '                if "--cache-type-k" not in payload:\n'
-                    '                    payload += f" \'--cache-type-k\' \'{AGENTIC_QWEN_12G_KV_CACHE_TYPE}\'"\n'
-                    '                if "--cache-type-v" not in payload:\n'
-                    '                    payload += f" \'--cache-type-v\' \'{AGENTIC_QWEN_12G_KV_CACHE_TYPE}\'"\n'
-                    '                command[command_index + 1] = payload\n'
-                    '                return command\n'
-                    '        if not cache_k_present:\n'
-                    '            command.extend(["--cache-type-k", AGENTIC_QWEN_12G_KV_CACHE_TYPE])\n'
-                    '        if not cache_v_present:\n'
-                    '            command.extend(["--cache-type-v", AGENTIC_QWEN_12G_KV_CACHE_TYPE])\n'
-                    '        return command\n'
-                    '\n'
-                    '    base.LlamaCppServerProcess._launch_command = _launch_command_agentic_qwen_12g\n'
-                    '    base.LlamaCppServerProcess._qubitz_agentic_qwen_12g_patched = True\n',
-             '022': 'def _local_skills_root(runtime_workspace: Path) -> Path:\n'
-                    '    return runtime_workspace / ".skills"\n'
-                    '\n'
-                    '\n'
-                    'def _local_skills_available(runtime_workspace: Path) -> bool:\n'
-                    '    root = _local_skills_root(runtime_workspace)\n'
-                    '    if not root.exists() or not root.is_dir():\n'
-                    '        return False\n'
-                    '    with suppress(Exception):\n'
-                    '        for candidate in root.iterdir():\n'
-                    '            if candidate.name.startswith("."):\n'
-                    '                continue\n'
-                    '            return True\n'
-                    '    return False\n'
-                    '\n'
-                    '\n',
+             '021': '',
+             '022': '',
              '023': '',
              '024': '',
              '025': '# <QUBITZ_SHARED_REFERENCE:wrapper:683850aa594ab1e9>\n\n\n',
@@ -258,69 +116,62 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
              '027': '\n',
              '028': '',
              '029': '',
-             '030': '\n\n# <QUBITZ_SHARED_REFERENCE:wrapper:4767f5f2420da5b1>\n',
+             '030': '',
              '031': '',
              '032': '',
              '033': '',
              '034': '',
-             '035': '    skills_enabled = _local_skills_available(runtime_workspace)\n',
-             '036': '    skills = base.SkillRegistry(runtime_workspace) if skills_enabled else None\n',
-             '037': '                "skills_root": base.relative_path(_local_skills_root(runtime_workspace), '
-                    'runtime_workspace),\n'
-                    '                "skill_count": skills.count() if skills is not None else 0,\n'
-                    '                "skill_warnings": skills.warnings if skills is not None else [],\n',
-             '038': '    if skills is not None:\n'
-                    '        @server.resource("skills://index")\n'
-                    '        def skills_index() -> str:\n'
-                    '            return json.dumps(\n'
-                    '                {\n'
-                    '                    "skills_root": base.relative_path(skills.skills_root, runtime_workspace),\n'
-                    '                    "count": skills.count(),\n'
-                    '                    "warnings": skills.warnings,\n'
-                    '                    "skills": skills.list_summaries(),\n'
-                    '                },\n'
-                    '                ensure_ascii=True,\n'
-                    '                indent=2,\n'
-                    '            )\n',
-             '039': '    if plugins_enabled:\n'
-                    '        @server.resource("plugins://index")\n'
-                    '        def plugins_index() -> str:\n'
-                    '            return json.dumps({"plugins": plugin_registry.list_plugins()}, ensure_ascii=True, '
-                    'indent=2)\n',
-             '040': '    if skills is not None:\n'
-                    '        @server.tool(description="List runtime-root local skills discovered under .skills.")\n'
-                    '        def list_skills() -> dict[str, Any]:\n'
-                    '            return {\n'
+             '035': '',
+             '036': '    skills = base.SkillRegistry(runtime_workspace)\n',
+             '037': '                "skills_root": base.relative_path(skills.skills_root, runtime_workspace),\n'
+                    '                "skill_count": skills.count(),\n'
+                    '                "skill_warnings": skills.warnings,\n',
+             '038': '    @server.resource("skills://index")\n'
+                    '    def skills_index() -> str:\n'
+                    '        return json.dumps(\n'
+                    '            {\n'
                     '                "skills_root": base.relative_path(skills.skills_root, runtime_workspace),\n'
                     '                "count": skills.count(),\n'
                     '                "warnings": skills.warnings,\n'
                     '                "skills": skills.list_summaries(),\n'
-                    '            }\n',
-             '041': '        @server.tool(description="Read a runtime-root local skill\'s metadata and body.")\n'
-                    '        def read_skill(skill_name: str) -> dict[str, Any]:\n'
-                    '            skill = skills.get(skill_name)\n'
-                    '            summary = skill.to_summary(runtime_workspace)\n'
-                    '            summary["body"] = skill.body\n'
-                    '            return summary\n',
-             '042': '        @server.tool(description="Read a file or directory inside a runtime-root local skill '
-                    'root.")\n'
-                    '        def read_skill_resource(skill_name: str, resource_path: str) -> dict[str, Any]:\n'
-                    '            return skills.read_skill_resource(skill_name, resource_path)\n',
-             '043': '    if plugins_enabled:\n'
-                    '        @server.tool(description="List local-only plugin manifests loaded from runtime and active '
+                    '            },\n'
+                    '            ensure_ascii=True,\n'
+                    '            indent=2,\n'
+                    '        )\n',
+             '039': '    @server.resource("plugins://index")\n'
+                    '    def plugins_index() -> str:\n'
+                    '        return json.dumps({"plugins": plugin_registry.list_plugins()}, ensure_ascii=True, '
+                    'indent=2)\n',
+             '040': '    @server.tool(description="List runtime-root local skills discovered under .skills.")\n'
+                    '    def list_skills() -> dict[str, Any]:\n'
+                    '        return {\n'
+                    '            "skills_root": base.relative_path(skills.skills_root, runtime_workspace),\n'
+                    '            "count": skills.count(),\n'
+                    '            "warnings": skills.warnings,\n'
+                    '            "skills": skills.list_summaries(),\n'
+                    '        }\n',
+             '041': '    @server.tool(description="Read a runtime-root local skill\'s metadata and body.")\n'
+                    '    def read_skill(skill_name: str) -> dict[str, Any]:\n'
+                    '        skill = skills.get(skill_name)\n'
+                    '        summary = skill.to_summary(runtime_workspace)\n'
+                    '        summary["body"] = skill.body\n'
+                    '        return summary\n',
+             '042': '    @server.tool(description="Read a file or directory inside a runtime-root local skill root.")\n'
+                    '    def read_skill_resource(skill_name: str, resource_path: str) -> dict[str, Any]:\n'
+                    '        return skills.read_skill_resource(skill_name, resource_path)\n',
+             '043': '    @server.tool(description="List local-only plugin manifests loaded from runtime and active '
                     'workspace .qubitz/plugins.")\n'
-                    '        def list_local_plugins() -> dict[str, Any]:\n'
-                    '            plugin_registry.reload()\n'
-                    '            return {"plugins": plugin_registry.list_plugins()}\n',
-             '044': '        @server.tool(description="Read one local-only plugin manifest by name.")\n'
-                    '        def read_local_plugin(name: str) -> dict[str, Any]:\n'
-                    '            plugin_registry.reload()\n'
-                    '            return plugin_registry.read_plugin(name)\n',
-             '045': '    if sandbox_tools_enabled:\n'
-                    '        @server.tool(description="Create a local sandbox for non-trivial changes or background '
+                    '    def list_local_plugins() -> dict[str, Any]:\n'
+                    '        plugin_registry.reload()\n'
+                    '        return {"plugins": plugin_registry.list_plugins()}\n',
+             '044': '    @server.tool(description="Read one local-only plugin manifest by name.")\n'
+                    '    def read_local_plugin(name: str) -> dict[str, Any]:\n'
+                    '        plugin_registry.reload()\n'
+                    '        return plugin_registry.read_plugin(name)\n',
+             '045': '    @server.tool(description="Create a local sandbox for non-trivial changes or background '
                     'jobs.")\n'
-                    '        def create_sandbox(label: str = "", mode: str = "auto") -> dict[str, Any]:\n'
-                    '            return sandboxes.create(label=label, mode=mode)\n',
+                    '    def create_sandbox(label: str = "", mode: str = "auto") -> dict[str, Any]:\n'
+                    '        return sandboxes.create(label=label, mode=mode)\n',
              '046': '            "Start a persistent local server process as a managed background job using a direct '
                     'project Python interpreter path. Do not use this for a session-scoped stdio MCP script passed to '
                     'list_project_mcp_tools or call_project_mcp_tool. "\n'
@@ -331,88 +182,76 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
              '048': '            "Invoke one named local MCP tool. An explicit script or configuration '
                     'server_reference is opened as a session-scoped stdio process and closed automatically; it does '
                     'not require start_project_mcp_server. "\n',
-             '049': '    if sandbox_tools_enabled:\n'
-                    '        @server.tool(description="List local sandboxes stored under the runtime-root cache.")\n'
-                    '        def list_sandboxes() -> dict[str, Any]:\n'
-                    '            return {"sandboxes": sandboxes.list_sandboxes()}\n',
-             '050': '        @server.tool(description="Write or overwrite a file inside a sandbox.")\n'
-                    '        def sandbox_write_file(sandbox_id: str, path: str, content: str, make_parents: bool = '
-                    'True) -> dict[str, Any]:\n'
-                    '            return sandboxes.write_file(sandbox_id, path, content, make_parents)\n',
-             '051': '        @server.tool(description="Replace exact text inside a file in a sandbox.")\n'
-                    '        def sandbox_replace_text(\n'
-                    '            sandbox_id: str,\n'
-                    '            path: str,\n'
-                    '            old_text: str,\n'
-                    '            new_text: str,\n'
-                    '            count: int = 0,\n'
-                    '        ) -> dict[str, Any]:\n'
-                    '            return sandboxes.replace_text(sandbox_id, path, old_text, new_text, count)\n',
-             '052': '        @server.tool(description="Delete a path inside a sandbox.")\n'
-                    '        def sandbox_delete_path(sandbox_id: str, path: str, recursive: bool = False) -> dict[str, '
+             '049': '    @server.tool(description="List local sandboxes stored under the runtime-root cache.")\n'
+                    '    def list_sandboxes() -> dict[str, Any]:\n'
+                    '        return {"sandboxes": sandboxes.list_sandboxes()}\n',
+             '050': '    @server.tool(description="Write or overwrite a file inside a sandbox.")\n'
+                    '    def sandbox_write_file(sandbox_id: str, path: str, content: str, make_parents: bool = True) '
+                    '-> dict[str, Any]:\n'
+                    '        return sandboxes.write_file(sandbox_id, path, content, make_parents)\n',
+             '051': '    @server.tool(description="Replace exact text inside a file in a sandbox.")\n'
+                    '    def sandbox_replace_text(\n'
+                    '        sandbox_id: str,\n'
+                    '        path: str,\n'
+                    '        old_text: str,\n'
+                    '        new_text: str,\n'
+                    '        count: int = 0,\n'
+                    '    ) -> dict[str, Any]:\n'
+                    '        return sandboxes.replace_text(sandbox_id, path, old_text, new_text, count)\n',
+             '052': '    @server.tool(description="Delete a path inside a sandbox.")\n'
+                    '    def sandbox_delete_path(sandbox_id: str, path: str, recursive: bool = False) -> dict[str, '
                     'Any]:\n'
-                    '            return sandboxes.delete_path(sandbox_id, path, recursive)\n',
-             '053': '        @server.tool(description="Create a directory inside a sandbox.")\n'
-                    '        def sandbox_make_directory(sandbox_id: str, path: str) -> dict[str, Any]:\n'
-                    '            return sandboxes.make_directory(sandbox_id, path)\n',
-             '054': '        @server.tool(description="Move or rename a path inside a sandbox.")\n'
-                    '        def sandbox_move_path(sandbox_id: str, source: str, destination: str, overwrite: bool = '
+                    '        return sandboxes.delete_path(sandbox_id, path, recursive)\n',
+             '053': '    @server.tool(description="Create a directory inside a sandbox.")\n'
+                    '    def sandbox_make_directory(sandbox_id: str, path: str) -> dict[str, Any]:\n'
+                    '        return sandboxes.make_directory(sandbox_id, path)\n',
+             '054': '    @server.tool(description="Move or rename a path inside a sandbox.")\n'
+                    '    def sandbox_move_path(sandbox_id: str, source: str, destination: str, overwrite: bool = '
                     'False) -> dict[str, Any]:\n'
-                    '            return sandboxes.move_path(sandbox_id, source, destination, overwrite)\n',
-             '055': '        @server.tool(description="Run a local shell command inside a sandbox.")\n'
-                    '        def sandbox_run_command(sandbox_id: str, command: str, timeout_seconds: int = 120) -> '
+                    '        return sandboxes.move_path(sandbox_id, source, destination, overwrite)\n',
+             '055': '    @server.tool(description="Run a local shell command inside a sandbox.")\n'
+                    '    def sandbox_run_command(sandbox_id: str, command: str, timeout_seconds: int = 120) -> '
                     'dict[str, Any]:\n'
-                    '            return sandboxes.run_command(sandbox_id, command, timeout_seconds)\n',
-             '056': '        @server.tool(description="Show a diff summary for a sandbox.")\n'
-                    '        def sandbox_diff(sandbox_id: str, max_chars: int = LOCAL_ONLY_MAX_DIFF_CHARS) -> '
-                    'dict[str, Any]:\n'
-                    '            return sandboxes.diff(sandbox_id, max_chars)\n',
-             '057': '        @server.tool(description="Copy changed files from a sandbox back into the active '
+                    '        return sandboxes.run_command(sandbox_id, command, timeout_seconds)\n',
+             '056': '    @server.tool(description="Show a diff summary for a sandbox.")\n'
+                    '    def sandbox_diff(sandbox_id: str, max_chars: int = LOCAL_ONLY_MAX_DIFF_CHARS) -> dict[str, '
+                    'Any]:\n'
+                    '        return sandboxes.diff(sandbox_id, max_chars)\n',
+             '057': '    @server.tool(description="Copy changed files from a sandbox back into the active '
                     'workspace.")\n'
-                    '        def sandbox_apply_back(sandbox_id: str, overwrite: bool = True) -> dict[str, Any]:\n'
-                    '            return sandboxes.apply_back(sandbox_id, overwrite)\n',
-             '058': '        @server.tool(description="Destroy a sandbox and remove its cached files.")\n'
-                    '        def sandbox_destroy(sandbox_id: str) -> dict[str, Any]:\n'
-                    '            return sandboxes.destroy(sandbox_id)\n',
-             '059': '    if background_jobs_enabled:\n'
-                    '        @server.tool(description="List local background jobs started by the local-only '
-                    'wrapper.")\n'
-                    '        def list_background_jobs() -> dict[str, Any]:\n'
-                    '            return {"jobs": jobs.list_jobs()}\n',
-             '060': '        @server.tool(description="Read one background job\'s metadata and log.")\n'
-                    '        def read_background_job(job_id: str, max_chars: int = 12000) -> dict[str, Any]:\n'
-                    '            return jobs.read_job(job_id, max_chars)\n',
-             '061': '        @server.tool(description="Cancel a local background job by id.")\n'
-                    '        def cancel_background_job(job_id: str) -> dict[str, Any]:\n'
-                    '            return jobs.cancel_job(job_id)\n',
-             '062': '',
+                    '    def sandbox_apply_back(sandbox_id: str, overwrite: bool = True) -> dict[str, Any]:\n'
+                    '        return sandboxes.apply_back(sandbox_id, overwrite)\n',
+             '058': '    @server.tool(description="Destroy a sandbox and remove its cached files.")\n'
+                    '    def sandbox_destroy(sandbox_id: str) -> dict[str, Any]:\n'
+                    '        return sandboxes.destroy(sandbox_id)\n',
+             '059': '    @server.tool(description="List local background jobs started by the local-only wrapper.")\n'
+                    '    def list_background_jobs() -> dict[str, Any]:\n'
+                    '        return {"jobs": jobs.list_jobs()}\n',
+             '060': '    @server.tool(description="Read one background job\'s metadata and log.")\n'
+                    '    def read_background_job(job_id: str, max_chars: int = 12000) -> dict[str, Any]:\n'
+                    '        return jobs.read_job(job_id, max_chars)\n',
+             '061': '    @server.tool(description="Cancel a local background job by id.")\n'
+                    '    def cancel_background_job(job_id: str) -> dict[str, Any]:\n'
+                    '        return jobs.cancel_job(job_id)\n',
+             '062': '\n\n# <QUBITZ_SHARED_REFERENCE:wrapper:4767f5f2420da5b1>\n',
              '063': '',
              '064': '',
-             '065': '',
-             '066': '_EMBEDDED_BASE_SOURCE = __QUBITZ_EMBEDDED_SOURCE_SLOT__\n'
-                    '\n'
-                    '\n'
-                    '_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace("DEFAULT_NUM_CTX = 202752", '
-                    '"DEFAULT_NUM_CTX = 101376")\n'
-                    '_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace("DEFAULT_NUM_PREDICT = 16384", '
-                    '"DEFAULT_NUM_PREDICT = 8096")\n'
-                    '_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(\n'
-                    '    "Q6_GGUF_MODEL_FILENAME", "Q5_GGUF_MODEL_FILENAME"\n'
-                    ')\n'
-                    '_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace("Q6_K", "Q5_K_M")\n',
+             '065': '    if not hasattr(base, "_QUBITZ_ORIGINAL_WSL_WINDOWS_EXECUTABLE_INTEROP_AVAILABLE"):\n'
+                    '        base._QUBITZ_ORIGINAL_WSL_WINDOWS_EXECUTABLE_INTEROP_AVAILABLE = getattr(\n'
+                    '            base, "wsl_windows_executable_interop_available", None\n'
+                    '        )\n',
+             '066': '_EMBEDDED_BASE_SOURCE = __QUBITZ_EMBEDDED_SOURCE_SLOT__\n',
              '067': '',
              '068': '',
              '069': '',
              '070': ')\n',
              '071': '\n',
              '072': '',
-             '073': '# 12GB-class variant: stay inside a 12GB VRAM budget even on a larger card.\n'
-                    'QUBITZ_VRAM_BUDGET_MIB = 12288\n'
-                    '\n',
+             '073': 'QUBITZ_VRAM_BUDGET_MIB = 12288\n\n',
              '074': '',
              '075': '',
              '076': '',
-             '077': '        _apply_agentic_qwen_12g_profile(self.base)\n',
+             '077': '',
              '078': '',
              '079': '                if selected_route not in {"simple_answer", "direct_existing_entrypoint"}:\n',
              '080': '                if selected_route == "simple_answer":\n',
@@ -680,12 +519,8 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     '                    )\n'
                     '                    return None\n'
                     '                browser_open_ran = bool(reported_opened_urls)\n'
-                    '                direct_windows_interop = bool(\n'
-                    '                    callable(getattr(base, "in_wsl", None)) and base.in_wsl() and '
-                    '_wsl_windows_executable_interop_probe()\n'
-                    '                )\n'
                     '                if requested_browser_open and not browser_open_ran and (\n'
-                    '                    direct_windows_interop\n'
+                    '                    self._wsl_windows_interop_available()\n'
                     '                    or not (callable(getattr(base, "in_wsl", None)) and base.in_wsl())\n',
              '134': '                        completed_urls,\n'
                     '                        DIRECT_SCRIPT_COMPLETION_TIMEOUT_SECONDS,\n',
@@ -731,8 +566,10 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     '                    browser_open_ran=browser_open_ran,\n'
                     '                    requested_browser_open=requested_browser_open,\n'
                     '                    requested_fields=requested_fields,\n'
-                    '                )\n',
-             '146': '# <QUBITZ_SHARED_REFERENCE:wrapper:c4066f729f61e008>\n\n',
+                    '                )\n'
+                    '\n'
+                    '# <QUBITZ_SHARED_REFERENCE:wrapper:c4066f729f61e008>\n',
+             '146': '',
              '147': '',
              '148': '                if selected_route == "simple_answer":\n',
              '149': '                        "- This is a simple direct question. Answer directly and do not use tools '
@@ -762,14 +599,16 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
              '163': '                    "read_memory",\n                    "search_memory",\n',
              '164': '                    direct_names.add("run_powershell_command")\n'
                     '                auxiliary_mcp_names = {\n',
-             '165': '                }\n'
-                    '                background_names = {\n'
+             '165': '',
+             '166': '                background_names = {\n'
                     '                    "list_background_jobs",\n'
                     '                    "read_background_job",\n'
-                    '                    "cancel_background_job",\n',
-             '166': '',
-             '167': '                    if name in mutation_names:\n                        continue\n',
-             '168': '                    if name in direct_names:\n',
+                    '                    "cancel_background_job",\n'
+                    '                }\n',
+             '167': '',
+             '168': '                    if name in mutation_names:\n'
+                    '                        continue\n'
+                    '                    if name in direct_names:\n',
              '169': '                    elif name in background_names or name.startswith("sandbox_") or name == '
                     '"list_sandboxes":\n'
                     '                        bucket = 3\n'
@@ -780,14 +619,14 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
              '173': '',
              '174': '# <QUBITZ_SHARED_REFERENCE:wrapper:7a3188c220541554>\n'
                     '                selected_route, route_reason = self._decide_locked_route(user_prompt)\n'
+                    '                self._locked_route_name = selected_route\n'
+                    '                self._locked_route_reason = route_reason\n'
                     '                if selected_route == "ask_user_missing_info":\n',
              '175': '',
-             '176': '                    self.local_plugins.render_for_prompt(prompt)\n'
+             '176': '                    self.local_plugins.render_for_prompt(user_prompt)\n'
                     '                    if self.local_only_config.plugins_enabled and selected_route not in '
                     '{"simple_answer", "read_only_workspace"}\n',
-             '177': '                route_status = self._route_status_message(user_prompt)\n'
-                    '                if route_status:\n'
-                    '                    self._emit(callback, "status", route_status)\n'
+             '177': '                self._emit(callback, "status", self._route_status_message(user_prompt))\n'
                     '                runtime_capabilities = self._runtime_capabilities()\n'
                     '                in_wsl_session = bool(runtime_capabilities.get("in_wsl"))\n'
                     '                interop_available = bool(runtime_capabilities.get("windows_interop_available"))\n'
@@ -835,7 +674,18 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     '                    )\n'
                     '                bypass_retrieval = selected_route == "simple_answer"\n'
                     '                foreground_existing_script_task = selected_route == "direct_existing_entrypoint"\n'
-                    '                read_only_workspace_task = selected_route == "read_only_workspace"\n',
+                    '                read_only_workspace_task = selected_route == "read_only_workspace"\n'
+                    '                if foreground_existing_script_task:\n'
+                    '                    direct_answer = self._try_direct_existing_script_completion(user_prompt, '
+                    'callback)\n'
+                    '                    if direct_answer is not None:\n'
+                    '                        self._local_plugin_context = "None"\n'
+                    '                        self._task_case_guidance = ""\n'
+                    '                        self._simple_direct_mode = False\n'
+                    '                        self._runtime_fact_context = ""\n'
+                    '                        self._prompt_step_retry_override = None\n'
+                    '                        self._clear_locked_route()\n'
+                    '                        return direct_answer\n',
              '178': '                original_temperature = getattr(self.config, "temperature", None)\n'
                     '                original_top_p = getattr(self.config, "top_p", None)\n'
                     '                original_min_p = getattr(self.config, "min_p", None)\n'
@@ -864,25 +714,14 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     '                        "Simple direct question detected; skipping repository retrieval, '
                     'embedding generation, and MCP tool loading.",\n'
                     '                    )\n',
-             '180': '                    direct_answer = self._try_direct_existing_script_completion(user_prompt, '
-                    'callback)\n'
-                    '                    if direct_answer is not None:\n'
-                    '                        self._simple_direct_mode = False\n'
-                    '                        self._local_plugin_context = "None"\n'
-                    '                        self._task_case_guidance = ""\n'
-                    '                        self._runtime_fact_context = ""\n'
-                    '                        self._prompt_step_retry_override = None\n'
-                    '                        self._clear_locked_route()\n'
-                    '                        return direct_answer\n'
-                    '                    self._emit(\n'
+             '180': '                    self._emit(\n'
                     '                        callback,\n'
                     '                        "status",\n'
                     '                        "Foreground existing-entrypoint task detected; prioritizing direct '
                     'workspace tools and keeping wrapper tools as fallbacks.",\n'
                     '                    )\n',
              '181': '',
-             '182': '                self._locked_route_name = selected_route\n'
-                    '                self._locked_route_reason = route_reason\n',
+             '182': '',
              '183': '\n',
              '184': '                    return self._prioritize_tools_for_prompt(user_prompt, tools)\n',
              '185': '                sampling_profile = _sampling_profile_for_route(user_prompt, selected_route)\n'
@@ -893,8 +732,8 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     'self._retry_step_cap_for_failed_answer(user_prompt, answer)\n',
              '189': '',
              '190': '',
-             '191': '                        if self._should_bypass_embedding_retrieval(prompt) and '
-                    'self._is_retryable_final_answer(prompt, answer):\n',
+             '191': '                        if selected_route == "simple_answer" and '
+                    'self._is_retryable_final_answer(user_prompt, answer):\n',
              '192': '',
              '193': '',
              '194': '',
@@ -906,8 +745,8 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     '                        self.config.min_p = original_min_p\n'
                     '                    if original_repeat_penalty is not None:\n'
                     '                        self.config.repeat_penalty = original_repeat_penalty\n',
-             '196': '                    self._simple_direct_mode = False\n',
-             '197': '',
+             '196': '',
+             '197': '                    self._simple_direct_mode = False\n',
              '198': '',
              '199': '                    self._clear_locked_route()\n',
              '200': '                overlay = textwrap.dedent(\n'
@@ -952,63 +791,22 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
                     '                if dynamic_sections:\n'
                     '                    combined = f"{combined}\\n\\nDynamic context for this task:\\n" + '
                     '"\\n\\n".join(dynamic_sections)\n',
-             '204': '                self._append_transcript(\n'
-                    '                    "system",\n'
-                    '                    (\n'
-                    '                        "AgenticQwen 8B Q5_K_M 12 GB profile active. Context is capped at 101376, '
-                    'Max Output is capped at 8096, "\n'
-                    '                        "retrieval embeddings stay on GPU, and llama.cpp uses q4_0 KV cache."\n'
-                    '                    ),\n'
-                    '                )\n',
+             '204': '',
              '205': '',
              '206': '\n# <QUBITZ_SHARED_REFERENCE:wrapper:a3a174413ec3d707>\n',
-             '207': '                clamped_num_ctx = _clamp_agentic_qwen_12g_num_ctx(self.config.num_ctx)\n'
-                    '                clamped_num_predict = '
-                    '_clamp_agentic_qwen_12g_num_predict(self.config.num_predict)\n'
-                    '                if clamped_num_ctx != self.config.num_ctx:\n'
-                    '                    self.config.num_ctx = clamped_num_ctx\n'
-                    '                    self.agent.config.num_ctx = clamped_num_ctx\n'
-                    '                    self.num_ctx_var.set(str(clamped_num_ctx))\n'
-                    '                if clamped_num_predict != self.config.num_predict:\n'
-                    '                    self.config.num_predict = clamped_num_predict\n'
-                    '                    self.agent.config.num_predict = clamped_num_predict\n'
-                    '                    self.num_predict_var.set(str(clamped_num_predict))\n',
+             '207': '',
              '208': '',
              '209': '',
              '210': '',
-             '211': '        explicit_num_ctx = bool(getattr(args, "_qubitz_explicit_num_ctx", False))\n'
-                    '        target_num_ctx = _detect_qwen_target_num_ctx()\n',
-             '212': '                kwargs["ollama_num_ctx"] = (\n'
-                    '                    _clamp_agentic_qwen_12g_num_ctx(args.num_ctx) if explicit_num_ctx else '
-                    'target_num_ctx\n'
-                    '                )\n',
-             '213': '                kwargs["num_ctx"] = _clamp_agentic_qwen_12g_num_ctx(args.num_ctx) if '
-                    'explicit_num_ctx else target_num_ctx\n',
-             '214': '                kwargs["ollama_num_predict"] = '
-                    '_clamp_agentic_qwen_12g_num_predict(args.num_predict)\n',
-             '215': '                kwargs["num_predict"] = _clamp_agentic_qwen_12g_num_predict(args.num_predict)\n',
-             '216': '        if hasattr(config, "num_ctx"):\n'
-                    '            config.num_ctx = _clamp_agentic_qwen_12g_num_ctx(config.num_ctx)\n'
-                    '        if hasattr(config, "num_predict"):\n'
-                    '            config.num_predict = _clamp_agentic_qwen_12g_num_predict(config.num_predict)\n'
-                    '        if hasattr(config, "embed_device"):\n'
-                    '            config.embed_device = AGENTIC_QWEN_12G_EMBED_DEVICE\n',
-             '217': '        explicit_num_ctx = False\n',
-             '218': '            if arg == "--num-ctx":\n'
-                    '                explicit_num_ctx = True\n'
-                    '                filtered_args.append(arg)\n'
-                    '                if index + 1 < len(raw_args):\n'
-                    '                    filtered_args.append(raw_args[index + 1])\n'
-                    '                    index += 2\n'
-                    '                    continue\n'
-                    '                index += 1\n'
-                    '                continue\n'
-                    '            if arg.startswith("--num-ctx="):\n'
-                    '                explicit_num_ctx = True\n'
-                    '                filtered_args.append(arg)\n'
-                    '                index += 1\n'
-                    '                continue\n',
-             '219': '        args._qubitz_explicit_num_ctx = explicit_num_ctx\n',
+             '211': '',
+             '212': '                kwargs["ollama_num_ctx"] = args.num_ctx\n',
+             '213': '                kwargs["num_ctx"] = args.num_ctx\n',
+             '214': '                kwargs["ollama_num_predict"] = args.num_predict\n',
+             '215': '                kwargs["num_predict"] = args.num_predict\n',
+             '216': '',
+             '217': '',
+             '218': '',
+             '219': '',
              '220': '',
              '221': '',
              '222': '',
@@ -1074,22 +872,116 @@ _QUBITZ_VARIANT_SPEC = {'schema_version': 2,
              '250': '',
              '251': '',
              '252': '\n',
-             '253': '',
+             '253': 'MINISTRAL3_8B_ISOLATED_LLAMA_TAG = "b11887"\n'
+                    '\n'
+                    'MINISTRAL3_8B_ISOLATED_LLAMA_RUNTIME_DIR_NAME = "llama.cpp-b11887"\n'
+                    '\n'
+                    'def _install_ministral3_8b_llamacpp_runtime(app: LocalOnlyApp) -> None:\n'
+                    '    """Pin this copy\'s loader without changing another variant\'s runtime."""\n'
+                    '    base = app.base\n'
+                    '    if getattr(base, "_QUBITZ_MINISTRAL3_8B_RUNTIME_INSTALLED", False):\n'
+                    '        return\n'
+                    '\n'
+                    '    def _runtime_dir(workspace: Path) -> Path:\n'
+                    '        return workspace / ".cache" / MINISTRAL3_8B_ISOLATED_LLAMA_RUNTIME_DIR_NAME\n'
+                    '\n'
+                    '    base.DEFAULT_LLAMACPP_RELEASE_API_URL = (\n'
+                    '        "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/"\n'
+                    '        + MINISTRAL3_8B_ISOLATED_LLAMA_TAG\n'
+                    '    )\n'
+                    '    base.llamacpp_runtime_dir = _runtime_dir\n'
+                    '    base.QUBITZ_LLAMACPP_RUNTIME_CHANNEL = "ministral3_8b-isolated"\n'
+                    '    base.QUBITZ_LLAMACPP_RUNTIME_RELEASE = MINISTRAL3_8B_ISOLATED_LLAMA_TAG\n'
+                    '    base.QUBITZ_LLAMACPP_RUNTIME_TAG = MINISTRAL3_8B_ISOLATED_LLAMA_TAG\n'
+                    '    base._QUBITZ_MINISTRAL3_8B_RUNTIME_INSTALLED = True\n'
+                    '\n'
+                    '_MINISTRAL3_ORIGINAL_SAMPLING_PROFILE = _sampling_profile_for_route\n'
+                    '\n'
+                    'def _ministral3_instruct_sampling_profile(\n'
+                    '    prompt: str,\n'
+                    '    selected_route: str,\n'
+                    '    model_name: str | None = None,\n'
+                    ') -> tuple[str, float, float, int, float, float, float]:\n'
+                    '    profile = _MINISTRAL3_ORIGINAL_SAMPLING_PROFILE(prompt, selected_route, model_name)\n'
+                    '    return ("ministral3_instruct_" + profile[0], 0.05, 1.0, 0, 0.0, 1.0, 0.0)\n'
+                    '\n'
+                    '_sampling_profile_for_route = _ministral3_instruct_sampling_profile\n'
+                    '\n'
+                    'def _install_ministral3_8b_single_gpu(app: LocalOnlyApp) -> None:\n'
+                    '    """Restrict this budgeted copy to CUDA0, retaining the shared fit policy."""\n'
+                    '    server_cls = getattr(app.base, "LlamaCppServerProcess", None)\n'
+                    '    if server_cls is None or getattr(server_cls, "_qubitz_ministral3_8b_single_gpu", False):\n'
+                    '        return\n'
+                    '    original = server_cls._launch_command\n'
+                    '    options = {"--device", "--split-mode", "--tensor-split", "--main-gpu"}\n'
+                    '    selected = ["--device", "CUDA0", "--split-mode", "none", "--main-gpu", "0"]\n'
+                    '\n'
+                    '    def _launch_command(self: Any) -> list[str]:\n'
+                    '        command = list(original(self))\n'
+                    '        if not command:\n'
+                    '            return command\n'
+                    '        help_cache = getattr(server_cls, "_qubitz_server_help_cache", {})\n'
+                    '        help_text = "\\n".join(str(value) for value in help_cache.values())\n'
+                    '        if any(flag not in help_text for flag in ("--device", "--split-mode", "--main-gpu", '
+                    '"--fit", "--fit-target")):\n'
+                    '            raise RuntimeError("The selected runtime lacks the required single-GPU 12 GB fitting '
+                    'controls.")\n'
+                    '        executable = str(command[0]).replace("\\\\", "/").rsplit("/", 1)[-1].lower()\n'
+                    '        if executable in {"powershell.exe", "pwsh.exe", "pwsh"}:\n'
+                    '            import base64\n'
+                    '\n'
+                    '            index = next((i + 1 for i, value in enumerate(command[:-1])\n'
+                    '                          if str(value).lower() == "-encodedcommand"), None)\n'
+                    '            if index is None:\n'
+                    '                raise RuntimeError("The 12 GB launcher requires an encoded Windows server '
+                    'command.")\n'
+                    '            try:\n'
+                    '                script = base64.b64decode(command[index], validate=True).decode("utf-16-le")\n'
+                    '            except (ValueError, UnicodeDecodeError) as exc:\n'
+                    '                raise RuntimeError("The 12 GB server command could not be decoded.") from exc\n'
+                    '            for option in options:\n'
+                    '                script = re.sub(rf"\\s*\'{re.escape(option)}\'(?:\\s+\'[^\']*\'|=[^\\s]+)", "", '
+                    'script)\n'
+                    '            script = script.rstrip() + "".join(f" \'{value}\'" for value in selected)\n'
+                    '            command[index] = base64.b64encode(script.encode("utf-16-le")).decode("ascii")\n'
+                    '            return command\n'
+                    '        cleaned = []\n'
+                    '        index = 0\n'
+                    '        while index < len(command):\n'
+                    '            value = str(command[index])\n'
+                    '            option = next((key for key in options if value == key or value.startswith(key + '
+                    '"=")), None)\n'
+                    '            if option is None:\n'
+                    '                cleaned.append(command[index])\n'
+                    '                index += 1\n'
+                    '            else:\n'
+                    '                index += 1 if value.startswith(option + "=") else 2\n'
+                    '        return [*cleaned, *selected]\n'
+                    '\n'
+                    '    server_cls._launch_command = _launch_command\n'
+                    '    server_cls._qubitz_ministral3_8b_single_gpu = True\n'
+                    '\n'
+                    '\n'
+                    '_install_ministral3_8b_llamacpp_runtime(_APP)\n'
+                    '_install_ministral3_8b_single_gpu(_APP)\n'
+                    '\n',
              '254': '',
              '255': '',
              '256': ''},
  'base': {'000': '',
-          '001': "DEFAULT_MODEL = 'mradermacher/AgenticQwen-8B-i1-GGUF'\n"
-                 "DEFAULT_HF_GGUF_REPO_ID = 'mradermacher/AgenticQwen-8B-i1-GGUF'\n"
-                 'Q6_GGUF_MODEL_FILENAME = "AgenticQwen-8B.i1-Q6_K.gguf"\n'
-                 "DEFAULT_GGUF_MODEL_LABEL = 'AgenticQwen-8B.i1-Q5_K_M'\n"
-                 "DEFAULT_GGUF_MODEL_FILENAME = 'AgenticQwen-8B.i1-Q5_K_M.gguf'\n",
+          '001': "DEFAULT_MODEL = 'mistralai/Ministral-3-8B-Instruct-2512-GGUF'\n"
+                 "DEFAULT_HF_GGUF_REPO_ID = 'mistralai/Ministral-3-8B-Instruct-2512-GGUF'\n"
+                 "Q5_GGUF_MODEL_FILENAME = 'Ministral-3-8B-Instruct-2512-Q5_K_M.gguf'\n"
+                 "DEFAULT_GGUF_MODEL_LABEL = 'Ministral-3-8B-Instruct-2512-Q5_K_M'\n"
+                 "DEFAULT_GGUF_MODEL_FILENAME = 'Ministral-3-8B-Instruct-2512-Q5_K_M.gguf'\n",
           '002': 'DEFAULT_LLAMACPP_MODEL_READY_TIMEOUT_SECONDS = 300.0\n',
-          '003': 'DEFAULT_NUM_CTX = 101376\nDEFAULT_NUM_PREDICT = 8096\n',
-          '004': '        workspace / ".cache" / "models" / "mradermacher" / "AgenticQwen-8B-i1-GGUF" / '
+          '003': 'DEFAULT_NUM_CTX = 262144\nDEFAULT_NUM_PREDICT = 16384\n',
+          '004': '        workspace / ".cache" / "models" / "mistralai" / "Ministral-3-8B-Instruct-2512-GGUF" / '
                  'preferred_filename,\n',
-          '005': '    local_dir = workspace / ".cache" / "models" / "mradermacher" / "AgenticQwen-8B-i1-GGUF"\n',
-          '006': '            "Local path to the fixed Q6_K GGUF model. Must point to "\n',
+          '005': '    local_dir = workspace / ".cache" / "models" / "mistralai" / '
+                 '"Ministral-3-8B-Instruct-2512-GGUF"\n',
+          '006': '            "Local path to the fixed Q4 GGUF model. Must point to "\n',
           '007': ''}}
 
 _initialize_variant(globals(), _QUBITZ_VARIANT_SPEC)
+

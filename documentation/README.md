@@ -2,16 +2,16 @@
 
 ## Purpose
 
-Qubitz is a WSL2 AI coding agent built around local GGUF inference, with 39 user-facing Python launchers for different models and VRAM budgets. Universal GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification code lives in `runtime/`; each launcher retains its variant-specific source and an isolated runtime namespace.
+Qubitz is a WSL2 AI coding agent built around local GGUF inference, with 40 user-facing Python launchers for different models and VRAM budgets. Universal GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification code lives in `runtime/`; each launcher retains its variant-specific source and an isolated runtime namespace.
 
 The project supports private local inference without requiring an API, cloud account, subscription, or paid hosted inference service. Optional online research and configured MCP providers are available when enabled and relevant to the task. Windows-hosted and WSL-hosted workspaces are supported through the existing WSL-to-Windows execution paths.
 
 ## Current Structure
 
 - `AI Agent Qubitz.py`: normal Tk GUI launcher; loads only the selected variant.
-- `variants/AI_Agent_Qubitz_*.py`: 39 user-facing release launchers; three developer-only local launchers are excluded from this release.
+- `variants/AI_Agent_Qubitz_*.py`: 40 user-facing release launchers; three developer-only local launchers are excluded from this release.
 - `runtime/`: required shared runtime source, loader, and development/export tools.
-- `documentation/`: public model/context catalog and 39 user-facing model guides.
+- `documentation/`: public model/context catalog and 40 user-facing model guides.
 - `HARNESS.enc`: runtime harness artifact loaded by variants.
 - `runtime/policy_bundle.json` and `_policy_runtime` binaries: version-bound native harness loader; no user key file is required.
 - `.cache/`: project-local model, llama.cpp, retrieval, and evaluation caches.
@@ -32,8 +32,9 @@ in this public Tk/CLI/MCP runtime tree. This is a conservative file set, not a t
 - Primary runtime: WSL2 project environment `.venv/bin/python`.
 - Default Python target: Python 3.12.
 - Target hardware: one RTX 3090 24 GB for standard variants; DeepSeek-V4-Flash, GPT-OSS-120B, Hypernova, Kimi-Linear, Ling-3.0-flash, Llama-3.3-Nemotron-Super, Nemotron-3.5-Super-VL, Ornith-1.5-122B, Qwen3-Coder-Next, and Qwen3.8-Flash-Next use two RTX 3090 GPUs with 48 GB aggregate VRAM. The target host also has an Intel i9-14900KF and 128 GB RAM.
+- The three 12GB-class wrappers are Qwen3.5 9B, Gemma 4 12B, and Ministral 3 8B. Gemma and Ministral use a single-GPU 12288 MiB budget; their 262144-token requested ceiling is not a full-window memory-fit guarantee.
 - GPU inference uses the project-managed llama.cpp GGUF runtime and CUDA retrieval/embedding stack where supported.
-- North Mini Code, DeepSeek-V4-Flash, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use isolated compatible llama.cpp runtime channels; other variants use the shared project runtime channel unless their profile requires otherwise.
+- North Mini Code, DeepSeek-V4-Flash, Gemma-4-12B, Ministral-3-8B, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use isolated llama.cpp runtime channels; other variants use the shared project runtime channel unless their profile requires otherwise. The new Gemma and Ministral copies pin official `b11887`; live compatibility is not yet verified.
 - Ling's AD GGUF requires the isolated Atomic TurboQuant `b10269-1.6.0` runtime. Online startup downloads a missing Windows CUDA 12 bundle or, when Windows execution is unavailable under WSL, the same fork's native Linux CUDA 12.4 bundle; cached runtimes are reused. It does not substitute stock llama.cpp or automatically enable TurboQuant KV compression.
 - Known Ling limitation: the current runtime rejected a chunked file-content grammar with HTTP 400 (`number of repetitions exceeds sane defaults`). Successful model loading does not yet establish file-creation compatibility.
 - Hypernova, Kimi-Linear, Llama-3.3-Nemotron-Super, and Qwen3-Coder-Next use explicit llama.cpp layer placement across `CUDA0` and `CUDA1` with a 1536 MiB safety margin on each GPU. DeepSeek-V4-Flash, GPT-OSS-120B, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use automatic dual-GPU layer fitting with the same per-GPU margin and retain unavoidable model-weight overflow in system RAM; other variants retain their existing single-GPU launch behavior.
@@ -77,7 +78,7 @@ The GUI's `Show Reasoning` checkbox is checked by default and streams separate r
 
 ## Verification
 
-The maintainer's full local release gate validates profile/common-wrapper parity for the 39 public variants, Python syntax, targeted Ruff correctness rules, encrypted-harness integrity, and ignore protection. The gate and plaintext harness are not part of this public runtime tree. The three developer-only variants are excluded from automated release validation. Historical gate results no longer establish current validity after source or profile changes.
+The maintainer's full local release gate validates profile/common-wrapper parity for the 40 public variants, Python syntax, targeted Ruff correctness rules, encrypted-harness integrity, and ignore protection. The gate and plaintext harness are not part of this public runtime tree. The three developer-only variants are excluded from automated release validation. Historical gate results no longer establish current validity after source or profile changes.
 
 The initial 2026-10-14 modular-runtime validation passed 893 of 894 expanded CPU regressions; its cache-refresh timeout and isolated reproductions remain preserved in `.cache/modular_evidence_*.log` and `.xml`. Subsequent controlled testing showed that a backward Tcl clock step delayed timer-based delivery after the scan had finished. Unix/WSL now uses a pipe-backed Tcl file event for completed cache results, with GUI-thread updates and safe notifier closure. Platforms without file events retain timer polling. All 909 expanded CPU/Tk regressions then passed, including the original unchanged 10-second test and the controlled clock-step, shutdown, and fallback checks. The source of host clock changes and attribution of historical GUI delays remain unknown. See `.cache/cache_delivery_expanded_20261014.log` and `.xml` for the new results.
 

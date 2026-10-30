@@ -1,7 +1,8 @@
-- Current release set: 39 user-facing launchers in `variants/`, requiring project-root `runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
+- Current local public catalog: 40 user-facing launchers in `variants/`, requiring project-root `runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 Dense
-- `AI_Agent_Qubitz_AgenticQwen-8B.i1-Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` AgenticQwen-8B Q5 Dense
+- `AI_Agent_Qubitz_Gemma-4-12B-IT-Q4_12G.py` - 12GB VRAM GPU profile, `Google DeepMind's` dense Gemma 4 12B Unified Q4_K_M; text/tool only, loaded context fitted to available memory.
+- `AI_Agent_Qubitz_Ministral-3-8B-Instruct-2512-Q5_12G.py` - 12GB VRAM GPU profile, `Mistral AI's` dense Ministral 3 8B Instruct 2512 Q5_K_M; text/tool only, loaded context fitted to available memory.
 *****
 - `AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py` - 24 GB VRAM GPU `Z.AI's` GLM-4.7-Flash 30B A3B MoE Q4
 - `AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py` - 24 GB VRAM GPU `Kwaipilot's` KAT-Coder-V2.5-Dev 35B A3B MoE Q4

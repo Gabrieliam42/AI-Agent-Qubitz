@@ -1,7 +1,7 @@
 # AI Agent Qubitz
 
 Qubitz is a local WSL2 AI coding agent with a Tk GUI, CLI, MCP tools, retrieval,
-and 39 public GGUF model launchers. Inference runs locally; a hosted AI API or
+and 40 public GGUF model launchers. Inference runs locally; a hosted AI API or
 subscription is not required. Optional online research and configured MCP
 providers can use the network when enabled.
 
@@ -39,7 +39,7 @@ otherwise the root launcher uses the project root.
 
 ## Runtime Layout
 
-- `variants/` contains 39 public schema-2 launchers. The three developer-only
+- `variants/` contains 40 public schema-2 launchers. The three developer-only
   local variants are not included in this release.
 - `runtime/` contains the loader, shared source templates and symbol
   registries, and runtime modules. Keep the whole package for a normal launch;
