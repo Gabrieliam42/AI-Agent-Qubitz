@@ -12,6 +12,32 @@ class ConnectionUnavailable(RuntimeError):
     """All attempted connections failed before a request could be accepted."""
 
 
+def snapshot_proposal_schema(snapshots: dict[str, str], max_replacements: int = 32) -> dict:
+    """Constrain each path to its own original snapshot, not another file's bounds."""
+    if not isinstance(snapshots, dict) or not 1 <= len(snapshots) <= 6:
+        raise ValueError("One to six exact snapshot targets are required")
+    if type(max_replacements) is not int or not 1 <= max_replacements <= 32:
+        raise ValueError("Invalid snapshot replacement budget")
+    branches = []
+    for path, content in sorted(snapshots.items()):
+        if not isinstance(path, str) or not path or not isinstance(content, str) or not content:
+            raise ValueError("Every snapshot target requires a path and nonempty original text")
+        lines = len(content.splitlines(keepends=True))
+        span = {"type": "object", "properties": {
+            "start_line": {"type": "integer", "minimum": 1, "maximum": lines},
+            "end_line": {"type": "integer", "minimum": 1, "maximum": lines},
+            "new_text": {"type": "string", "maxLength": 24000},
+        }, "required": ["start_line", "end_line", "new_text"], "additionalProperties": False}
+        branches.append({"type": "object", "properties": {
+            "path": {"type": "string", "enum": [path]},
+            "replacements": {"type": "array", "minItems": 1,
+                             "maxItems": max_replacements, "items": span},
+        }, "required": ["path", "replacements"], "additionalProperties": False})
+    return {"type": "object", "properties": {"patches": {
+        "type": "array", "minItems": 1, "maxItems": len(branches), "items": {"anyOf": branches},
+    }}, "required": ["patches"], "additionalProperties": False}
+
+
 def snapshot_line_replacements(content: str, spans: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Resolve inclusive original-snapshot lines; never reconstruct old text from a model."""
     lines = content.splitlines(keepends=True)
@@ -22,9 +48,10 @@ def snapshot_line_replacements(content: str, spans: list[dict[str, Any]]) -> lis
         if not isinstance(span, dict) or set(span) != {"start_line", "end_line", "new_text"}:
             raise ValueError("Each span requires only start_line, end_line and new_text")
         start, end, text = span["start_line"], span["end_line"], span["new_text"]
-        if (type(start) is not int or type(end) is not int or not 1 <= start <= end <= len(lines)
-                or not isinstance(text, str) or len(text) > 24000):
-            raise ValueError("Invalid snapshot line span or unbounded replacement")
+        if type(start) is not int or type(end) is not int or not 1 <= start <= end <= len(lines):
+            raise ValueError(f"Invalid snapshot line span: require 1 <= start_line <= end_line <= {len(lines)}")
+        if not isinstance(text, str) or len(text) > 24000:
+            raise ValueError("Snapshot replacement must be text of at most 24000 characters")
         intervals.append((start - 1, end, text))
     intervals.sort()
     if any(left[1] > right[0] for left, right in pairwise(intervals)):

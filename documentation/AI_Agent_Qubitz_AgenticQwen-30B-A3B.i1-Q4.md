@@ -42,7 +42,7 @@ Local-inference Qubitz variant for AgenticQwen 30B-A3B i1 Q4_K_M.
 - Edit targets are the files the user named; files read only as incidental context are not treated as edit targets. A single named `.docx` is a supported one-document transaction, and the wrapper explicitly corrects any claim of a mixed-format or multi-file limitation.
 - Multi-file exact replacements can be proposed across separate calls: the wrapper stages them without mutation until every explicitly named target is covered, then validates and commits one atomic batch. Once structured evidence verifies all required postconditions, it ends further tool use and finalizes from that evidence.
 - Tool-step budgets use progressive effort profiles: `low` starts at 8 and can extend to 24, `medium` 16 to 48, `high` 24 to 96, and `xhigh` 48 to 128. Extensions occur only after verified new progress; simple-question and direct-entrypoint limits remain specialized.
-- A transient `500`, `502`, `503`, or `504` from the local llama.cpp server, or a dropped connection such as a reset, read error, or premature disconnect, is retried once before the error surfaces, so a momentary fault does not abort the run. Every other failure, including a `400`, is still reported on its first occurrence.
+- Ordinary chat retries once only after proven connection failure before dispatch, or an explicit model-loading HTTP `503` rejection followed by a same-model readiness check. Generic HTTP failures and ambiguous post-dispatch failures surface without replay. Direct constrained-JSON recovery also propagates backend/transport faults; a bounded proposal correction is separate from transport retry.
 - When the loaded context is known from `/props`, the wrapper budgets each model call with answer headroom. It can compact tool-result text and wrapper-supplied retrieval while preserving user instructions, governing rules, message roles, and tool-call identifiers. If space remains insufficient, it can attempt one verified owned-server context reload within the requested ceiling, without replaying completed tools. If recovery is unavailable or insufficient, it raises `ContextCapacityError` before sending the oversized request.
 - `inspect_python_environment` reports an environment's interpreter, kind, and installed distributions, and `install_python_package` accepts an `environment="..."` target such as `.venv` or `.venv312`. Relative environment values resolve from the active workspace root, so switching workspaces immediately changes the base; the runtime workspace's own environment is never silently targeted.
 - Environments are classified by executing their exact interpreter, so a relocated or copied environment whose `pyvenv.cfg` records a stale creation path is still treated as valid. Already-present unversioned packages are skipped rather than reinstalled, and installation is only reported complete once the target environment's metadata verifies it.
@@ -64,7 +64,7 @@ Local-inference Qubitz variant for AgenticQwen 30B-A3B i1 Q4_K_M.
 
 ## Verification
 - Disposable matrix: 62/70 case runs across 7 full runs (10 cases each), most recently 2026-08-19.
-- Least reliable variant in the set. Intermittent failures on `failing_tests`, `mcp_lifecycle`, and `multi_file_edit`.
+- The historical 2026-08-19 campaigns recorded intermittent failures on `failing_tests`, `mcp_lifecycle`, and `multi_file_edit`; they do not establish a current cross-model reliability ranking.
 - The `mcp_lifecycle` failure is reproducible and identical across campaigns: the model writes `ok` into the call receipt where the fixture requires `verified`, fabricating the value instead of recording the real tool return. Whether the cause is the model or its imatrix build is unresolved.
 - Removed from the variant set on 2026-08-21, restored the same day, and re-synchronized with the current common wrapper and daily-memory implementation.
 - Live smoke: clean on 2026-08-19 with no behavior issues, timeouts, or thermal aborts.
@@ -89,4 +89,11 @@ This section is generated from the current variant profile and script synchroniz
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
+
+## 2026-10-31 Scoped GUI Check
+
+This variant passed `create_edit_execute` and `structured_error_then_new_task`
+in the accepted four-model GUI smoke, using the unchanged profile. These two
+scenarios do not establish resolution of the historical MCP/full-matrix failures
+or support a model ranking. See the [scope and evidence limits](verification_20261031.md).
 

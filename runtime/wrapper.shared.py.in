@@ -1636,6 +1636,8 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
             _answer: str,
             callback: Callable[[str, str], None] | None,
         ) -> str | None:
+            from runtime.structured_response import StructuredBackendError, StructuredResponseError, record_failure, record_proposal
+
             broker = self._tool_permission_broker
             task_intent = broker.task_intent or self._task_intent_for_prompt(prompt)
             if (
@@ -1687,6 +1689,17 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                 if requested_targets != explicit_targets:
                     return None
             exact_edit = named_edit or exact_batch
+            proposal_turn, proposal_generation = broker.turn_id, broker.workspace_generation
+            proposal_targets = set(broker.transaction_explicit_file_targets)
+
+            def proposal_authority_current() -> bool:
+                return (broker.turn_id == proposal_turn and broker.workspace_generation == proposal_generation
+                        and set(broker.transaction_explicit_file_targets) == proposal_targets
+                        and broker.access_mode == ACCESS_MODE_FULL and not broker.no_progress_recovery_exhausted
+                        and not any(not item.get("success") and not item.get("wrapper_rejected")
+                                    and item.get("tool") in broker._MUTATION_TOOLS | broker._EXECUTION_TOOLS
+                                    for item in broker._current_turn_evidence()))
+
             if exact_edit:
                 if getattr(broker, "_named_edit_proposal_used", False) or any(
                     not item.get("success") and not item.get("wrapper_rejected")
@@ -1862,7 +1875,9 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                     if len(content) <= remaining:
                         numbered = "".join(f"{index}: {line}" for index, line in enumerate(content.splitlines(keepends=True), 1))
                         displayed = numbered if exact_edit else content
-                        fresh_blocks.append(f"File: {base.relative_path(target, self.workspace)}\nExact current content:\n{displayed}")
+                        bounds = (f"Original line range: 1..{len(content.splitlines(keepends=True))}; "
+                                  "new_text limit: 24000 characters.\n" if exact_edit else "")
+                        fresh_blocks.append(f"File: {base.relative_path(target, self.workspace)}\n{bounds}Exact current content:\n{displayed}")
                         proposal_hashes[str(target.resolve())] = hashlib.sha256(data).hexdigest()
                         proposal_snapshots[str(target.resolve())] = content
                         remaining -= len(content)
@@ -1909,6 +1924,19 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                 "required": ["patches"],
                 "additionalProperties": False,
             }
+            if exact_edit:
+                from runtime.recovery_protocol import snapshot_proposal_schema
+
+                try:
+                    schema = snapshot_proposal_schema({
+                        str(base.relative_path(Path(path), self.workspace)): content
+                        for path, content in proposal_snapshots.items()
+                    }, min(TRANSACTIONAL_PATCH_MAX_REPLACEMENTS, 32))
+                except ValueError as exc:
+                    record_failure(broker, StructuredResponseError(
+                        "invalid_snapshot_contract", schema_name="qubitz_transaction_proposal", detail=str(exc),
+                    ), phase="edit_preflight")
+                    return None
             prompt_explicitly_edits_tests = bool(
                 re.search(
                     r"\b(?:edit|fix|modify|patch|rewrite|update)\b.{0,48}\btests?\b"
@@ -2032,16 +2060,33 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                             schema=schema,
                             num_predict=min(int(self.config.num_predict), 4096),
                         )
+                    except StructuredResponseError as exc:
+                        self._raise_if_cancelled()
+                        record_failure(broker, exc, phase="edit_proposal")
+                        if callback is not None:
+                            callback("status", f"Wrapper edit proposal unavailable ({exc.receipt['outcome']}); saved work was preserved without replay.")
+                        return None
                     except (OSError, UnicodeDecodeError, RuntimeError) as exc:
+                        if isinstance(exc, StructuredBackendError):
+                            raise
                         if callback is not None:
                             callback(
                                 "status",
                                 f"Wrapper transaction proposal was unavailable ({type(exc).__name__}: {exc}).",
                             )
                         return None
+                    if self._cancel_source == "user" or self._cancel_event.is_set():
+                        self._raise_if_cancelled()
+                    if exact_edit and not proposal_authority_current():
+                        return None
                     try:
-                        return validate_proposal(proposal)
+                        patches = validate_proposal(proposal)
+                        record_proposal(broker, proposal, phase="edit_proposal", accepted=True)
+                        return patches
                     except (OSError, ValueError) as exc:
+                        record_failure(broker, StructuredResponseError(
+                            "invalid_proposal", schema_name="qubitz_transaction_proposal", detail=str(exc),
+                        ), phase="edit_proposal", proposal=proposal)
                         if exact_edit or schema_attempt == 1:
                             if callback is not None:
                                 callback(
@@ -2103,6 +2148,8 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                         return None
                     if self._cancel_source == "user" or self._cancel_event.is_set():
                         self._raise_if_cancelled()
+                    if exact_edit and not proposal_authority_current():
+                        return None
                     broker._test_correction_active = correcting_tests
                     try:
                         for patch in patches:
@@ -2119,6 +2166,8 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                                 patch["expected_sha256"] = digest
                         if self._cancel_source == "user" or self._cancel_event.is_set():
                             self._raise_if_cancelled()
+                        if exact_edit and not proposal_authority_current():
+                            return None
                         patch_result = await host.call_tool(
                             "apply_text_patch" if len(patches) == 1 else "apply_text_patches",
                             patches[0] if len(patches) == 1 else {"patches": patches},
@@ -5553,7 +5602,9 @@ def _patch_streaming_chat(base: Any) -> None:
     from collections import Counter
     from contextlib import contextmanager, suppress
 
+    import hashlib
     import httpx
+    import uuid
 
     original_chat = base.LlamaCppClient.chat
     original_call_with_fallback = base.LlamaCppClient._call_with_fallback
@@ -6564,6 +6615,11 @@ def _patch_streaming_chat(base: Any) -> None:
         schema: dict[str, Any],
         num_predict: int,
     ) -> dict[str, Any]:
+        from runtime.structured_response import (
+            StructuredBackendError, StructuredProposal, StructuredResponseError,
+            apply_structured_request_policy, parse_completion,
+        )
+
         _check_user_cancellation()
         model_name = self.ensure_model(model_name)
         _check_user_cancellation()
@@ -6587,7 +6643,7 @@ def _patch_streaming_chat(base: Any) -> None:
             )
             _check_user_cancellation()
             _record_generation_metrics(self, response, time.perf_counter() - started_at)
-            return _parse_json_object((response.get("message") or {}).get("content"))
+            return parse_completion(response, schema_name=schema_name, parse=_parse_json_object, normalized=True)
         payload = {
             "model": model_name,
             "messages": messages,
@@ -6601,6 +6657,7 @@ def _patch_streaming_chat(base: Any) -> None:
             "repeat_penalty": 1.02,
         }
         _apply_route_chat_template(payload)
+        request_policy = apply_structured_request_policy(payload, getattr(self, "_qubitz_reasoning_capabilities", {}))
         response_formats: list[dict[str, Any] | None] = [
             {
                 "type": "json_schema",
@@ -6620,6 +6677,14 @@ def _patch_streaming_chat(base: Any) -> None:
                 request_payload = dict(payload)
                 if response_format is not None:
                     request_payload["response_format"] = response_format
+                request_metadata = {
+                    "request_id": uuid.uuid4().hex, "schema_name": schema_name,
+                    "request_policy": request_policy,
+                    "response_format": response_format["type"] if response_format is not None else "none",
+                    "request_sha256": hashlib.sha256(json.dumps(
+                        request_payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"),
+                    ).encode("utf-8")).hexdigest(),
+                }
                 error_detail = None
                 try:
                     started_at = time.perf_counter()
@@ -6627,23 +6692,43 @@ def _patch_streaming_chat(base: Any) -> None:
                         "POST",
                         f"{transport.base_url}/v1/chat/completions",
                         json=request_payload,
+                        headers={"X-Qubitz-Request-Id": request_metadata["request_id"]},
                         **options,
                     ) as response:
+                        request_metadata["http_status"] = response.status_code
                         if response.status_code >= 400:
                             error_detail = _chat_error_detail(response)
                         response.raise_for_status()
                         response.read()
                         _check_user_cancellation()
-                        raw = response.json()
+                        try:
+                            raw = response.json()
+                        except (ValueError, UnicodeError) as exc:
+                            _check_user_cancellation()
+                            raise StructuredResponseError("invalid_response_envelope", schema_name=schema_name) from exc
+                    if isinstance(raw, dict):
+                        request_metadata["response_id"] = str(raw.get("id") or "")[:160]
+                    parsed = parse_completion(raw, schema_name=schema_name, parse=_parse_json_object)
                     normalized = _normalize_chat_response(self, raw)
                     _record_generation_metrics(
                         self,
                         normalized,
                         time.perf_counter() - started_at,
                     )
-                    choices = raw.get("choices") or []
-                    message = (choices[0] if choices else {}).get("message") or {}
-                    return _parse_json_object(message.get("content"))
+                    message = normalized.get("message") or {}
+                    request_metadata.update(
+                        finish_reason=normalized.get("finish_reason"),
+                        content_characters=len(message.get("content") or ""),
+                        reasoning_characters=len(message.get("reasoning_content") or ""),
+                        duration_seconds=time.perf_counter() - started_at,
+                    )
+                    return StructuredProposal(parsed, request_metadata)
+                except StructuredResponseError as exc:
+                    exc.receipt.update(request_metadata)
+                    raise
+                except StructuredBackendError as exc:
+                    exc.receipt.update(request_metadata)
+                    raise
                 except httpx.ReadTimeout as exc:
                     raise _response_timeout(exc) from exc
                 except httpx.HTTPStatusError as exc:
@@ -6651,6 +6736,9 @@ def _patch_streaming_chat(base: Any) -> None:
                     status = exc.response.status_code
                     detail = error_detail if error_detail is not None else _chat_error_detail(exc.response)
                     last_error = RuntimeError(f"Constrained JSON recovery HTTP {status}: {detail}")
+                    if status >= 500:
+                        last_error = StructuredBackendError(f"Constrained JSON recovery HTTP {status}: {detail}",
+                                                            receipt=request_metadata)
                     format_unsupported = (
                         status == 400 and response_format is not None
                         and re.search(r"\b(?:response_format|json_schema|json_object)\b", detail, re.IGNORECASE)
@@ -8314,6 +8402,13 @@ _TOOL_ARGUMENT_ADDRESS_FIELDS = frozenset({
                     )
                     return {**proposed, **direct} if isinstance(proposed, dict) else None
                 except (OSError, TypeError, ValueError, RuntimeError) as exc:
+                    from runtime.structured_response import StructuredBackendError, StructuredResponseError, record_failure
+
+                    self._raise_if_cancelled()
+                    if isinstance(exc, StructuredBackendError):
+                        raise
+                    if isinstance(exc, StructuredResponseError):
+                        record_failure(broker, exc, phase="mcp_arguments")
                     if callback is not None:
                         callback(
                             "status",
@@ -21981,6 +22076,9 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
 # <QUBITZ_SHARED_SYMBOL:wrapper:a8d7d69c688f0e11> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/AsyncFunctionDef:_run_async:0
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
             _install_model_storage_preflight(base)
+            self._last_verification_receipts = []
+            self._last_recovery_receipts = []
+            self._last_structured_proposal_receipts = []
             observed_prompt = prompt
             self._qubitz_applied_side_notes: list[str] = []
             self._alias_request_index += 1
@@ -23549,44 +23647,57 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     and self._tool_permission_broker.completion_report(prompt)[1]
                 ):
                     check_user_cancellation()
-                    recovery_context = self._tool_permission_broker.transaction_recovery_context()
-                    focused = set(self._tool_permission_broker.required_postconditions)
-                    if not self._tool_permission_broker.transaction_changed_hashes:
-                        focused.add("changed_files")
-                    self._focused_missing_postconditions = frozenset(focused)
-                    self._tool_permission_broker.transaction_recovery_interrupt_requested = False
-                    self._tool_permission_broker.transaction_nonprogress_calls = 0
+                    broker = self._tool_permission_broker
+                    broker.transaction_recovery_interrupt_requested = False
                     self._cancel_source = ""
-                    if callback is not None:
-                        callback(
-                            "status",
-                            "Retrying once with wrapper-owned transactional patch tools and preserved snapshots.",
+                    # Internal patch interrupts bypass the normal post-model proposal handoff.
+                    recovered_edit = await checked_operation(
+                        self._wrapper_transaction_proposal_recovery, prompt, answer, callback,
                     )
-                    try:
-                        answer = await run_progressive_model_pass(
-                            f"{effective_prompt.rstrip()}\n\n{recovery_context}",
-                            extension_block,
-                        )
-                        if (
-                            self._tool_permission_broker.transaction_recovery_interrupt_requested
-                            and self._cancel_source == "wrapper_transaction_recovery"
-                        ):
-                            answer = wrapper_transaction_stop_answer()
-                            self._cancel_source = "wrapper_policy_stop"
-                    except (Exception, asyncio.CancelledError):
-                        if (
-                            self._tool_permission_broker.transaction_recovery_interrupt_requested
-                            and not self._cancel_partial_answer
-                        ):
-                            answer = wrapper_transaction_stop_answer()
-                            self._cancel_source = "wrapper_policy_stop"
-                        else:
-                            if self._cancel_partial_answer:
-                                return await finalize_turn_answer(self._cancel_partial_answer)
-                            raise
+                    if recovered_edit is not None:
+                        answer = recovered_edit
+                        verified_edit = await checked_operation(self._wrapper_verify_committed_transaction, prompt, callback)
+                        if verified_edit is not None:
+                            answer = verified_edit[1]
+                    elif (not getattr(broker, "_named_edit_proposal_used", False)
+                          and not broker.no_progress_recovery_exhausted and broker.access_mode == ACCESS_MODE_FULL
+                          and not any(not item.get("success") and not item.get("wrapper_rejected")
+                                      and item.get("tool") in broker._MUTATION_TOOLS | broker._EXECUTION_TOOLS
+                                      for item in broker._current_turn_evidence())
+                          and broker.action_progress.reserve_recovery("native")):
+                        recovery_context = broker.transaction_recovery_context()
+                        focused = set(broker.required_postconditions)
+                        if not broker.transaction_changed_hashes:
+                            focused.add("changed_files")
+                        self._focused_missing_postconditions = frozenset(focused)
+                        broker.transaction_nonprogress_calls = 0
+                        if callback is not None:
+                            callback("status", "Retrying once with wrapper-owned transactional patch tools and preserved snapshots.")
+                        try:
+                            answer = await run_progressive_model_pass(
+                                f"{effective_prompt.rstrip()}\n\n{recovery_context}", extension_block,
+                            )
+                            if (broker.transaction_recovery_interrupt_requested
+                                    and self._cancel_source == "wrapper_transaction_recovery"):
+                                answer = wrapper_transaction_stop_answer()
+                                self._cancel_source = "wrapper_policy_stop"
+                        except (Exception, asyncio.CancelledError):
+                            if broker.transaction_recovery_interrupt_requested and not self._cancel_partial_answer:
+                                answer = wrapper_transaction_stop_answer()
+                                self._cancel_source = "wrapper_policy_stop"
+                            else:
+                                if self._cancel_partial_answer:
+                                    return await finalize_turn_answer(self._cancel_partial_answer)
+                                raise
                 answer = _strip_model_completion_labels(answer)
                 required, missing = self._tool_permission_broker.completion_report(prompt)
                 if ("saved_file_contract" in missing and self._cancel_source not in {"user", "user_cancel"}
+                        and not getattr(self._tool_permission_broker, "_named_edit_proposal_used", False)
+                        and not self._tool_permission_broker.no_progress_recovery_exhausted
+                        and self._tool_permission_broker.access_mode == ACCESS_MODE_FULL
+                        and not any(not item.get("success") and not item.get("wrapper_rejected")
+                                    and item.get("tool") in self._tool_permission_broker._MUTATION_TOOLS | self._tool_permission_broker._EXECUTION_TOOLS
+                                    for item in self._tool_permission_broker._current_turn_evidence())
                         and (not self._cancel_partial_answer or self._cancel_source == "wrapper_policy_stop")):
                     check_user_cancellation()
                     broker = self._tool_permission_broker
@@ -23653,7 +23764,8 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                                     "Omit expected_sha256 for a single-file patch: the wrapper binds the verified snapshot; never generate a hash. "
                                     "Do not recreate, delete or add unrelated files.\n"
                                   + snapshot_context)
-                    correction_budget = reserve_step_budget(min(extension_block, 4)) if "saved_file_contract" in missing else 0
+                    correction_budget = (reserve_step_budget(min(extension_block, 4))
+                                         if "saved_file_contract" in missing and broker.action_progress.reserve_recovery("native") else 0)
                     if correction_budget:
                         broker._saved_contract_correction_active = True
                         try:
@@ -23810,6 +23922,19 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     self._pending_side_notes.clear()
                 self._cancel_event.clear()
                 self._active_callback = None
+                with suppress(Exception):
+                    self._last_verification_receipts = json.loads(json.dumps([
+                        item for item in self._tool_permission_broker._current_turn_evidence()
+                        if item.get("verification_kind") == "bounded_ast_numeric_probe"
+                    ][-2:]))
+                    self._last_recovery_receipts = json.loads(json.dumps([
+                        item for item in self._tool_permission_broker._current_turn_evidence()
+                        if item.get("recovery_kind") == "structured_response_failure"
+                    ][-4:]))
+                    self._last_structured_proposal_receipts = json.loads(json.dumps([
+                        item for item in self._tool_permission_broker._current_turn_evidence()
+                        if item.get("receipt_kind") == "structured_proposal"
+                    ][-6:]))
                 with suppress(Exception):
                     self.discovery_memory.observe_tool_evidence(
                         prompt,
@@ -30458,6 +30583,8 @@ def _wsl_windows_executable_interop_probe() -> bool:
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:d8a90041f4291c49> module/FunctionDef:_loaded_llamacpp_context_window:0
 def _loaded_llamacpp_context_window(client: Any) -> int:
+    from runtime.structured_response import non_thinking_template_contract
+
     cached = getattr(client, "_qubitz_server_context_window", None)
     if cached is not None and int(cached) > 0:
         return int(cached)
@@ -30488,6 +30615,7 @@ def _loaded_llamacpp_context_window(client: Any) -> int:
                 "supports_reasoning_effort": caps.get("supports_reasoning_effort"),
                 "supports_preserve_reasoning": caps.get("supports_preserve_reasoning"),
                 "supports_closed_thinking_prefill": closed_prefill,
+                "structured_thinking_control": non_thinking_template_contract(template),
             }
             for value in (
                 settings.get("n_ctx") if isinstance(settings, dict) else None,

@@ -30,3 +30,12 @@ Normal online startup prepares supported missing artifacts; offline startup requ
 ```
 
 See [runtime packaging](../runtime/README.md).
+
+## Scoped GUI Verification
+
+On 2026-10-31 this variant passed `create_edit_execute` and
+`structured_error_then_new_task` in the accepted four-model GUI smoke. Its first
+numeric proposal incorrectly expected an exception for a zero numerator; one
+bounded read-only correction passed seven cases without replaying the edit.
+See the [scope and evidence limits](verification_20261031.md); this is not a
+full-window fit or general model-quality guarantee.

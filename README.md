@@ -54,6 +54,9 @@ otherwise the root launcher uses the project root.
   [variant catalog](documentation/qubitz_variants_list.md), and
   [context values](documentation/num_ctx_values.md).
 
+The [user guide's recovery notes](documentation/README.md#proposal-validation-and-recovery)
+describe bounded structured-proposal handling and its verification limits.
+
 For a minimal Tk/CLI installation, retain the root launcher (unless launching
 one selected variant directly), that public launcher, the complete runtime
 package including its native policy bundle, the encrypted harness, and the required Python
@@ -65,3 +68,10 @@ Shared source is composed into each launcher's private namespace, preserving
 its entrypoint identity and isolated mutable state. This is not proof that all
 models have the same behavior or performance. See the
 [runtime layout notes](runtime/README.md) for maintenance details.
+
+## Verification
+
+The 2026-10-31 four-model GUI smoke passed its terminal audit: eight trajectories
+and 20 planned slots, comprising 16 genuine model turns and four injected
+containment checks. This is not a completed 40-model matrix or a model benchmark.
+See the [scope, recovered faults and evidence limits](documentation/verification_20261031.md).
