@@ -5,6 +5,14 @@ and 40 public GGUF model launchers. Inference runs locally; a hosted AI API or
 subscription is not required. Optional online research and configured MCP
 providers can use the network when enabled.
 
+## Latest Evaluation Status
+
+The remaining follow-up matrix was cooperatively stopped on November 5, 2026
+(local time): 3 passed, 3 failed, 1 interrupted and 971 unrun of 978 selected
+trajectories. It is not complete acceptance. See the [partial review and general
+repair proposals](documentation/verification_20261105.md), including a local
+watchdog evidence-observation defect. Proposed repairs are not implemented fixes.
+
 ## Requirements
 
 - Windows 11 with WSL2 and a Python 3.12 project environment. Install the

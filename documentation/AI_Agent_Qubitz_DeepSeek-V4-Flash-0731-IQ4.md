@@ -1,5 +1,12 @@
 # AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py
 
+## Latest Partial Evaluation
+
+The November 5 remaining matrix recorded a passed multi-module revision and a
+turn-one HTML-generation timeout without a verified artifact. Later HTML turns
+were not reached. This is not a whole-suite pass or proof of a backend hang.
+See the [partial review and general repair proposals](verification_20261105.md).
+
 ## Shared Runtime
 
 The normal launcher is `variants/AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.

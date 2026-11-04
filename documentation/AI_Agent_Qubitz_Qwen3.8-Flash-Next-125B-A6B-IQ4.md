@@ -1,5 +1,13 @@
 # AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py
 
+## Latest Partial Evaluation
+
+The November 5 remaining matrix timed out on the first HTML trajectory turn.
+The artifact was retained with file/browser-load checks, but requested visual
+behavior and interactions remained unverified. Later turns were not reached.
+This run did not reproduce the earlier `createStars` syntax rejection; it does
+not justify weakening validation. See the [partial review](verification_20261105.md).
+
 ## Shared Runtime
 
 The normal launcher is `variants/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.

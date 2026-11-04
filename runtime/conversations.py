@@ -199,6 +199,7 @@ def install_gui_archive(original):
                 self.clipboard_button.pack(fill="x", pady=(4, 0), before=self.send_button)
                 self.root.bind("<Destroy>", self._archive_destroyed, add="+")
                 self.root.after(200, self._check_archive_status)
+                self._append_transcript("status", "Conversation transcript: " + str(self.conversation_journal.path))
             except BaseException:
                 self.conversation_journal.close(timeout=2)
                 raise

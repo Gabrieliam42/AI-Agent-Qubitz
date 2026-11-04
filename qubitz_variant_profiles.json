@@ -1,0 +1,1148 @@
+{
+  "schema_version": 2,
+  "variants": [
+    {
+      "filename": "AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py",
+      "model_alias": "mradermacher/AgenticQwen-30B-A3B-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/AgenticQwen-30B-A3B-i1-GGUF",
+      "gguf_filename": "AgenticQwen-30B-A3B.i1-Q4_K_M.gguf",
+      "gguf_label": "AgenticQwen-30B-A3B.i1-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 202752,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "6445191738a188b953f1ad9a37454325705a3865d11152377e2feef04d18ec20"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_AREX-2-27B.i1-Q6.py",
+      "model_alias": "mradermacher/AREX-2-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/AREX-2-i1-GGUF",
+      "gguf_filename": "AREX-2.i1-Q6_K.gguf",
+      "gguf_label": "AREX-2.i1-Q6_K",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "aeec055ff3cd29acecb9f3558ccbccd41c0875f64239b2e2f3d6155ba60c18e0"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_CalibForge-35B-A3B.i1-Q4.py",
+      "model_alias": "mradermacher/CalibForge-35B-A3B-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/CalibForge-35B-A3B-i1-GGUF",
+      "gguf_filename": "CalibForge-35B-A3B.i1-Q4_K_M.gguf",
+      "gguf_label": "CalibForge-35B-A3B.i1-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "e24bddbb2af596982369dabaa9531eab9b6060de38d9060c825619270dfe6b88"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py",
+      "model_alias": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+      "hf_gguf_repo_id": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+      "gguf_filename": "DeepSeek-V4-Flash-0731-UD-IQ4_XS-00001-of-00004.gguf",
+      "gguf_label": "DeepSeek-V4-Flash-0731-UD-IQ4_XS",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "DEEPSEEK_V4_FLASH_DEFAULT_KV_CACHE_TYPE": "f16",
+          "DEEPSEEK_V4_FLASH_GGUF_SHARDS": [
+            "DeepSeek-V4-Flash-0731-UD-IQ4_XS-00001-of-00004.gguf",
+            "DeepSeek-V4-Flash-0731-UD-IQ4_XS-00002-of-00004.gguf",
+            "DeepSeek-V4-Flash-0731-UD-IQ4_XS-00003-of-00004.gguf",
+            "DeepSeek-V4-Flash-0731-UD-IQ4_XS-00004-of-00004.gguf"
+          ],
+          "DEEPSEEK_V4_FLASH_GPU_INDICES": [
+            0,
+            1
+          ],
+          "DEEPSEEK_V4_FLASH_GPU_SAFETY_MARGIN_MIB": 1536,
+          "DEEPSEEK_V4_FLASH_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "llama.cpp-b10982",
+          "DEEPSEEK_V4_FLASH_ISOLATED_LLAMA_TAG": "b10982",
+          "DEEPSEEK_V4_FLASH_MIN_FIT_CONTEXT": 131072,
+          "DEEPSEEK_V4_FLASH_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": true
+      },
+      "intentional_residual_sha256": "bf967ef7ad7893fe5576546e1b066895bff03446e45bbbbde2789d5a860bc863"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py",
+      "model_alias": "unsloth/Devstral-Small-2-24B-Instruct-2512",
+      "hf_gguf_repo_id": "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",
+      "gguf_filename": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+      "gguf_label": "Unsloth-Devstral-Small-2-24B-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "ff78a4d87e25378a1c9bbfe4acb9d41bcf650d5f8a9d61f740e23885d1005e3e"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py",
+      "model_alias": "unsloth/gemma-4-31B-it-qat-GGUF",
+      "hf_gguf_repo_id": "unsloth/gemma-4-31B-it-qat-GGUF",
+      "gguf_filename": "gemma-4-31B-it-qat-UD-Q4_K_XL.gguf",
+      "gguf_label": "Unsloth-Gemma-4-31B-It-QAT-UD-Q4_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": true,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": true,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "9e6c2b3760ffb2450715ed9e8e6cb63e49c07af4e9f7c3300dbf362828487313"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_GLM-4.6-WX-v3-357B-A32B-IQ3.py",
+      "model_alias": "mradermacher/GLM-4.6-Derestricted-v3-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/GLM-4.6-Derestricted-v3-i1-GGUF",
+      "gguf_filename": "GLM-4.6-Derestricted-v3.i1-IQ3_M.gguf",
+      "gguf_label": "GLM-4.6-Derestricted-v3.i1-IQ3_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 202752,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "GLM46_DERESTRICTED_DEFAULT_KV_CACHE_TYPE": "q4_0",
+          "GLM46_DERESTRICTED_GGUF_PARTS": [
+            "GLM-4.6-Derestricted-v3.i1-IQ3_M.gguf.part1of4",
+            "GLM-4.6-Derestricted-v3.i1-IQ3_M.gguf.part2of4",
+            "GLM-4.6-Derestricted-v3.i1-IQ3_M.gguf.part3of4",
+            "GLM-4.6-Derestricted-v3.i1-IQ3_M.gguf.part4of4"
+          ],
+          "GLM46_DERESTRICTED_GPU_INDICES": [
+            0,
+            1
+          ],
+          "GLM46_DERESTRICTED_GPU_SAFETY_MARGIN_MIB": 1536,
+          "GLM46_DERESTRICTED_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "llama.cpp-b10982",
+          "GLM46_DERESTRICTED_ISOLATED_LLAMA_TAG": "b10982",
+          "GLM46_DERESTRICTED_MIN_FIT_CONTEXT": 131072,
+          "GLM46_DERESTRICTED_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": true
+      },
+      "intentional_residual_sha256": "ddcc80241412961ce5fbf95fb6910af381d6ab7926951afbf23eb27d0c41b75b"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py",
+      "model_alias": "unsloth/GLM-4.7-Flash",
+      "hf_gguf_repo_id": "unsloth/GLM-4.7-Flash-GGUF",
+      "gguf_filename": "GLM-4.7-Flash-Q4_K_M.gguf",
+      "gguf_label": "GLM-4.7-Flash-Q4",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 202752,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "8b033379d99550d909c6a5b5168f9fe1ac5beffdd305b6f0c3d88686f17f6001"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_GLM_4.7_Flash_WX-30B-A3B-Q4.py",
+      "model_alias": "mradermacher/Huihui-GLM-4.7-Flash-abliterated-GGUF",
+      "hf_gguf_repo_id": "mradermacher/Huihui-GLM-4.7-Flash-abliterated-GGUF",
+      "gguf_filename": "Huihui-GLM-4.7-Flash-abliterated.Q4_K_M.gguf",
+      "gguf_label": "Huihui-GLM-4.7-Flash-abliterated-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 202752,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "479235113606eecb230ada6f34520edc737c7f38c24c00fcadb33b3d7a30bbfa"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_GPT-OSS-120B_F16.py",
+      "model_alias": "unsloth/gpt-oss-120b-GGUF",
+      "hf_gguf_repo_id": "unsloth/gpt-oss-120b-GGUF",
+      "gguf_filename": "gpt-oss-120b-F16.gguf",
+      "gguf_label": "gpt-oss-120b-F16",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "GPT_OSS_120B_GPU_INDICES": [
+            0,
+            1
+          ],
+          "GPT_OSS_120B_GPU_SAFETY_MARGIN_MIB": 1536,
+          "GPT_OSS_120B_MIN_FIT_CONTEXT": 32768,
+          "GPT_OSS_120B_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "3efa15e50514aadb8943f0fb043b3a575092c80470e83a047b84a9d13dbf7887"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_GPT-OSS-20B_F16.py",
+      "model_alias": "unsloth/gpt-oss-20b-GGUF",
+      "hf_gguf_repo_id": "unsloth/gpt-oss-20b-GGUF",
+      "gguf_filename": "gpt-oss-20b-F16.gguf",
+      "gguf_label": "GPT-OSS-20B-F16",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": true,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": true,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "02c324a3ca5574382418378f4d1d41050254a3f3f02990ad5ddb5afeb0bffa07"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Granite-4.2-30B_Q5.py",
+      "model_alias": "ibm-granite/granite-4.2-30b-GGUF",
+      "hf_gguf_repo_id": "ibm-granite/granite-4.2-30b-GGUF",
+      "gguf_filename": "granite-4.2-30b-Q5_K_M.gguf",
+      "gguf_label": "Granite-4.2-30B-Q5_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 8096,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "GRANITE_42_30B_KV_CACHE_TYPE": "q8_0"
+        },
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "e9a3c47f750de84503a620595013bd4b32b7527b3be3c14f1195d98a8da1d442"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Granite-4.2-8B.i1-Q6.py",
+      "model_alias": "mradermacher/granite-4.2-8b-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/granite-4.2-8b-i1-GGUF",
+      "gguf_filename": "granite-4.2-8b.i1-Q6_K.gguf",
+      "gguf_label": "granite-4.2-8b.i1-Q6_K",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 8096,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "GRANITE_42_8B_KV_CACHE_TYPE": "q8_0"
+        },
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "6474156ce785bee8ae176ab402d7b6e4d833bbbf8d8cf2ed5a051d173826fda3"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Holo4-27B-Q4.py",
+      "model_alias": "Hcompany/Holo4-27B-GGUF",
+      "hf_gguf_repo_id": "Hcompany/Holo4-27B-GGUF",
+      "gguf_filename": "q4_k_m.gguf",
+      "gguf_label": "Holo4-27B-q4_k_m",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "01f2fa7208a0543b4074357b790311e26a17c1995f1b28a4bb82d212d102f1ff"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py",
+      "model_alias": "mradermacher/Hypernova-60B-2605-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/Hypernova-60B-2605-i1-GGUF",
+      "gguf_filename": "Hypernova-60B-2605.i1-Q5_K_M.gguf",
+      "gguf_label": "Hypernova-60B-2605.i1-Q5_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "HYPERNOVA_GPU_INDICES": [
+            0,
+            1
+          ],
+          "HYPERNOVA_GPU_SAFETY_MARGIN_MIB": 1536,
+          "HYPERNOVA_MIN_FIT_CONTEXT": 131072,
+          "HYPERNOVA_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "b2f0726ae754f9f71bcaf2929a6ce369fb76efa8249e00ff4beed7e9ca26c3d0"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py",
+      "model_alias": "bartowski/Kwaipilot_KAT-Coder-V2.5-Dev-GGUF",
+      "hf_gguf_repo_id": "bartowski/Kwaipilot_KAT-Coder-V2.5-Dev-GGUF",
+      "gguf_filename": "Kwaipilot_KAT-Coder-V2.5-Dev-Q4_K_M.gguf",
+      "gguf_label": "Kwaipilot_KAT-Coder-V2.5-Dev-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "d930b01fa6234cb72d0f504ef67fb2e1b73b6096f2f72d18799267116034a0df"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py",
+      "model_alias": "mradermacher/Kimi-Linear-48B-A3B-Instruct-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/Kimi-Linear-48B-A3B-Instruct-i1-GGUF",
+      "gguf_filename": "Kimi-Linear-48B-A3B-Instruct.i1-Q6_K.gguf",
+      "gguf_label": "Kimi-Linear-48B-A3B-Instruct.i1-Q6_K",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 1048576,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "KIMI_LINEAR_GPU_INDICES": [
+            0,
+            1
+          ],
+          "KIMI_LINEAR_GPU_SAFETY_MARGIN_MIB": 1536,
+          "KIMI_LINEAR_KV_CACHE_TYPE": "f16",
+          "KIMI_LINEAR_MIN_FIT_CONTEXT": 131072,
+          "KIMI_LINEAR_REQUIRED_LLAMA_FLAGS": [
+            "--cache-type-k",
+            "--cache-type-v",
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "fcd3f7d4be495e1bba8b5c818f9e9331bb869880c830e561dece7bda9c7d49b8"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Laguna-XS-2.1-33B-A3B_Q4.py",
+      "model_alias": "poolside/Laguna-XS-2.1-GGUF",
+      "hf_gguf_repo_id": "poolside/Laguna-XS-2.1-GGUF",
+      "gguf_filename": "Laguna-XS-2.1-Q4_K_M.gguf",
+      "gguf_label": "Laguna-XS-2.1-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "567f037dede166ab44c264edac3804f4462eb2d85b55b3dc30bbb0c3e37c9e85"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_LFM2.5-24B-A2B-Q5.py",
+      "model_alias": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+      "hf_gguf_repo_id": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+      "gguf_filename": "LFM2.5-24B-A2B-Q5_K_M.gguf",
+      "gguf_label": "LFM2.5-24B-A2B-Q5_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "08534e0b3a6940a17e673a2193391d53cb523a9944083e8594d8914cc9c382c7"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py",
+      "model_alias": "AtomicChat/Ling-3.0-flash-GGUF",
+      "hf_gguf_repo_id": "AtomicChat/Ling-3.0-flash-GGUF",
+      "gguf_filename": "Ling-3.0-flash-AD-Q5_K_M-00001-of-00002.gguf",
+      "gguf_label": "Ling-3.0-flash-124B-A5.1B-AD-Q5_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "LING3_FLASH_DEFAULT_KV_CACHE_TYPE": "q4_0",
+          "LING3_FLASH_GGUF_SHARDS": [
+            "Ling-3.0-flash-AD-Q5_K_M-00001-of-00002.gguf",
+            "Ling-3.0-flash-AD-Q5_K_M-00002-of-00002.gguf"
+          ],
+          "LING3_FLASH_GPU_INDICES": [
+            0,
+            1
+          ],
+          "LING3_FLASH_GPU_SAFETY_MARGIN_MIB": 1536,
+          "LING3_FLASH_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "atomic-llama.cpp-turboquant-b10269-1.6.0",
+          "LING3_FLASH_ISOLATED_LLAMA_TAG": "b10269-1.6.0",
+          "LING3_FLASH_MIN_FIT_CONTEXT": 131072,
+          "LING3_FLASH_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": true
+      },
+      "intentional_residual_sha256": "74217a2aa118b556ca5fe996fba6b057a3ae4500a966c81fc06510ce3ae5aa40"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py",
+      "model_alias": "unsloth/Llama-3_3-Nemotron-Super-49B-v1_5-GGUF",
+      "hf_gguf_repo_id": "unsloth/Llama-3_3-Nemotron-Super-49B-v1_5-GGUF",
+      "gguf_filename": "Llama-3_3-Nemotron-Super-49B-v1_5-UD-Q6_K_XL.gguf",
+      "gguf_label": "Llama-3_3-Nemotron-Super-49B-v1_5-UD-Q6_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "LLAMA_3_3_NEMOTRON_SUPER_GPU_INDICES": [
+            0,
+            1
+          ],
+          "LLAMA_3_3_NEMOTRON_SUPER_GPU_SAFETY_MARGIN_MIB": 1536,
+          "LLAMA_3_3_NEMOTRON_SUPER_MIN_FIT_CONTEXT": 131072,
+          "LLAMA_3_3_NEMOTRON_SUPER_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "aeaf6269bd5118d5e33a1773624cc76e88160cda7539774b9afaf943cde6fed9"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Macaron-V1-Tall-35B-A3B.i1-Q4.py",
+      "model_alias": "mradermacher/Macaron-V1-Tall-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/Macaron-V1-Tall-i1-GGUF",
+      "gguf_filename": "Macaron-V1-Tall.i1-Q4_K_M.gguf",
+      "gguf_label": "Macaron-V1-Tall.i1-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "a0ea2740c6a52cb9e30c44ddb7fb61d8fa8222204de3def23b026700a92d0ed0"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Mellum2.1-12B-A2.5B-Thinking-Q6.py",
+      "model_alias": "JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF",
+      "hf_gguf_repo_id": "JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF",
+      "gguf_filename": "Mellum2.1-12B-A2.5B-Thinking-Q6_K.gguf",
+      "gguf_label": "Mellum2.1-12B-A2.5B-Thinking-Q6_K",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "62914642d78a62da6b3f874d990c8630741b153a4ab0ca3e7a5697d4305d502f"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_MiniCPM-V-4.7-35B-A3B-Q4_1.py",
+      "model_alias": "openbmb/MiniCPM-V-4.7-35B-A3B-gguf",
+      "hf_gguf_repo_id": "openbmb/MiniCPM-V-4.7-35B-A3B-gguf",
+      "gguf_filename": "MiniCPM-V-4_7-35B-A3B-Q4_1.gguf",
+      "gguf_label": "MiniCPM-V-4_7-35B-A3B-Q4_1",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "cf6c9503fcf48e7ccea839f32bbd2e6fefa37205d99eba1201670fc9fbce374d"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Muse-Glimmer-30B_Q5.py",
+      "model_alias": "unsloth/Muse-Glimmer-30B-GGUF",
+      "hf_gguf_repo_id": "unsloth/Muse-Glimmer-30B-GGUF",
+      "gguf_filename": "Muse-Glimmer-30B-UD-Q5_K_XL.gguf",
+      "gguf_label": "Muse-Glimmer-30B-UD-Q5_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "46ac95d3c3e2f93b3287f4d19caace6131ab51a58fbbe5427bbcb1525afd897f"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Nemotron-3.5-Lightning-30B-A3B-IQ4.py",
+      "model_alias": "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+      "hf_gguf_repo_id": "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+      "gguf_filename": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL.gguf",
+      "gguf_label": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-IQ4_NL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "cf0b67a768561c083cef5c01a30ab728589cb20d98888b46e6478864c6937a47"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py",
+      "model_alias": "unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF",
+      "hf_gguf_repo_id": "unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF",
+      "gguf_filename": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL-00001-of-00004.gguf",
+      "gguf_label": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "NEMOTRON35_SUPER_VL_DEFAULT_KV_CACHE_TYPE": "q8_0",
+          "NEMOTRON35_SUPER_VL_GGUF_SHARDS": [
+            "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL-00001-of-00004.gguf",
+            "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL-00002-of-00004.gguf",
+            "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL-00003-of-00004.gguf",
+            "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL-00004-of-00004.gguf"
+          ],
+          "NEMOTRON35_SUPER_VL_GPU_INDICES": [
+            0,
+            1
+          ],
+          "NEMOTRON35_SUPER_VL_GPU_SAFETY_MARGIN_MIB": 1536,
+          "NEMOTRON35_SUPER_VL_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "llama.cpp-b11788",
+          "NEMOTRON35_SUPER_VL_ISOLATED_LLAMA_TAG": "b11788",
+          "NEMOTRON35_SUPER_VL_LLAMACPP_NATIVE_RUNTIME_DIR_NAME": "llama.cpp-b11788-linux",
+          "NEMOTRON35_SUPER_VL_MIN_FIT_CONTEXT": 131072,
+          "NEMOTRON35_SUPER_VL_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": true
+      },
+      "intentional_residual_sha256": "16b3262533724b1640620b543597307f5c42517b362cd407b08cede80a455628"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py",
+      "model_alias": "bartowski/nvidia_Nemotron-Cascade-2-30B-A3B-GGUF",
+      "hf_gguf_repo_id": "bartowski/nvidia_Nemotron-Cascade-2-30B-A3B-GGUF",
+      "gguf_filename": "nvidia_Nemotron-Cascade-2-30B-A3B-IQ4_XS.gguf",
+      "gguf_label": "nvidia_Nemotron-Cascade-2-30B-A3B-IQ4_XS",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "12bac54617475e254a5ca96915676206bba6110dcad1bc9bbb42906f8f86f632"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Nex-N2.5-mini-35B-A3B.i1-Q4.py",
+      "model_alias": "mradermacher/Nex-N2.5-mini-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/Nex-N2.5-mini-i1-GGUF",
+      "gguf_filename": "Nex-N2.5-mini.i1-Q4_K_M.gguf",
+      "gguf_label": "Nex-N2.5-mini.i1-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "c4230f3e87793d5fdce75c24a05521dd79aee85dc26d944d9fe5ae3ed752bf5e"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py",
+      "model_alias": "unsloth/North-Mini-Code-1.0-GGUF",
+      "hf_gguf_repo_id": "unsloth/North-Mini-Code-1.0-GGUF",
+      "gguf_filename": "North-Mini-Code-1.0-UD-Q4_K_XL.gguf",
+      "gguf_label": "North-Mini-Code-1.0-30B-A3B-UD-Q4_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "NORTH_LLAMACPP_NATIVE_RUNTIME_DIR_NAME": "llama.cpp-linux-north-b9626-plus",
+          "NORTH_LLAMACPP_RUNTIME_DIR_NAME": "llama.cpp-north-b9626-plus"
+        },
+        "dual_gpu": false,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "bddded3b5e7c53c66eb5b281dc56af1561fa4a9b0dcdbef89d74ac601d9b4e6c"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Occamy-1.0-35B-A3B-Q4.py",
+      "model_alias": "bartowski/occamy-ai_occamy-1.0-GGUF",
+      "hf_gguf_repo_id": "bartowski/occamy-ai_occamy-1.0-GGUF",
+      "gguf_filename": "occamy-ai_occamy-1.0-Q4_K_L.gguf",
+      "gguf_label": "occamy-ai_occamy-1.0-Q4_K_L",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "a8fbb6acfc38ccf8ccc9f75afec80cbde14e2fa6054861c7c0379c78da2e1a65"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py",
+      "model_alias": "unsloth/Ornith-1.5-122B-GGUF",
+      "hf_gguf_repo_id": "unsloth/Ornith-1.5-122B-GGUF",
+      "gguf_filename": "Ornith-1.5-122B-UD-Q5_K_XL-00001-of-00003.gguf",
+      "gguf_label": "Ornith-1.5-122B-UD-Q5_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "ORNITH15_122B_DEFAULT_KV_CACHE_TYPE": "q4_0",
+          "ORNITH15_122B_GGUF_SHARDS": [
+            "Ornith-1.5-122B-UD-Q5_K_XL-00001-of-00003.gguf",
+            "Ornith-1.5-122B-UD-Q5_K_XL-00002-of-00003.gguf",
+            "Ornith-1.5-122B-UD-Q5_K_XL-00003-of-00003.gguf"
+          ],
+          "ORNITH15_122B_GPU_INDICES": [
+            0,
+            1
+          ],
+          "ORNITH15_122B_GPU_SAFETY_MARGIN_MIB": 1536,
+          "ORNITH15_122B_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "llama.cpp-b10809",
+          "ORNITH15_122B_ISOLATED_LLAMA_TAG": "b10809",
+          "ORNITH15_122B_MIN_FIT_CONTEXT": 131072,
+          "ORNITH15_122B_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": true
+      },
+      "intentional_residual_sha256": "6ae2cafc2566b0c294ca889ae58205e3f474a80b3ce5ecc48b0600a0199bc163"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Ornith-1.5-35B-A3B-Q4.py",
+      "model_alias": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+      "hf_gguf_repo_id": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+      "gguf_filename": "Ornith-1.5-35B-Q4_K_M.gguf",
+      "gguf_label": "Ornith-1.5-35B-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "fa7e2dbdac3e472882acf5f981c4622d5e5255c7dfd61d88b474ec8181cc8d0f"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py",
+      "model_alias": "unsloth/Qwen3-Coder-Next-GGUF",
+      "hf_gguf_repo_id": "unsloth/Qwen3-Coder-Next-GGUF",
+      "gguf_filename": "Qwen3-Coder-Next-UD-Q4_K_S.gguf",
+      "gguf_label": "Qwen3-Coder-Next-UD-Q4_K_S",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "QWEN3_NEXT_GPU_INDICES": [
+            0,
+            1
+          ],
+          "QWEN3_NEXT_GPU_SAFETY_MARGIN_MIB": 1536,
+          "QWEN3_NEXT_MIN_FIT_CONTEXT": 131072,
+          "QWEN3_NEXT_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "59888b4134f0d6a82ba1bc9ff470875b1ac8c4e7f26fe210fc2dddb2af631f38"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py",
+      "model_alias": "unsloth/Qwen3.5-9B-GGUF",
+      "hf_gguf_repo_id": "unsloth/Qwen3.5-9B-GGUF",
+      "gguf_filename": "Qwen3.5-9B-UD-Q5_K_XL.gguf",
+      "gguf_label": "Qwen3.5-9B-UD-Q5_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 101376,
+      "num_predict": 8096,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "QUBITZ_VRAM_BUDGET_MIB": 12288,
+          "QWEN_12G_KV_CACHE_TYPE": "q8_0"
+        },
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "4d1271ceb8bf674fbb24a7146d51af9c362c09340c920107f473d92d301c05ca"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Qwen3.6-35B-A3B_MTP_Q4.py",
+      "model_alias": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+      "hf_gguf_repo_id": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+      "gguf_filename": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "gguf_label": "Qwen3.6-35B-A3B-MTP-UD-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "7fef2e6cd43e96ef09076441ea5d637e1ac14629568b993c7b28db6f29138d62"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Qwen3.8-27B_Q4.py",
+      "model_alias": "unsloth/Qwen3.8-27B-GGUF",
+      "hf_gguf_repo_id": "unsloth/Qwen3.8-27B-GGUF",
+      "gguf_filename": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+      "gguf_label": "Qwen3.8-27B-UD-Q4_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "f8939a0c5aa908ad9f1d656d1a936f0aaf3996a86bb94d6d58c4ca41de29d595"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py",
+      "model_alias": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "hf_gguf_repo_id": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "gguf_filename": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+      "gguf_label": "Qwen3.8-Flash-Next-125B-A6B-UD-IQ4_XS",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "QWEN38_FLASH_NEXT_DEFAULT_KV_CACHE_TYPE": "q4_0",
+          "QWEN38_FLASH_NEXT_GGUF_SHARDS": [
+            "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+            "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+            "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf"
+          ],
+          "QWEN38_FLASH_NEXT_GPU_INDICES": [
+            0,
+            1
+          ],
+          "QWEN38_FLASH_NEXT_GPU_SAFETY_MARGIN_MIB": 1536,
+          "QWEN38_FLASH_NEXT_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "llama.cpp-b10809",
+          "QWEN38_FLASH_NEXT_ISOLATED_LLAMA_TAG": "b10809",
+          "QWEN38_FLASH_NEXT_MIN_FIT_CONTEXT": 131072,
+          "QWEN38_FLASH_NEXT_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": true,
+        "mtp_draft": true,
+        "background_prewarm": false,
+        "sharded_model": true
+      },
+      "intentional_residual_sha256": "910124e7c89e9fb78bcdc1cb55994b75cb1f54d26a0bf9dde5b6e68f353290e1"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_SERA-32B.i1-Q5.py",
+      "model_alias": "mradermacher/SERA-32B-i1-GGUF",
+      "hf_gguf_repo_id": "mradermacher/SERA-32B-i1-GGUF",
+      "gguf_filename": "SERA-32B.i1-Q5_K_S.gguf",
+      "gguf_label": "SERA-32B.i1-Q5_K_S",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 40960,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "cde36dfd2cf48ab013d658eaedb47adfe74050511641371198fbbbcf364c0901"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py",
+      "model_alias": "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP",
+      "hf_gguf_repo_id": "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP",
+      "gguf_filename": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "gguf_label": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {},
+        "dual_gpu": false,
+        "isolated_runtime": false,
+        "mtp_draft": true,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "3a837d5704e6b714c86eee058129e4e0a28fdaebb92e4a1248a6260e822e4448"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Xorton.WX-Computing.LARGE.2026.3-Q4.py",
+      "model_alias": "mradermacher/XORTRON.CriminalComputing.LARGE.2026.3-GGUF",
+      "hf_gguf_repo_id": "mradermacher/XORTRON.CriminalComputing.LARGE.2026.3-GGUF",
+      "gguf_filename": "XORTRON.CriminalComputing.LARGE.2026.3.IQ4_XS.gguf",
+      "gguf_label": "XORTRON.CriminalComputing.LARGE.2026.3.IQ4_XS",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 131072,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": false,
+      "runtime_contract": {
+        "constants": {
+          "XORTRON_CRIMINALCOMPUTING_LARGE_2026_3_GPU_INDICES": [
+            0,
+            1
+          ],
+          "XORTRON_CRIMINALCOMPUTING_LARGE_2026_3_GPU_SAFETY_MARGIN_MIB": 1536,
+          "XORTRON_CRIMINALCOMPUTING_LARGE_2026_3_MIN_FIT_CONTEXT": 32768,
+          "XORTRON_CRIMINALCOMPUTING_LARGE_2026_3_REQUIRED_LLAMA_FLAGS": [
+            "--device",
+            "--fit",
+            "--fit-ctx",
+            "--fit-target",
+            "--split-mode"
+          ]
+        },
+        "dual_gpu": true,
+        "isolated_runtime": false,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "ad5f5a7fc802cdd0d872b007b86f49c2631eca487756616d626b18c9f38789b7"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Gemma-4-12B-IT-Q4_12G.py",
+      "model_alias": "unsloth/gemma-4-12b-it-GGUF",
+      "hf_gguf_repo_id": "unsloth/gemma-4-12b-it-GGUF",
+      "gguf_filename": "gemma-4-12b-it-Q4_K_M.gguf",
+      "gguf_label": "gemma-4-12b-it-Q4_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": true,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "GEMMA4_12B_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "llama.cpp-b11887",
+          "GEMMA4_12B_ISOLATED_LLAMA_TAG": "b11887",
+          "QUBITZ_VRAM_BUDGET_MIB": 12288
+        },
+        "dual_gpu": false,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": true,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "0f069d8b9d17784b16d321cb38defef5360bf2e44dd34b3d8f0cafeba812afe8"
+    },
+    {
+      "filename": "AI_Agent_Qubitz_Ministral-3-8B-Instruct-2512-Q5_12G.py",
+      "model_alias": "mistralai/Ministral-3-8B-Instruct-2512-GGUF",
+      "hf_gguf_repo_id": "mistralai/Ministral-3-8B-Instruct-2512-GGUF",
+      "gguf_filename": "Ministral-3-8B-Instruct-2512-Q5_K_M.gguf",
+      "gguf_label": "Ministral-3-8B-Instruct-2512-Q5_K_M",
+      "embedding_model": "BAAI/bge-code-v1",
+      "num_ctx": 262144,
+      "num_predict": 16384,
+      "background_prewarm": false,
+      "isolated_llamacpp_runtime": true,
+      "runtime_contract": {
+        "constants": {
+          "MINISTRAL3_8B_ISOLATED_LLAMA_RUNTIME_DIR_NAME": "llama.cpp-b11887",
+          "MINISTRAL3_8B_ISOLATED_LLAMA_TAG": "b11887",
+          "QUBITZ_VRAM_BUDGET_MIB": 12288
+        },
+        "dual_gpu": false,
+        "isolated_runtime": true,
+        "mtp_draft": false,
+        "background_prewarm": false,
+        "sharded_model": false
+      },
+      "intentional_residual_sha256": "477ab2b4c78e8041397290da3d579ebda8483dd8eb420f671fbd4631160edab7"
+    }
+  ]
+}

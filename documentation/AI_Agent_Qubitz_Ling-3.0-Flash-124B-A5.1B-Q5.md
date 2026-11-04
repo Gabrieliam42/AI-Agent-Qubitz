@@ -39,5 +39,12 @@ The normal launcher is `variants/AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py
 
 ## Behavioral Compatibility Evidence
 
+The November 5 partial remaining matrix recorded passed read-only-to-full and
+online-source-update trajectories. The multi-module follow-up failed after a
+type-changing candidate was correctly rejected before dispatch; HTML creation
+was interrupted by the user stop. These observations do not erase earlier
+runtime failures or establish general model compatibility. See the
+[partial review](verification_20261105.md).
+
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
 

@@ -1,5 +1,12 @@
 # Qubitz Documentation And User Guide
 
+## Latest Evaluation Status
+
+The November 5 local-time stop left the remaining matrix partial: 3 passed,
+3 failed, 1 interrupted and 971 unrun trajectories. See
+[the evidence review and general repair proposals](verification_20261105.md).
+Historical exclusions and model-free gate passes do not establish live acceptance.
+
 ## Purpose
 
 Qubitz is a WSL2 AI coding agent built around local GGUF inference, with 40 user-facing Python launchers for different models and VRAM budgets. Universal GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification code lives in `runtime/`; each launcher retains its variant-specific source and an isolated runtime namespace.

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "resources": [
+    {
+      "path": "evaluation/fixtures/solar_assets/three.module.js",
+      "sha256": "76dea8151bc9352aef3528b4262e249b2604f62543828328db978d060d61a495",
+      "version": "0.160.0",
+      "urls": ["https://unpkg.com/three@0.160.0/build/three.module.js", "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"]
+    },
+    {
+      "path": "evaluation/fixtures/solar_assets/OrbitControls.js",
+      "sha256": "5a44a9e86a2a0fb11933eed69bc2cd33c76a496854c1aed6ed776efa87d7b064",
+      "version": "0.160.0",
+      "urls": ["https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js", "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js"]
+    }
+  ]
+}
