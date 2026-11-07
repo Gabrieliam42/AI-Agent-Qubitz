@@ -67,3 +67,28 @@ changelog.txt
 
 # Required binary-only policy runtime; never publish its private build sources
 /runtime/*.pdb
+
+# Developer-only evaluation, maintenance, and browser interface
+/evaluation/
+/qubitz_disposable_eval.py
+/qubitz_eval_campaign.py
+/qubitz_live_eval_policy.py
+/qubitz_release_gate.py
+/qubitz_variant_builder.py
+/qubitz_common_wrapper_template.json
+/qubitz_variant_profiles.json
+/run_variant_question.sh
+/requirements-ci.txt
+/AI Agent Qubitz Web Dev.py
+/frontend/
+/package.json
+/package-lock.json
+/runtime/development.py
+/runtime/browser_entrypoint.py
+/runtime/web_api.py
+/runtime/web_controller.py
+/documentation/verification_*.md
+/documentation/developer/
+/variants/AI_Agent_Qubitz_GLM-4.6-WX-v3-357B-A32B-IQ3.py
+/variants/AI_Agent_Qubitz_GLM_4.7_Flash_WX-30B-A3B-Q4.py
+/variants/AI_Agent_Qubitz_Xorton.WX-Computing.LARGE.2026.3-Q4.py
