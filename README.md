@@ -5,16 +5,6 @@ and 40 public GGUF model launchers. Inference runs locally; a hosted AI API or
 subscription is not required. Optional online research and configured MCP
 providers can use the network when enabled.
 
-## Latest Evaluation Status
-
-The matrix and owned llama.cpp servers remain stopped after the November 7,
-2026 review. General transport, lifecycle, no-replay, tool-evidence and timing
-repairs are implemented. The latest qualification passed 362 model-free tests,
-native fixtures and the 40-public-variant release gate; three Windows-only pytest
-cases were skipped under WSL. No live acceptance of this repaired baseline has
-run. See the [current repair and verification record](documentation/verification_20261107.md).
-Earlier partial matrices remain historical evidence, not complete acceptance.
-
 ## Requirements
 
 - Windows 11 with WSL2 and a Python 3.12 project environment. Install the
@@ -79,9 +69,10 @@ its entrypoint identity and isolated mutable state. This is not proof that all
 models have the same behavior or performance. See the
 [runtime layout notes](runtime/README.md) for maintenance details.
 
-## Verification
 
-The 2026-10-31 four-model GUI smoke passed its terminal audit: eight trajectories
-and 20 planned slots, comprising 16 genuine model turns and four injected
-containment checks. This is not a completed 40-model matrix or a model benchmark.
-See the [scope, recovered faults and evidence limits](documentation/verification_20261031.md).
+## Public Package Scope
+
+This repository contains the user runtime, public launchers and user guides.
+Developer evaluation suites, test fixtures, build/export tooling, batch probes
+and the developer browser interface are not included. Model-free checks do
+not guarantee model quality, full context fit or hardware compatibility.

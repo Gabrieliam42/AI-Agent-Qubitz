@@ -5,7 +5,7 @@
 The November 5 remaining matrix recorded a passed multi-module revision and a
 turn-one HTML-generation timeout without a verified artifact. Later HTML turns
 were not reached. This is not a whole-suite pass or proof of a backend hang.
-See the [partial review and general repair proposals](verification_20261105.md).
+See the partial review and general repair proposals (maintainer record; not included).
 
 ## Shared Runtime
 
@@ -53,4 +53,3 @@ Local-inference Qubitz variant for DeepSeek-V4-Flash-0731 UD-IQ4_XS.
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

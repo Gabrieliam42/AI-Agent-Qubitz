@@ -1,14 +1,5 @@
 # Qubitz Documentation And User Guide
 
-## Latest Evaluation Status
-
-The matrix and owned llama.cpp servers remain stopped after the November 7,
-2026 review. General repairs are implemented; the latest qualification passed
-362 model-free tests, native fixtures and the 40-public-variant release gate.
-Three Windows-only pytest cases were skipped under WSL. No live acceptance of
-this repaired baseline has run. See [the current record](verification_20261107.md).
-Historical exclusions and model-free gate passes do not establish live acceptance.
-
 ## Purpose
 
 Qubitz is a WSL2 AI coding agent built around local GGUF inference, with 40 user-facing Python launchers for different models and VRAM budgets. Universal GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification code lives in `runtime/`; each launcher retains its variant-specific source and an isolated runtime namespace.
@@ -19,7 +10,7 @@ The project supports private local inference without requiring an API, cloud acc
 
 - `AI Agent Qubitz.py`: normal Tk GUI launcher; loads only the selected variant.
 - `variants/AI_Agent_Qubitz_*.py`: 40 user-facing release launchers; three developer-only local launchers are excluded from this release.
-- `runtime/`: required shared runtime source, loader, and development/export tools.
+- `runtime/`: required shared runtime source and loader.
 - `documentation/`: public model/context catalog and 40 user-facing model guides.
 - `HARNESS.enc`: runtime harness artifact loaded by variants.
 - `runtime/policy_bundle.json` and `_policy_runtime` binaries: version-bound native harness loader; no user key file is required.
@@ -34,7 +25,7 @@ need a harness key, Cython, or a native compiler. Plaintext `HARNESS.txt`, the a
 private native build sources are not shipped. This packaging discourages casual inspection;
 it does not prevent extraction of the harness on a user-controlled machine. Model weights, downloaded runtimes, caches,
 evaluation artifacts, maintainer-only builder tooling, and the optional browser frontend are not shipped
-in this public Tk/CLI/MCP runtime tree. This is a conservative file set, not a tested pruned-package export.
+in this public Tk/CLI/MCP runtime tree. Keep the published runtime package together.
 
 ## Environment
 
@@ -43,7 +34,7 @@ in this public Tk/CLI/MCP runtime tree. This is a conservative file set, not a t
 - Target hardware: one RTX 3090 24 GB for standard variants; DeepSeek-V4-Flash, GPT-OSS-120B, Hypernova, Kimi-Linear, Ling-3.0-flash, Llama-3.3-Nemotron-Super, Nemotron-3.5-Super-VL, Ornith-1.5-122B, Qwen3-Coder-Next, and Qwen3.8-Flash-Next use two RTX 3090 GPUs with 48 GB aggregate VRAM. The target host also has an Intel i9-14900KF and 128 GB RAM.
 - The three 12GB-class wrappers are Qwen3.5 9B, Gemma 4 12B, and Ministral 3 8B. Gemma and Ministral use a single-GPU 12288 MiB budget; their 262144-token requested ceiling is not a full-window memory-fit guarantee.
 - GPU inference uses the project-managed llama.cpp GGUF runtime and CUDA retrieval/embedding stack where supported.
-- North Mini Code, DeepSeek-V4-Flash, Gemma-4-12B, Ministral-3-8B, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use isolated llama.cpp runtime channels; other variants use the shared project runtime channel unless their profile requires otherwise. Gemma and Ministral pin official `b11887`; their two-scenario GUI smoke passed on 2026-10-31, within the [recorded scope and limitations](verification_20261031.md).
+- North Mini Code, DeepSeek-V4-Flash, Gemma-4-12B, Ministral-3-8B, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use isolated llama.cpp runtime channels; other variants use the shared project runtime channel unless their profile requires otherwise. Gemma and Ministral pin official `b11887`; their two-scenario GUI smoke passed on 2026-10-31, within the recorded scope and limitations (maintainer record; not included).
 - Ling's AD GGUF requires the isolated Atomic TurboQuant `b10269-1.6.0` runtime. Online startup downloads a missing Windows CUDA 12 bundle or, when Windows execution is unavailable under WSL, the same fork's native Linux CUDA 12.4 bundle; cached runtimes are reused. It does not substitute stock llama.cpp or automatically enable TurboQuant KV compression.
 - Known Ling limitation: the current runtime rejected a chunked file-content grammar with HTTP 400 (`number of repetitions exceeds sane defaults`). Successful model loading does not yet establish file-creation compatibility.
 - Hypernova, Kimi-Linear, Llama-3.3-Nemotron-Super, and Qwen3-Coder-Next use explicit llama.cpp layer placement across `CUDA0` and `CUDA1` with a 1536 MiB safety margin on each GPU. DeepSeek-V4-Flash, GPT-OSS-120B, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use automatic dual-GPU layer fitting with the same per-GPU margin and retain unavoidable model-weight overflow in system RAM; other variants retain their existing single-GPU launch behavior.
@@ -112,19 +103,3 @@ a user pause still requires an explicit resume.
 ## Reasoning Display
 
 The GUI's `Show Reasoning` checkbox is checked by default and streams separate runtime `reasoning_content` inline as provisional text. Chat follows all new output, including reasoning, until the user scrolls up; scrolling to the bottom or pressing `Jump to latest` resumes following. After a task finishes, reasoning collapses after the `Reading Speed` delay; manual scrolling keeps it visible until the next task. Click the summary to expand it in the original chat order. The GUI retains at most 100,000 displayed reasoning characters per turn and the latest 10 collapsed turns; older reasoning text is cleared. Unchecking stops new display without changing model thinking or inference settings. Reasoning is excluded from answer previews, model history, and persistent GUI logs. Missing reasoning text does not prove thinking is disabled; rendering adds GUI work, not a model call, and the text is not verified evidence.
-
-## Verification
-
-On 2026-10-31, the fresh four-model GUI smoke passed all eight trajectories and 20 planned slots with an accepted terminal audit. Four slots deliberately injected malformed proposals and are containment checks, not model-quality trials. Retained CPU/gate evidence, the three recovered proposal/tool problems, and unexercised coverage are described in the [scoped verification record](verification_20261031.md). Earlier held campaigns remain held.
-
-The maintainer's full local release gate validates profile/common-wrapper parity for the 40 public variants, Python syntax, targeted Ruff correctness rules, encrypted-harness integrity, and ignore protection. The gate and plaintext harness are not part of this public runtime tree. The three developer-only variants are excluded from automated release validation. Historical gate results no longer establish current validity after source or profile changes.
-
-The initial 2026-10-14 modular-runtime validation passed 893 of 894 expanded CPU regressions; its cache-refresh timeout and isolated reproductions remain preserved in `.cache/modular_evidence_*.log` and `.xml`. Subsequent controlled testing showed that a backward Tcl clock step delayed timer-based delivery after the scan had finished. Unix/WSL now uses a pipe-backed Tcl file event for completed cache results, with GUI-thread updates and safe notifier closure. Platforms without file events retain timer polling. All 909 expanded CPU/Tk regressions then passed, including the original unchanged 10-second test and the controlled clock-step, shutdown, and fallback checks. The source of host clock changes and attribution of historical GUI delays remain unknown. See `.cache/cache_delivery_expanded_20261014.log` and `.xml` for the new results.
-
-Coverage reports can group planned variants and completed results by configured backend path and nominal VRAM profile tier, then by parser formats observed from an existing runtime-properties response. These groups describe coverage; they do not reorder or select runs, and a trajectory with multiple observed formats can appear in more than one group. Unknown runtime facts remain unknown. Grouping and CPU tests do not establish model quality, speed, hardware fit, or GUI behavior beyond the specific checks performed.
-
-Recent targeted evaluation evidence recorded in the variant documentation includes successful matrix and smoke reruns for the previously failing/slow subset. Those records are historical after source or profile changes. Headless evaluation captures stdout, stderr, logs, exit status, structured events, and telemetry; it does not by itself observe GUI rendering, browser state, or browser developer-console output.
-
-## Maintenance
-
-The full local maintenance checkout contains the builder, release gate, plaintext harness, and evaluation fixtures; this public runtime tree omits them. Edit universal behavior in the shared runtime only with the corresponding maintenance checks available. Before editing any protected file, including Markdown documentation, verify that no campaign is active. Documentation edits during measurement also invalidate its snapshot; defer them until the terminal audit rather than waiving the guard. New live results are evidence only for their recorded frozen inputs after actual process waits, structured-result inspection and cleanup review; source equality and CPU checks do not prove universal inference quality or speed.

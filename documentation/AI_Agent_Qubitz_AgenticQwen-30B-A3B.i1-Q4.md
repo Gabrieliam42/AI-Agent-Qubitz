@@ -95,5 +95,4 @@ The shared wrapper distinguishes API/signature compatibility from behavioral com
 This variant passed `create_edit_execute` and `structured_error_then_new_task`
 in the accepted four-model GUI smoke, using the unchanged profile. These two
 scenarios do not establish resolution of the historical MCP/full-matrix failures
-or support a model ranking. See the [scope and evidence limits](verification_20261031.md).
-
+or support a model ranking. See the scope and evidence limits (maintainer record; not included).

@@ -44,7 +44,6 @@ online-source-update trajectories. The multi-module follow-up failed after a
 type-changing candidate was correctly rejected before dispatch; HTML creation
 was interrupted by the user stop. These observations do not erase earlier
 runtime failures or establish general model compatibility. See the
-[partial review](verification_20261105.md).
+partial review (maintainer record; not included).
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

@@ -6,7 +6,7 @@ The November 5 remaining matrix timed out on the first HTML trajectory turn.
 The artifact was retained with file/browser-load checks, but requested visual
 behavior and interactions remained unverified. Later turns were not reached.
 This run did not reproduce the earlier `createStars` syntax rejection; it does
-not justify weakening validation. See the [partial review](verification_20261105.md).
+not justify weakening validation. See the partial review (maintainer record; not included).
 
 ## Shared Runtime
 
@@ -97,4 +97,3 @@ This section is generated from the current variant profile and script synchroniz
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

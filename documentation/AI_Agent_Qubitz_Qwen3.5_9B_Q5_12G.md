@@ -93,5 +93,4 @@ The shared wrapper distinguishes API/signature compatibility from behavioral com
 This variant passed `create_edit_execute` and `structured_error_then_new_task`
 in the accepted four-model GUI smoke, using the unchanged profile. This covers
 only those scenarios, not every feature above or a current full matrix. See the
-[scope, retained CPU/gate evidence and limitations](verification_20261031.md).
-
+scope, retained CPU/gate evidence and limitations (maintainer record; not included).

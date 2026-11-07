@@ -37,4 +37,4 @@ On 2026-10-31 this variant passed `create_edit_execute` and
 `structured_error_then_new_task` in the accepted four-model GUI smoke. Two
 pre-dispatch patch rejections recovered within the existing bounded snapshot
 mechanism. This does not establish full-window fit, a full test suite, or general
-model quality; see the [scope and evidence limits](verification_20261031.md).
+model quality; see the scope and evidence limits (maintainer record; not included).
