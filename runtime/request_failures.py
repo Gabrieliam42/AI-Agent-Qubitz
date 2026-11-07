@@ -5,6 +5,7 @@ import hashlib
 import json
 
 from .structured_response import StructuredBackendError
+from .transport_failures import TransportFailure, retain_failure
 
 
 class GenerationRejectedError(StructuredBackendError):
@@ -34,8 +35,10 @@ def generation_rejection(error, payload: dict, *, http_status=None, request_id="
     )
 
 
-def request_failure_answer(agent, error: GenerationRejectedError) -> str:
+def request_failure_answer(agent, error: GenerationRejectedError | TransportFailure) -> str:
     """Preserve previous work and terminal uncertainty; do not turn rejection into success."""
+    if isinstance(error, TransportFailure) and 'retained_failure' not in error.receipt:
+        retain_failure(error)
     agent._last_request_failure = dict(error.receipt)
     broker = getattr(agent, "_tool_permission_broker", None)
     evidence = broker._current_turn_evidence() if broker is not None else []
@@ -56,12 +59,13 @@ def request_failure_answer(agent, error: GenerationRejectedError) -> str:
         str(error) + " Earlier committed changes were preserved."
         + (" Prior action outcome is uncertain; reconciliation is required." if uncertain else "")
         + ("\nSaved paths: " + ", ".join(committed) if committed else "")
-        + "\n\n[Completion status: partial] Unverified postconditions: rejected generation."
+        + "\n\n[Completion status: partial] Unverified postconditions: "
+        + ("transport failure." if isinstance(error, TransportFailure) else "rejected generation.")
     )
 
 
 def deliver_request_failure(gui, error, run_id: int) -> bool:
-    if not isinstance(error, GenerationRejectedError):
+    if not isinstance(error, (GenerationRejectedError, TransportFailure)):
         return False
     import traceback
 
@@ -71,6 +75,10 @@ def deliver_request_failure(gui, error, run_id: int) -> bool:
                                  receipt=gui.agent._last_request_failure,
                                  traceback="".join(traceback.format_exception(error)))
     except Exception:  # noqa: BLE001 - failed evidence publication must retain the terminal error path
+        return False
+    if isinstance(error, TransportFailure):
+        gui.event_queue.put((run_id, "answer", answer))
+        # Retain the infrastructure error path; rendering a summary is not isolation.
         return False
     if gui.agent._last_request_failure["uncertain_prior_action"]:
         return False

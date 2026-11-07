@@ -148,13 +148,40 @@ def propagate_owner(token: str, receipts: list[dict[str, Any]] | None = None) ->
             super().__init__(*args, **kwargs)
 
         def communicate(self, *args: Any, **kwargs: Any) -> Any:
-            output = super().communicate(*args, **kwargs)
+            try:
+                output = super().communicate(*args, **kwargs)
+            except subprocess.TimeoutExpired as error:
+                self._timeout_capture = error
+                raise
+            timed_receipt = getattr(self, "_timeout_receipt", None)
+            if timed_receipt is not None:
+                timed_receipt.update({
+                    "stdout": output[0].decode(errors="replace") if isinstance(output[0], bytes) else output[0],
+                    "stderr": output[1].decode(errors="replace") if isinstance(output[1], bytes) else output[1],
+                    "stdout_complete": True, "stderr_complete": True,
+                })
             if receipts is not None and not getattr(self, "_receipt_saved", False):
                 receipts.append({"command": self.args, "pid": self.pid, "exit_code": self.returncode,
                                  "stdout": output[0].decode(errors="replace") if isinstance(output[0], bytes) else output[0],
                                  "stderr": output[1].decode(errors="replace") if isinstance(output[1], bytes) else output[1]})
                 self._receipt_saved = True
             return output
+
+        def wait(self, *args: Any, **kwargs: Any) -> int:
+            code = super().wait(*args, **kwargs)
+            timeout = getattr(self, "_timeout_capture", None)
+            if receipts is not None and timeout is not None and not getattr(self, "_receipt_saved", False):
+                def partial(value):
+                    return value.decode(errors="replace") if isinstance(value, bytes) else value
+
+                self._timeout_receipt = {"command": self.args, "pid": self.pid, "exit_code": code,
+                                         "actual_wait": True, "communication_timeout_observed": True,
+                                         "timeout_scope": "communicate_wait_not_command_outcome", "timeout_seconds": timeout.timeout,
+                                         "stdout": partial(timeout.output), "stderr": partial(timeout.stderr),
+                                         "stdout_complete": False, "stderr_complete": False}
+                receipts.append(self._timeout_receipt)
+                self._receipt_saved = True
+            return code
 
     subprocess.Popen = OwnedPopen
 

@@ -14,6 +14,49 @@ ERRORS = {"ValueError": ValueError, "TypeError": TypeError, "ZeroDivisionError":
           "OverflowError": OverflowError}
 
 
+def counterexample(receipt: dict) -> dict | None:
+    """Explain one rejected candidate; this is not evidence for a future candidate."""
+    if receipt.get("status") != "failed":
+        return None
+    for case in receipt.get("cases", ()):
+        if not isinstance(case, dict) or case.get("matched") is not False:
+            continue
+        arguments = case.get("arguments_repr")
+        before, after = case.get("before"), case.get("after")
+        if (not isinstance(arguments, str) or not all(
+            isinstance(value, (tuple, list)) and len(value) in {2, 3}
+            and all(isinstance(item, str) for item in value) for value in (before, after)
+        )):
+            return None
+        return {
+            "function": str(case.get("function", ""))[:128],
+            "arguments_repr": arguments[:512],
+            "before": [value[:256] for value in before], "after": [value[:256] for value in after],
+            "truncated": len(arguments) > 512 or any(len(value) > 256 for value in (*before, *after)),
+            "scope": "One bounded same-input mismatch in the rejected candidate, not universal equivalence.",
+        }
+    return None
+
+
+def recovery_counterexamples(comparisons: dict, *, turn_id, workspace_generation, snapshots: dict) -> list[dict]:
+    results = []
+    for path, receipt in comparisons.items():
+        if not isinstance(receipt, dict):
+            continue
+        if (receipt.get("turn_id") != turn_id or receipt.get("workspace_generation") != workspace_generation
+                or receipt.get("before_sha256") != snapshots.get(path)
+                or not all(isinstance(receipt.get(key), str) and re.fullmatch(r"[a-f0-9]{64}", receipt[key])
+                           for key in ("before_sha256", "after_sha256"))):
+            continue
+        detail = counterexample(receipt)
+        if detail is not None:
+            results.append({"path": path, "before_sha256": receipt["before_sha256"],
+                            "rejected_candidate_sha256": receipt["after_sha256"], **detail})
+        if len(results) == 6:
+            break
+    return results
+
+
 def requested(prompt: str) -> bool:
     pattern = r"\b(?:preserv\w*|retain\w*|keep|unchanged)\b[^.\n]{0,200}" + (
         r"\b(?:default\w*|omitted\w*|without\s+[^.\n]{0,50}(?:argument|parameter))")
@@ -80,9 +123,20 @@ def run(node: ast.FunctionDef, arguments: tuple):
         if isinstance(item, ast.UnaryOp) and isinstance(item.op, (ast.USub, ast.UAdd, ast.Not)):
             value = expression(item.operand)
             return not value if isinstance(item.op, ast.Not) else -value if isinstance(item.op, ast.USub) else +value
+        if isinstance(item, ast.BoolOp) and isinstance(item.op, (ast.And, ast.Or)):
+            for operand in item.values:
+                value = expression(operand)
+                if (isinstance(item.op, ast.And) and not value) or (isinstance(item.op, ast.Or) and value):
+                    return value
+            return value
         if isinstance(item, ast.Compare) and all(type(op) in CMP for op in item.ops):
-            values = [expression(item.left), *(expression(x) for x in item.comparators)]
-            return all(CMP[type(op)](values[i], values[i + 1]) for i, op in enumerate(item.ops))
+            left = expression(item.left)
+            for operation, comparator in zip(item.ops, item.comparators, strict=True):
+                right = expression(comparator)
+                if not CMP[type(operation)](left, right):
+                    return False
+                left = right
+            return True
         if isinstance(item, ast.IfExp):
             return expression(item.body if expression(item.test) else item.orelse)
         if (isinstance(item, ast.Call) and isinstance(item.func, ast.Name) and item.func.id == "sum"

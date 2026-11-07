@@ -1,6 +1,7 @@
 """Read acknowledged GUI evidence in FIFO order without rewriting raw events."""
 from __future__ import annotations
 
+import copy
 import json
 import math
 from dataclasses import asdict, dataclass, field
@@ -123,7 +124,7 @@ def collect_gui_diagnostics(gui: Any) -> GuiDiagnosticsReceipt:
         unresolved_stall_count=active_stalls,
         behavior_issues=issues, warnings=warnings, read_errors=errors,
         worker_exceptions=worker_exceptions,
-        request_failures=[event["receipt"] for event in events
+        request_failures=[copy.deepcopy(event["receipt"]) for event in events
                           if event.get("event") == "generation_request_failure"
                           and isinstance(event.get("receipt"), dict)],
     )

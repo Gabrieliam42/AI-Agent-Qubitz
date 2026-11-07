@@ -563,14 +563,22 @@ def apply_gui_diagnostics(report: dict[str, Any], diagnostics: dict[str, Any]) -
     if issues.intersection({"gui_worker_exception", "gui_logged_error"}):
         report["status_before_runtime_fault"] = report["status"]
         report["status"] = "harness_error"
-        if "runtime_worker_error" not in report.setdefault("issues", []):
-            report["issues"].append("runtime_worker_error")
+        failures = diagnostics.get("request_failures", [])
+        typed = [row for row in failures if row.get("schema") == "qubitz_transport_failure_v1"]
+        category = "generation_transport_error" if typed else "runtime_worker_error"
+        if category not in report.setdefault("issues", []):
+            report["issues"].append(category)
+        if typed:
+            report["runtime_failure"] = {"category": "transport", "receipts": copy.deepcopy(typed),
+                                         "model_correctness_verdict": "not_established"}
     elif report["status"] != "interrupted" and issues:
         report["status"] = "failed"
     if diagnostics.get("request_failures"):
         if report["status"] not in {"interrupted", "harness_error"}:
             report["status"] = "failed"
-        if "generation_rejected" not in report.setdefault("issues", []):
+        if (any(row.get("schema") == "qubitz_generation_rejection_v1"
+                for row in diagnostics["request_failures"])
+                and "generation_rejected" not in report.setdefault("issues", [])):
             report["issues"].append("generation_rejected")
 
 
@@ -1216,6 +1224,7 @@ def execute_turn(turn: Any, runner: Any, gui: Any, smoke: Any, root: Path, obser
 
     deadline_stop = threading.Event()
     deadline_thread = None
+    previous_request_budget = getattr(runner, "_qubitz_request_budget", None)
     started = time.monotonic()
     result: dict[str, Any] = {"prompt": turn.prompt, "intervention": {}, "completed": False}
     audit = root / "mcp_audit.jsonl"
@@ -1309,6 +1318,7 @@ def execute_turn(turn: Any, runner: Any, gui: Any, smoke: Any, root: Path, obser
             monitor = threading.Thread(target=watch, daemon=True)
             monitor.start()
     try:
+        runner._qubitz_request_budget = budget.snapshot
         if getattr(turn, "structured_error", False):
             from evaluation.structured_failure_fixture import StructuredFailureFixture
 
@@ -1348,6 +1358,7 @@ def execute_turn(turn: Any, runner: Any, gui: Any, smoke: Any, root: Path, obser
             result.update(gui_closed=True, timed_out=False, interruption="gui_closed")
     finally:
         deadline_stop.set()
+        runner._qubitz_request_budget = previous_request_budget
         if deadline_thread is not None:
             deadline_thread.join(timeout=2)
         result["phase_budget"] = budget.snapshot()
@@ -1651,7 +1662,9 @@ def child(args: argparse.Namespace) -> int:
             if not observed.get("completed") or observed.get("exception") or observed.get("errors"):
                 issues.append("turn_execution_error")
             if observed.get("request_failure"):
-                issues.append("generation_rejected")
+                failure = observed["request_failure"]
+                issues.append("generation_transport_error" if failure.get("schema") == "qubitz_transport_failure_v1"
+                              else "generation_rejected")
             if observed.get("timed_out"):
                 issues.append("evaluation_timeout_not_proven_hang")
             if not turn.allow_partial and "[Completion status: partial]" in observed.get("assistant", ""):
@@ -2216,8 +2229,13 @@ def _coordinate(args: argparse.Namespace) -> int:
                     print(json.dumps({"variant": name, "scenario": case.name, "repeat": repeat,
                                       "status": row["status"], "issues": row.get("issues", []),
                                       "failed_turns": [turn["turn"] for turn in row["turns"] if turn["status"] == "failed"]}), flush=True)
-                if row["status"] in {"harness_error", "interrupted"} or "thermal_abort_86C" in row.get("issues", []):
+                from evaluation.generation_failures import independent_continuation
+
+                continuation = independent_continuation(row)
+                if (row["status"] in {"harness_error", "interrupted"}
+                        or not continuation["allowed"] or "thermal_abort_86C" in row.get("issues", [])):
                     summary["status"] = "stopped_infrastructure" if row["status"] != "interrupted" else "paused"
+                    summary["continuation_hold"] = continuation
                     save_json(output / "summary.json", summary)
                     coordinator_event(output, "coordinator_stop", status=summary["status"])
                     return 2

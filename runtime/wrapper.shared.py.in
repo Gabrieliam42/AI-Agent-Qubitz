@@ -1715,8 +1715,18 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
             exact_edit = named_edit or exact_batch
             proposal_turn, proposal_generation = broker.turn_id, broker.workspace_generation
             proposal_targets = set(broker.transaction_explicit_file_targets)
+            proposal_reference_hashes: dict[str, str] = {}
 
             def proposal_authority_current() -> bool:
+                try:
+                    for path, digest in proposal_reference_hashes.items():
+                        target = Path(path)
+                        if (any(part.is_symlink() for part in (target, *target.parents))
+                                or target.stat().st_size > 96004
+                                or hashlib.sha256(target.read_bytes()).hexdigest() != digest):
+                            return False
+                except OSError:
+                    return False
                 return (broker.turn_id == proposal_turn and broker.workspace_generation == proposal_generation
                         and set(broker.transaction_explicit_file_targets) == proposal_targets
                         and broker.access_mode == ACCESS_MODE_FULL and not broker.no_progress_recovery_exhausted
@@ -1891,22 +1901,48 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
             proposal_hashes: dict[str, str] = {}
             proposal_snapshots: dict[str, str] = {}
             remaining = 24000
-            for path in sorted(broker.transaction_explicit_file_targets or broker.transaction_snapshot_hashes, key=str.casefold)[:6]:
+            writable_paths = set(broker.transaction_explicit_file_targets or broker.transaction_snapshot_hashes)
+            reference_paths: set[str] = set()
+            for token in _explicit_file_reference_tokens(base, prompt):
+                try:
+                    target = base.resolve_workspace_path(self.workspace, token, allow_missing=True, allow_external=False)
+                    if str(target.resolve()) not in writable_paths:
+                        reference_paths.add(str(target.resolve()))
+                except (OSError, ValueError):
+                    return None
+            context_paths = (sorted(writable_paths, key=str.casefold)
+                             + sorted(reference_paths, key=str.casefold))
+            for path in context_paths[:6]:
                 with suppress(OSError, ValueError, UnicodeDecodeError):
                     target = Path(path)
+                    if (not target.resolve().is_relative_to(self.workspace.resolve())
+                            or any(part.is_symlink() for part in (target, *target.parents))
+                            or target.stat().st_size > 96004):
+                        continue
                     data = target.read_bytes()
+                    digest = hashlib.sha256(data).hexdigest()
+                    readonly = path not in writable_paths
+                    if readonly and broker.transaction_snapshot_hashes.get(str(target.resolve())) != digest:
+                        continue
                     content, _encoding, _bom = _decode_text_preserving_encoding(data, str(target))
                     if len(content) <= remaining:
                         numbered = "".join(f"{index}: {line}" for index, line in enumerate(content.splitlines(keepends=True), 1))
-                        displayed = numbered if exact_edit else content
+                        displayed = numbered if exact_edit and not readonly else content
                         bounds = (f"Original line range: 1..{len(content.splitlines(keepends=True))}; "
                                   "new_text is a string of at most 1000 characters or an array of at most 24 "
                                   "strings of at most 1000 characters each, joined verbatim without separators. "
-                                  "The total replacement limit remains 24000 characters.\n" if exact_edit else "")
+                                  "The total replacement limit remains 24000 characters.\n" if exact_edit and not readonly else "")
+                        if readonly:
+                            bounds = "Read-only reference; not an authorized patch destination.\n"
                         fresh_blocks.append(f"File: {base.relative_path(target, self.workspace)}\n{bounds}Exact current content:\n{displayed}")
-                        proposal_hashes[str(target.resolve())] = hashlib.sha256(data).hexdigest()
-                        proposal_snapshots[str(target.resolve())] = content
+                        if readonly:
+                            proposal_reference_hashes[str(target.resolve())] = digest
+                        else:
+                            proposal_hashes[str(target.resolve())] = digest
+                            proposal_snapshots[str(target.resolve())] = content
                         remaining -= len(content)
+            if not reference_paths.issubset(proposal_reference_hashes):
+                return None
             if fresh_blocks:
                 instruction = ("Fresh numbered snapshot; select inclusive original line spans, never regenerate old_text:"
                                if exact_edit else "Fresh authoritative text; copy old_text verbatim, including whitespace:")
@@ -2067,6 +2103,24 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                             " The previous JSON proposal was rejected before application. Reissue it once using exact "
                             "old_text copied from the fresh authoritative file contents below."
                         )
+                    from runtime.default_behavior import recovery_counterexamples
+
+                    current_snapshots = {}
+                    for target in getattr(broker, "_default_behavior_rejections", {}):
+                        path = Path(target)
+                        if (target in broker.transaction_snapshot_hashes
+                                and path.is_relative_to(self.workspace.resolve()) and not path.is_symlink()):
+                            with suppress(OSError):
+                                current_snapshots[target] = hashlib.sha256(path.read_bytes()).hexdigest()
+                    behavioral_feedback = recovery_counterexamples(
+                        getattr(broker, "_default_behavior_rejections", {}), turn_id=broker.turn_id,
+                        workspace_generation=broker.workspace_generation, snapshots=current_snapshots,
+                    )
+                    rejection_context = (
+                        "\nPrevious candidate rejection evidence (not acceptance of a new candidate):\n"
+                        + _fence_untrusted_workspace_content(json.dumps(behavioral_feedback, ensure_ascii=True))
+                        if behavioral_feedback else ""
+                    )
                     try:
                         proposal = await asyncio.to_thread(
                             self._get_llm().qubitz_json_chat,
@@ -2080,6 +2134,7 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                                         f"{focused_context}\n\n"
                                         f"{correction_context}\n\n"
                                         f"{schema_correction_context}\n\n"
+                                        + rejection_context + "\n"
                                         + ("Return one atomic patch proposal using inclusive start_line/end_line spans "
                                          "from the original numbered snapshot. Replace those complete lines with new_text, "
                                          "including needed line endings. Do not generate old_text, hashes or line-number prefixes."
@@ -3159,9 +3214,23 @@ NETWORK_MODE_ONLINE = "online"
                                 broker, broker.current_prompt, (), candidates={str(target): proposed},
                             )
                             if contract_issues:
+                                from runtime.default_behavior import recovery_counterexamples
+
                                 mismatch = {"status": "invalid_patch_content", "path": patch["path"],
                                             "current_sha256": digest, "issues": contract_issues,
                                             "reason": "Candidate violates explicit saved-text constraints; no patch was dispatched."}
+                                diagnostics = recovery_counterexamples(
+                                    getattr(broker, "_default_behavior_receipts", {}), turn_id=broker.turn_id,
+                                    workspace_generation=broker.workspace_generation, snapshots={str(target): digest},
+                                )
+                                if diagnostics:
+                                    mismatch["behavioral_counterexamples"] = diagnostics
+                                    # Completion checks may refresh live comparisons before recovery consumes this rejection.
+                                    rejected = {path: item for path, item in getattr(broker, "_default_behavior_rejections", {}).items()
+                                                if item.get("turn_id") == broker.turn_id
+                                                and item.get("workspace_generation") == broker.workspace_generation}
+                                    rejected[str(target)] = dict(broker._default_behavior_receipts[str(target)])
+                                    broker._default_behavior_rejections = dict(list(rejected.items())[-6:])
                                 break
                             if (broker.action_progress.patch_cycle(str(target), digest, proposed_hash)
                                     and not broker._saved_contract_correction_active
@@ -3765,11 +3834,13 @@ def _is_external_network_url(value: Any) -> bool:
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:1a850d5e3cfcd91e> module/FunctionDef:_install_agent_tool_hardening:0/FunctionDef:build_model_tools:0
     def build_model_tools(tools: Sequence[Any]) -> list[dict[str, Any]]:
+        from runtime.tool_schema import model_tool_schema
+
         definitions = original_build_model_tools(tools)
         for definition in definitions:
             function = definition.get("function") or {}
             name = str(function.get("name", ""))
-            function["parameters"] = _strict_tool_schema(function.get("parameters") or {"type": "object"})
+            function["parameters"] = model_tool_schema(_strict_tool_schema(function.get("parameters") or {"type": "object"}))
             annotation = _tool_annotations(base, name)
             attributes: list[str] = []
             if annotation.readOnlyHint:
@@ -5752,7 +5823,13 @@ def _patch_streaming_chat(base: Any) -> None:
             watcher.join(timeout=1)
 
     def _http_timeout() -> Any:
-        return httpx.Timeout(600.0, read=float(getattr(base, "QUBITZ_LLAMACPP_READ_TIMEOUT_SECONDS", 600.0)))
+        from runtime.request_budget import request_timeout
+
+        allowance = request_timeout(
+            float(getattr(base, "QUBITZ_LLAMACPP_READ_TIMEOUT_SECONDS", 600.0)),
+            snapshot=getattr(_request_owner(), "_qubitz_request_budget", None),
+        )
+        return httpx.Timeout(min(600.0, allowance), read=allowance)
 
     @contextmanager
     def _http_client() -> Any:
@@ -5866,7 +5943,9 @@ def _patch_streaming_chat(base: Any) -> None:
 
     base.QubitzContextCapacityError = ContextCapacityError
 
-    class ChatRequestError(RuntimeError):
+    from runtime.transport_failures import TransportFailure
+
+    class ChatRequestError(TransportFailure):
         """The server rejected a request; changing transports cannot repair it."""
 
         def __init__(self, detail: str, status_code: int = 400) -> None:
@@ -5874,7 +5953,7 @@ def _patch_streaming_chat(base: Any) -> None:
             self.retryable_loading = status_code == 503 and bool(re.search(
                 r"\b(?:model.{0,40}loading|loading.{0,40}model)\b", detail, re.IGNORECASE,
             ))
-            super().__init__(f"llama.cpp rejected the chat request (HTTP {status_code}): {detail}")
+            super().__init__(f"llama.cpp rejected the chat request (HTTP {status_code}): {detail}", receipt={})
 
     base.QubitzChatRequestError = ChatRequestError
 
@@ -5911,6 +5990,9 @@ def _patch_streaming_chat(base: Any) -> None:
         return ChatRequestError(_chat_error_detail(response), response.status_code)
 
     def _call_with_chat_error_details(self: Any, method_name: str, *args: Any, **kwargs: Any) -> Any:
+        from runtime.transport_failures import BridgeFailure, transport_failure
+        from runtime.request_timing import observed
+
         transports = getattr(self, "transports", None)
         if (method_name != "post_json" or not args or args[0] != "/v1/chat/completions"
                 or not transports):
@@ -5918,23 +6000,54 @@ def _patch_streaming_chat(base: Any) -> None:
         errors: list[str] = []
         for index, transport in enumerate(list(transports)):
             try:
-                result = transport.post_json(*args, **kwargs)
+                from runtime.request_budget import request_budget
+
+                observed("request")
+                with request_budget(getattr(_request_owner(), "_qubitz_request_budget", None)):
+                    result = transport.post_json(*args, **kwargs)
             except httpx.ReadTimeout as exc:
-                raise _response_timeout(exc) from exc
+                _check_user_cancellation()
+                raise transport_failure(exc, args[1], transport=transport.label, endpoint=args[0],
+                                        backend=getattr(self, "_qubitz_backend_identity", {})) from exc
             except httpx.HTTPStatusError as exc:
                 _check_user_cancellation()
-                raise _chat_request_error(exc.response) from exc
+                error = _chat_request_error(exc.response)
+                error.receipt = transport_failure(exc, args[1], transport=transport.label, endpoint=args[0],
+                                                backend=getattr(self, "_qubitz_backend_identity", {})).receipt
+                raise error from exc
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 errors.append(f"{transport.label}: {type(exc).__name__}: {exc}")
                 continue
             except Exception as exc:
                 _check_user_cancellation()
-                raise RuntimeError(
-                    "Generation transport failed after dispatch; completion is unknown and the request was not replayed."
-                ) from exc
+                detail = getattr(exc, "receipt", {})
+                if isinstance(exc, BridgeFailure) and type(detail.get("http_status")) is int:
+                    from runtime.request_failures import generation_rejection
+
+                    try:
+                        raw = json.loads(detail.get("http_body") or "{}")
+                    except ValueError:
+                        raw = {}
+                    rejection = generation_rejection(raw.get("error") if isinstance(raw, dict) else None,
+                        args[1], http_status=detail["http_status"], backend=getattr(self, "_qubitz_backend_identity", {}))
+                    if rejection is not None:
+                        raise rejection from exc
+                    if detail["http_status"] == 503:
+                        error = ChatRequestError(str(exc), 503)
+                        error.receipt = transport_failure(exc, args[1], transport=transport.label, endpoint=args[0],
+                            backend=getattr(self, "_qubitz_backend_identity", {})).receipt
+                        raise error from exc
+                error = transport_failure(exc, args[1], transport=transport.label, endpoint=args[0],
+                                          backend=getattr(self, "_qubitz_backend_identity", {}),
+                                          bridge=getattr(transport, "_qubitz_bridge_receipt", None))
+                from runtime.server_lifetime import snapshot
+
+                error.receipt["owned_server_at_failure"] = snapshot(getattr(self, "server_process", None))
+                raise error from exc
             if index != 0:
                 self.transports.insert(0, self.transports.pop(index))
             self.transport = self.transports[0]
+            observed("response")
             return result
         from runtime.recovery_protocol import ConnectionUnavailable
 
@@ -6431,6 +6544,9 @@ def _patch_streaming_chat(base: Any) -> None:
                             break
                         event = json.loads(data)
                         received_event = True
+                        from runtime.request_timing import observed
+
+                        observed("first_data")
                         backend_fingerprint = event.get("system_fingerprint") or backend_fingerprint
                         if event.get("error"):
                             from runtime.request_failures import generation_rejection
@@ -6570,15 +6686,32 @@ def _patch_streaming_chat(base: Any) -> None:
                                 usage = terminal_observation.get("usage") or usage
                                 timings = terminal_observation.get("timings") or timings
                             break
-        except ChatRequestError:
+        except ChatRequestError as exc:
+            from runtime.transport_failures import transport_failure
+
+            if not exc.receipt:
+                exc.receipt = transport_failure(exc, payload, transport="direct", endpoint="/v1/chat/completions",
+                                               bridge={"http_status": exc.status_code}).receipt
             raise
         except httpx.ReadTimeout as exc:
-            raise _response_timeout(exc) from exc
+            from runtime.transport_failures import transport_failure
+
+            _check_user_cancellation()
+            raise transport_failure(exc, payload, transport="direct", endpoint="/v1/chat/completions",
+                                    backend=getattr(self, "_qubitz_backend_identity", {})) from exc
         except Exception as exc:
             _check_user_cancellation()
             if (request_accepted or received_event
                     or not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))):
                 self._qubitz_reasoning_only_turn = None
+                if isinstance(exc, httpx.HTTPError):
+                    from runtime.transport_failures import transport_failure
+                    from runtime.server_lifetime import snapshot
+
+                    failure = transport_failure(exc, payload, transport="direct", endpoint="/v1/chat/completions",
+                                                backend=getattr(self, "_qubitz_backend_identity", {}))
+                    failure.receipt["owned_server_at_failure"] = snapshot(getattr(self, "server_process", None))
+                    raise failure from exc
                 raise
             return _non_streaming_chat(
                 self,
@@ -6793,6 +6926,9 @@ def _patch_streaming_chat(base: Any) -> None:
                 }
                 error_detail = None
                 try:
+                    from runtime.request_timing import observed
+
+                    observed("request")
                     started_at = time.perf_counter()
                     with _cancellable_request() as options, client.stream(
                         "POST",
@@ -6809,6 +6945,7 @@ def _patch_streaming_chat(base: Any) -> None:
                         _check_user_cancellation()
                         try:
                             raw = response.json()
+                            observed("response")
                         except (ValueError, UnicodeError) as exc:
                             _check_user_cancellation()
                             raise StructuredResponseError("invalid_response_envelope", schema_name=schema_name) from exc
@@ -6850,7 +6987,11 @@ def _patch_streaming_chat(base: Any) -> None:
                     exc.receipt.update(request_metadata)
                     raise
                 except httpx.ReadTimeout as exc:
-                    raise _response_timeout(exc) from exc
+                    from runtime.transport_failures import transport_failure
+
+                    _check_user_cancellation()
+                    raise transport_failure(exc, request_payload, transport="direct", endpoint="/v1/chat/completions",
+                        backend=getattr(self, "_qubitz_backend_identity", {})) from exc
                 except httpx.HTTPStatusError as exc:
                     _check_user_cancellation()
                     status = exc.response.status_code
@@ -6866,11 +7007,14 @@ def _patch_streaming_chat(base: Any) -> None:
                     )
                     if not format_unsupported:
                         raise last_error from exc
-                except httpx.HTTPError:
+                except httpx.HTTPError as exc:
                     # Closing a cancelled request may surface a transport error.
                     # Preserve cancellation, but never replay an ambiguous request.
                     _check_user_cancellation()
-                    raise
+                    from runtime.transport_failures import transport_failure
+
+                    raise transport_failure(exc, request_payload, transport="direct", endpoint="/v1/chat/completions",
+                        backend=getattr(self, "_qubitz_backend_identity", {})) from exc
         raise RuntimeError(f"Constrained JSON recovery failed: {last_error}")
 
     def _wait_for_transient_retry_readiness(
@@ -6917,8 +7061,12 @@ def _patch_streaming_chat(base: Any) -> None:
         for attempt in range(2):
             _check_user_cancellation()
             try:
+                from runtime.request_timing import observed
+
+                observed("request")
                 started_at = time.perf_counter()
                 response = _chat(self, **kwargs)
+                observed("response")
                 _record_generation_metrics(self, response, time.perf_counter() - started_at)
                 return response
             except ChatRequestError as exc:
@@ -7642,7 +7790,7 @@ def _patch_streaming_chat(base: Any) -> None:
                 and str(Path(named["target"]).resolve()) in broker.transaction_snapshot_hashes
             )
             if ((snapshotted_named or snapshotted_batch) and not broker.no_progress_recovery_exhausted
-                    and response.get("finish_reason") == "stop"
+                    and response.get("finish_reason") in {"stop", "length", "max_tokens"}
                     and not message.get("tool_calls") and not str(message.get("content") or "").strip()):
                 # Return to the orchestrator before the generic empty-step loop exhausts its budget.
                 return {**response, "message": {**message, "content": (
@@ -8964,12 +9112,24 @@ def _parse_thinking_effort_cli_value(value: str) -> str:
 import os
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:37334165a32d2060> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_agent_runner_class:0/ClassDef:EnhancedAgentRunner:0/FunctionDef:_run_sync_locked:0/Try:Try:0
+                from runtime.request_timing import durations, request_timings
+
+                request_events = {}
                 try:
-                    return super().run_sync(prompt, timed_callback)
+                    with request_timings() as request_events:
+                        try:
+                            return super().run_sync(prompt, timed_callback)
+                        except BaseException as exc:
+                            from runtime.request_timing import observed
+                            from runtime.request_failures import request_failure_answer
+                            from runtime.transport_failures import TransportFailure
+
+                            observed("error")
+                            if isinstance(exc, TransportFailure):
+                                request_failure_answer(self, exc)
+                            raise
                 finally:
                     finished_at = time.perf_counter()
-                    if "first_model_step" in marks and "first_model_response" not in marks:
-                        marks["first_model_response"] = finished_at
                     timings: dict[str, float] = {
                         "total_seconds": round(finished_at - started_at, 4),
                     }
@@ -8984,7 +9144,7 @@ import os
                     add_span("embedder_load_or_restore_seconds", "embedder_start", "embedder_ready")
                     add_span("query_embedding_seconds", "query_embedding_start", "query_embedding_ready")
                     add_span("model_ready_seconds", "model_ready_start", "model_ready")
-                    add_span("first_model_response_seconds", "first_model_step", "first_model_response")
+                    timings.update(durations(request_events))
                     self._last_phase_timings = timings
                     if callback is not None:
                         rendered = ", ".join(
@@ -11579,8 +11739,14 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
                     )
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:4dd6f19ca85d10e4> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:_system_prompt:0
-        def _system_prompt(self, *args: Any, **kwargs: Any) -> str:
-            rendered_prompt = super()._system_prompt(*args, **kwargs)
+        def _system_prompt(self, memory_context: str, *args: Any, **kwargs: Any) -> str:
+            from runtime.memory_context import bounded_memory_context
+
+            memory_context = bounded_memory_context(
+                memory_context, int(getattr(base, "MAX_MEMORY_CONTEXT_CHARS", 1200)),
+                _fence_untrusted_workspace_content,
+            )
+            rendered_prompt = super()._system_prompt(memory_context, *args, **kwargs)
             full_harness = getattr(self, "_full_harness_text", None)
             if full_harness is None:
                 full_harness = getattr(self, "harness_text", "") or ""
@@ -17946,7 +18112,15 @@ def _tool_arguments_request_external_network(name: str, arguments: dict[str, Any
             if initial_prompt.lower() in {"/jobs", "/bg-jobs"}:
                 _write_console(json.dumps(runner.background_jobs.list_jobs(), ensure_ascii=False, indent=2))
                 return
-            _write_console(runner.run_sync(initial_prompt, emit))
+            try:
+                _write_console(runner.run_sync(initial_prompt, emit))
+            except Exception as error:
+                from runtime.transport_failures import TransportFailure
+                from runtime.request_failures import request_failure_answer
+
+                if isinstance(error, TransportFailure):
+                    _write_console(request_failure_answer(runner, error))
+                raise
             return
         _write_console(f"{self.display_name} CLI. Type 'exit' to stop.")
         while True:
@@ -23131,6 +23305,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     return "Stopped after reaching the maximum tool steps for this request."
 
                 original_pass_prompt = pass_prompt.rstrip()
+                file_snapshot_context = getattr(self, "_qubitz_prefetched_file_context", "")
                 pending_action_extensions = 0
                 while True:
                     answer_text = await run_model_pass(pass_prompt, next_budget)
@@ -23156,6 +23331,19 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     if next_budget <= 0:
                         return answer_text
 
+                    refreshed_files = await checked_operation(
+                        self._prefetch_named_source_context, prompt, callback, files_only=True,
+                    )
+                    if file_snapshot_context:
+                        if original_pass_prompt.count(file_snapshot_context) != 1:
+                            return answer_text
+                        original_pass_prompt = original_pass_prompt.replace(
+                            file_snapshot_context,
+                            refreshed_files or "Current file snapshots unavailable; reread before further edits.", 1,
+                        )
+                    elif refreshed_files:
+                        original_pass_prompt += "\n\n" + refreshed_files
+                    file_snapshot_context = refreshed_files
                     missing_text = ", ".join(sorted(item.replace("_", " ") for item in missing))
                     evidence_summary = self._tool_permission_broker.completion_evidence_summary(prompt)
                     if callback is not None:
@@ -23758,7 +23946,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                                 try:
                                     answer = await run_progressive_model_pass(
                                         f"{effective_prompt.rstrip()}\n\n"
-                                        f"Wrapper recovery: the previous model pass produced no tool call or usable final answer. "
+                                        f"Wrapper recovery: the previous model pass did not verify all required postconditions. "
                                         f"Call {tool_name} once with valid task-specific arguments, then continue from its structured result. "
                                         "End any reasoning block before emitting a native tool call; "
                                         "if the template uses <think> blocks, emit </think> first. "
@@ -25863,6 +26051,8 @@ _EMBEDDED_UNTRUSTED_CONTEXT_OLD = '    def format_context(self, query: str) -> s
             self,
             prompt: str,
             callback: Callable[[str, str], None] | None,
+            *,
+            files_only: bool = False,
         ) -> str:
             research_decision = _research_decision_for_prompt(
                 prompt, getattr(self, "network_mode", DEFAULT_NETWORK_MODE),
@@ -25870,8 +26060,9 @@ _EMBEDDED_UNTRUSTED_CONTEXT_OLD = '    def format_context(self, query: str) -> s
             self._active_research_decision = research_decision
             broker = self._tool_permission_broker
             self._exact_target_context_ready = False
+            self._qubitz_prefetched_file_context = ""
             captured_context = ""
-            if broker.source_reuse_requested:
+            if broker.source_reuse_requested and not files_only:
                 if broker.source_reuse_blocker:
                     return f"Captured-source blocker: {broker.source_reuse_blocker} Do not fetch or mutate files to bypass this blocker."
                 blocks = []
@@ -25934,6 +26125,9 @@ _EMBEDDED_UNTRUSTED_CONTEXT_OLD = '    def format_context(self, query: str) -> s
                 if blocks:
                     file_context = "Current-turn file evidence supersedes prior mutable file values.\n\n" + "\n\n".join(blocks)
                     self._exact_target_context_ready = targets == complete_targets and _exact_target_context_scope(prompt, semantic, tuple(targets))
+            self._qubitz_prefetched_file_context = file_context
+            if files_only:
+                return file_context
             if captured_context:
                 return "\n\n".join(part for part in (file_context, captured_context) if part)
             if not (research_decision.needed and research_decision.network_allowed):
@@ -26446,6 +26640,10 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
 
     def _shutdown_owned(self) -> None:
         with self._qubitz_lifecycle_lock:
+            from runtime.server_lifetime import request_shutdown, snapshot, wait_receipt
+
+            self._qubitz_lifetime_before_shutdown = snapshot(self)
+            request_shutdown(self)
             cleaned = False
             initial_detail = ""
             try:
@@ -26474,6 +26672,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
                 "initial_detail": initial_detail,
                 "final_detail": "" if cleaned else getattr(self, "_qubitz_cleanup_detail", initial_detail),
                 "receipt": dict(self._qubitz_owned_windows_receipt),
+                "server_lifetime": wait_receipt(self) if getattr(self, "_qubitz_lifetime_directory", None) else snapshot(self),
             }
             if initial_detail or not cleaned:
                 print("[warning] Owned llama-server cleanup outcome: " + json.dumps(self._qubitz_cleanup_outcome), file=sys.stderr)
@@ -27894,6 +28093,12 @@ import threading
                 else:
                     tool_name = "read_file_snapshot"
             elif {"entrypoint_executed", "tests", "test_command_executed"}.intersection(missing):
+                # Missing exact-target proof does not authorize replaying an execution.
+                if any(
+                    item.get("tool") in broker._EXECUTION_TOOLS and not item.get("wrapper_rejected")
+                    for item in broker._current_turn_evidence()
+                ):
+                    return None
                 tool_name = "run_existing_entrypoint"
             if not tool_name:
                 return None
@@ -29121,7 +29326,10 @@ TRANSACTIONAL_PATCH_MAX_BYTES = 16 * 1024 * 1024
     @server.tool(
         description=(
             "Run a one-shot local shell command inside the active workspace. "
-            "Do not use it to keep a session-scoped stdio MCP script running; use the dedicated MCP tools."
+            "Do not use it to keep a session-scoped stdio MCP script running; use the dedicated MCP tools. "
+            "The return code belongs to the shell command; a later command can mask an earlier program's failure. "
+            "Managed-process identities describe containment, not the target program's interpreter. "
+            "For one exact existing program and its own exit code, prefer run_existing_entrypoint."
         )
     )
     def run_command(command: str, timeout_seconds: int = 120) -> dict[str, Any]:
@@ -29166,6 +29374,8 @@ def _run_owned_process(
                     "directory": str(session.directory),
                     "cwd": str(Path(cwd).resolve()),
                     "actual_wait": exit_receipt.get("actual_wait") is True,
+                    "identity_scope": "managed_containment_root_not_target_program",
+                    "returncode_scope": "shell_command" if shell else "direct_command",
                 })
             if cancel_event is not None and cancel_event.is_set():
                 raise InterruptedError("Command exited while cancellation was requested; inspect its effects before replay")
@@ -30273,11 +30483,17 @@ def _fence_untrusted_workspace_content(text):
         if not body.strip():
             return ""
         for marker in (_UNTRUSTED_CONTENT_BEGIN, _UNTRUSTED_CONTENT_END):
-            body = body.replace(marker, "<neutralized marker>")
+            if marker in body:
+                # Reversible escaping keeps a literal delimiter from ending the data boundary.
+                body = json.dumps(body, ensure_ascii=True).replace("[", "\\u005b")
+                notice = _UNTRUSTED_CONTENT_NOTICE + " Payload is a JSON string; decode it to recover the original text."
+                break
+        else:
+            notice = _UNTRUSTED_CONTENT_NOTICE
         return "\n".join(
             [
+                notice,
                 _UNTRUSTED_CONTENT_BEGIN,
-                _UNTRUSTED_CONTENT_NOTICE,
                 body,
                 _UNTRUSTED_CONTENT_END,
             ]
@@ -30285,8 +30501,8 @@ def _fence_untrusted_workspace_content(text):
     except Exception:
         return "\n".join(
             [
-                _UNTRUSTED_CONTENT_BEGIN,
                 _UNTRUSTED_CONTENT_NOTICE,
+                _UNTRUSTED_CONTENT_BEGIN,
                 "<workspace content omitted because the wrapper could not fence it safely>",
                 _UNTRUSTED_CONTENT_END,
             ]
@@ -32067,6 +32283,8 @@ from collections.abc import Callable, Sequence
         "run_cmd_command",
         "run_project_command",
         "run_powershell_command",
+        "run_python_script",
+        "run_shell_command",
         "sandbox_run_command",
         "start_project_mcp_server",
         "stop_project_mcp_server",

@@ -148,13 +148,17 @@ def test_empty_tool_manifest_disables_tool_choice_and_parser(display_runtime, mo
 
 
 def test_partial_stream_keeps_diagnostics_without_replaying_request(display_runtime, monkeypatch):
+    from runtime.transport_failures import TransportFailure
+
     base, client, _, observed = display_runtime
     payloads, _ = install_stream(
         monkeypatch, base, client, [chunk(reasoning_content="Partial reasoning")], disconnect=True,
     )
     client._call_with_fallback = lambda *_args: pytest.fail("Must not replay a partial stream")
-    with pytest.raises(httpx.ReadError, match="fixture disconnection"):
+    with pytest.raises(TransportFailure, match="fixture disconnection") as failure:
         client.chat(**contracts.request())
+    assert failure.value.receipt["retry_permitted"] is False
+    assert failure.value.receipt["completion_outcome"] == "unknown"
     assert observed[0] == ("reasoning_delta", "Partial reasoning")
     assert json.loads(observed[-1][1])["received"] == len("Partial reasoning")
     assert len(payloads) == 1

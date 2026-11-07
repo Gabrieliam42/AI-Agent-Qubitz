@@ -2,9 +2,11 @@
 
 ## Latest Evaluation Status
 
-The November 5 local-time stop left the remaining matrix partial: 3 passed,
-3 failed, 1 interrupted and 971 unrun trajectories. See
-[the evidence review and general repair proposals](verification_20261105.md).
+The matrix and owned llama.cpp servers remain stopped after the November 7,
+2026 review. General repairs are implemented; the latest qualification passed
+362 model-free tests, native fixtures and the 40-public-variant release gate.
+Three Windows-only pytest cases were skipped under WSL. No live acceptance of
+this repaired baseline has run. See [the current record](verification_20261107.md).
 Historical exclusions and model-free gate passes do not establish live acceptance.
 
 ## Purpose
@@ -88,6 +90,24 @@ Structured edit proposals are checked against the exact authorized file snapshot
 Where the existing shared recovery budget permits, one read-only proposal correction may be requested. It is bounded to the existing authorization and budget; it does not unescape model text, expand scope, or replay an uncertain mutation. Structured-response failures retain typed evidence, while backend HTTP or payload errors remain backend faults rather than being reported as ordinary model partial results.
 
 After an edit, optional numeric checks use a restricted interpreter over supported scalar Python syntax. A proposal may be checked against task-derived expectations, with evaluated, matched, and accepted cases recorded separately. This does not execute the Python module, run its full test suite, or establish behavior outside the checked functions and inputs. If a proposal is unusable or disagrees with the bounded checks, the edit remains distinct from its verification status; report it as unverified/partial rather than treating a successful write as proof of correctness. See [runtime recovery code](../runtime/behavioral_checks.py) and [structured response handling](../runtime/structured_response.py).
+
+## Transport Failures And Execution Evidence
+
+Transport errors retain typed request/helper evidence and bounded original
+diagnostics rather than being labeled model-format rejections. A reset or other
+uncertain dispatched request is not automatically replayed or sent through a
+different transport. Unknown action outcomes or unverified cleanup hold campaign
+continuation. Any attempted execution blocks forced execution recovery unless it
+was proven rejected before dispatch; missing proof does not authorize a rerun.
+
+Owned server receipts distinguish actual native-child waits/exits from
+PowerShell/WSL proxy exits. Missing native exit evidence stays unknown, and a
+shutdown-request marker does not establish why the server exited. Large tool
+results use parseable summaries within the existing 6,000-character cap, with
+omissions explicit. Shell success does not prove a child program's success or
+interpreter. Response latency requires an observed response; time-to-error is
+separate. Canonical launch/wait-bound progress overrides stale running labels;
+a user pause still requires an explicit resume.
 
 ## Reasoning Display
 

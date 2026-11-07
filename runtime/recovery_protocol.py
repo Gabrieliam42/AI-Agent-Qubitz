@@ -263,7 +263,9 @@ def repair_staged_text(content: str, patch: dict, context: dict) -> str:
         offset = item.get("old_offset")
         if "old_offset" not in item:
             offset = content.find(old)
-            if offset < 0 or content.find(old, offset + 1) >= 0:
+            if offset < 0:
+                raise ValueError("the patch target is absent from the staged file; use exact original text from the diagnosed excerpt")
+            if content.find(old, offset + 1) >= 0:
                 raise ValueError("the patch target is not unique in the staged file; an exact old_offset is required")
         if type(offset) is not int or offset < 0 or content[offset:offset + len(old)] != old:
             raise ValueError("the staged patch offset does not match its exact original text")

@@ -7,11 +7,13 @@ providers can use the network when enabled.
 
 ## Latest Evaluation Status
 
-The remaining follow-up matrix was cooperatively stopped on November 5, 2026
-(local time): 3 passed, 3 failed, 1 interrupted and 971 unrun of 978 selected
-trajectories. It is not complete acceptance. See the [partial review and general
-repair proposals](documentation/verification_20261105.md), including a local
-watchdog evidence-observation defect. Proposed repairs are not implemented fixes.
+The matrix and owned llama.cpp servers remain stopped after the November 7,
+2026 review. General transport, lifecycle, no-replay, tool-evidence and timing
+repairs are implemented. The latest qualification passed 362 model-free tests,
+native fixtures and the 40-public-variant release gate; three Windows-only pytest
+cases were skipped under WSL. No live acceptance of this repaired baseline has
+run. See the [current repair and verification record](documentation/verification_20261107.md).
+Earlier partial matrices remain historical evidence, not complete acceptance.
 
 ## Requirements
 

@@ -12,7 +12,8 @@ def non_thinking_template_contract(template: Any) -> str:
     """Recognize verified literal generation-prompt contracts, never model identities."""
     if not isinstance(template, str) or len(template) > 262144:
         return "unverified"
-    source = re.sub(r"\{#.*?#\}", "", template, flags=re.DOTALL)[-8192:]
+    complete_source = re.sub(r"\{#.*?#\}", "", template, flags=re.DOTALL)
+    source = complete_source[-8192:]
 
     def statement(body):
         return r"\{%-?\s*" + body + r"\s*-?%\}"
@@ -26,6 +27,24 @@ def non_thinking_template_contract(template: Any) -> str:
 
     start = statement(r"if\s+add_generation_prompt")
     end = statement("endif")
+    normalization = joined(
+        statement(r"if\s+enable_thinking\s+is\s+defined"),
+        statement(r"if\s+enable_thinking"), statement(r"set\s+thinking_option\s*=\s*['\"]on['\"]"),
+        statement("else"), statement(r"set\s+thinking_option\s*=\s*['\"]off['\"]"), end,
+        statement(r"elif\s+thinking_option\s+is\s+not\s+defined"),
+        statement(r"set\s+thinking_option\s*=\s*['\"]on['\"]"), end,
+    )
+    normalized = re.match(r"\s*" + normalization, complete_source)
+    prefill = joined(
+        start, literal("<role>ASSISTANT</role>"),
+        statement(r"if\s+thinking_option\s*==\s*['\"]on['\"]"), literal("\\n<think>"),
+        statement(r"elif\s+thinking_option\s*==\s*['\"]off['\"]"), literal("\\n<think></think>"), end, end,
+    )
+    if normalized:
+        remainder = complete_source[normalized.end():]
+        rebound = re.search(r"\{%-?\s*(?:set|for|with|macro)\b[^%]*\b(?:thinking_option|enable_thinking)\b", remainder)
+        if not rebound and not re.search(r"\{%-?\s*raw\b", remainder) and re.search(prefill + r"\s*\Z", remainder):
+            return "normalized_thinking_option_prefill"
     closed = literal("<think>\\n\\n</think>\\n\\n")
     head = joined(start, literal("<|im_start|>assistant\\n"))
     for branch in (
@@ -50,7 +69,9 @@ def non_thinking_template_contract(template: Any) -> str:
 def apply_structured_request_policy(payload: dict, capabilities: Any) -> str:
     """Change this internal request only; unknown capabilities retain existing behavior."""
     capabilities = capabilities if isinstance(capabilities, dict) else {}
-    template = capabilities.get("structured_thinking_control") in {"closed_think_prefill", "closed_channel_prefill"}
+    template = capabilities.get("structured_thinking_control") in {
+        "closed_think_prefill", "closed_channel_prefill", "normalized_thinking_option_prefill",
+    }
     effort = capabilities.get("supports_reasoning_effort") is True
     if not template and not effort:
         return "unchanged_unverified_template"

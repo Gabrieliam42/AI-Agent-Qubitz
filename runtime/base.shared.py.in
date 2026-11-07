@@ -2544,13 +2544,14 @@ class AgentRunner:
                                 self._raise_if_cancelled()
                                 tool_payload = serialize_mcp_result(tool_result)
                                 self._emit(callback, "tool", summarize_tool_result(name, tool_payload))
+                            from runtime.tool_results import model_tool_result
+
                             messages.append(
                                 {
                                     "role": "tool",
                                     "tool_call_id": tool_call_id,
-                                    "content": shorten(
-                                        json.dumps(tool_payload, ensure_ascii=True, indent=2),
-                                        MAX_TOOL_RESULT_CHARS,
+                                    "content": model_tool_result(
+                                        tool_payload, MAX_TOOL_RESULT_CHARS,
                                     ),
                                 }
                             )
@@ -3252,6 +3253,9 @@ class LlamaCppServerProcess:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         launch_command = self._launch_command()
+        from runtime.server_lifetime import prepare
+
+        launch_command = prepare(self, launch_command, wsl_path_to_windows_path if in_wsl() else str)
         command_path = Path(launch_command[0])
         if launch_command[0].lower() == "powershell.exe" or command_path.suffix.lower() == ".exe":
             self.log_path = self.runtime_workspace / ".cache" / "llama.cpp" / "llama-server.log"
@@ -3294,6 +3298,9 @@ class LlamaCppServerProcess:
             creationflags=creationflags,
             startupinfo=startupinfo,
         )
+        from runtime.server_lifetime import observe_native
+
+        observe_native(self)
 
     def read_log_tail(self, max_chars: int = 4000) -> str:
         if not self.log_path.exists():
@@ -4720,6 +4727,9 @@ def serialize_mcp_result(result: mcp_types.CallToolResult) -> dict[str, Any]:
         "structured_content": result.structuredContent,
         "content": [],
     }
+    lineage = getattr(result, "_qubitz_invocation_receipt", None)
+    if isinstance(lineage, dict):
+        payload["invocation_receipt"] = lineage
     for item in result.content:
         if hasattr(item, "text"):
             payload["content"].append(item.text)
@@ -4932,6 +4942,8 @@ class WindowsBridgeHTTPTransport:
         return base64.b64encode(script.encode("utf-16le")).decode("ascii")
 
     def _run_script(self, script: str) -> str:
+        from runtime.request_budget import request_timeout
+
         script = "$ErrorActionPreference = 'Stop'\n" + script
         # Keep chat payloads off both the Linux and Windows command lines.
         bootstrap = (
@@ -4940,18 +4952,29 @@ class WindowsBridgeHTTPTransport:
             "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\n"
             "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
         )
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", self._encoded(bootstrap)],
-            input=script,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=600,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", self._encoded(bootstrap)],
+                input=script, capture_output=True, text=True, encoding="utf-8",
+                timeout=request_timeout(), check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            # subprocess.run kills and waits its helper before raising; backend state is still unknown.
+            self._qubitz_bridge_receipt = {"helper": {
+                "actual_wait": True, "exit_code": None, "outcome": "helper_timeout",
+                "stdout": str(error.stdout or "")[:8192], "stderr": str(error.stderr or "")[:8192],
+            }}
+            error.receipt = self._qubitz_bridge_receipt
+            raise
+        self._qubitz_bridge_receipt = {
+            "helper": {"actual_wait": True, "exit_code": result.returncode,
+                       "stdout": result.stdout[:8192], "stderr": result.stderr[:8192]},
+        }
         if result.returncode != 0:
+            from runtime.transport_failures import BridgeFailure
+
             message = result.stderr.strip() or result.stdout.strip() or "Unknown PowerShell error"
-            raise RuntimeError(message)
+            raise BridgeFailure(message, receipt=self._qubitz_bridge_receipt)
         return result.stdout.strip()
 
     def _decode_response(self, output: str, path: str) -> dict[str, Any]:
@@ -5001,6 +5024,10 @@ class WindowsBridgeHTTPTransport:
         return probe["json"]
 
     def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from math import ceil
+        from runtime.request_budget import request_timeout
+
+        self._qubitz_bridge_receipt = {}
         body = json.dumps(payload, ensure_ascii=True)
         script = textwrap.dedent(
             f"""
@@ -5008,12 +5035,38 @@ class WindowsBridgeHTTPTransport:
             $body = @'
             {body}
             '@
-            $response = Invoke-RestMethod -Uri '{self.base_url}{path}' -Method Post -ContentType 'application/json' -Body $body
-            $response | ConvertTo-Json -Depth 100 -Compress
+            try {{
+                $response = Invoke-WebRequest -UseBasicParsing -Uri '{self.base_url}{path}' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec {ceil(request_timeout())}
+                $status = [int]$response.StatusCode
+                $text = [string]$response.Content
+            }} catch {{
+                $response = $_.Exception.Response
+                if ($null -eq $response) {{ throw }}
+                $status = [int]$response.StatusCode
+                $text = [string]$_.ErrorDetails.Message
+                if (-not $text) {{
+                    $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+                    try {{ $text = $reader.ReadToEnd() }} finally {{ $reader.Dispose() }}
+                }}
+            }}
+            @{{qubitz_http_v1 = $true; status_code = $status; text = $text}} | ConvertTo-Json -Depth 100 -Compress
             """
         )
         output = self._run_script(script)
-        return self._decode_response(output, path)
+        response = self._decode_response(output, path)
+        if response.get("qubitz_http_v1") is True:
+            status = response.get("status_code")
+            text = response.get("text")
+            if type(status) is not int or not isinstance(text, str):
+                raise RuntimeError("Windows HTTP bridge returned an invalid HTTP envelope.")
+            if not 200 <= status < 300:
+                from runtime.transport_failures import BridgeFailure
+
+                receipt = {**getattr(self, "_qubitz_bridge_receipt", {}),
+                           "http_status": status, "http_body": text[:8192]}
+                raise BridgeFailure(f"HTTP {status}: {text[:8192]}", receipt=receipt)
+            return self._decode_response(text, path)
+        return response
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:da22d645efec2544> module/Assign:Name(id='QUERY_INSTRUCTION', ctx=Store()):0
 QUERY_INSTRUCTION = (

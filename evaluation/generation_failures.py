@@ -2,6 +2,20 @@
 from __future__ import annotations
 
 
+def independent_continuation(row: dict) -> dict:
+    """Unknown infrastructure and uncertain actions are never isolated by assertion."""
+    failures = [turn.get("observed", {}).get("request_failure") for turn in row.get("turns", [])]
+    failures = [receipt for receipt in failures if isinstance(receipt, dict)]
+    if any(receipt.get("schema") == "qubitz_transport_failure_v1" for receipt in failures):
+        return {"allowed": False, "reason": "transport_outcome_requires_independent_reconciliation",
+                "retry_permitted": False}
+    if any(receipt.get("uncertain_prior_action") is not False for receipt in failures):
+        return {"allowed": False, "reason": "prior_action_uncertain", "retry_permitted": False}
+    if row.get("status") in {"harness_error", "interrupted"} or row.get("cleanup", {}).get("exit_code") != 0:
+        return {"allowed": False, "reason": "infrastructure_or_cleanup_not_verified", "retry_permitted": False}
+    return {"allowed": True, "reason": "independent_next_tuple_only", "retry_permitted": False}
+
+
 def repeated_rejection_hold(rows: list[dict]) -> dict | None:
     """Two independent consecutive failures on the same verified backend warrant review."""
     if len(rows) < 2:

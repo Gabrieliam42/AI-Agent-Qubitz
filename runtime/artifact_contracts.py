@@ -10,13 +10,18 @@ def html_envelope_issues(source: str) -> list[str]:
         def __init__(self):
             super().__init__()
             self.at_root = False
+            self.open_raw_text = None
             self.issues = []
 
         def handle_starttag(self, tag, _attrs):
             self.at_root = tag == "html"
+            if tag in {"script", "style"}:
+                self.open_raw_text = tag
 
-        def handle_endtag(self, _tag):
+        def handle_endtag(self, tag):
             self.at_root = False
+            if tag == self.open_raw_text:
+                self.open_raw_text = None
 
         def handle_data(self, text):
             if self.at_root and re.match(r'\s*"\s*,\s*"complete"\s*:\s*(?:true|false)\s*}', text):
@@ -24,4 +29,7 @@ def html_envelope_issues(source: str) -> list[str]:
 
     parser = Parser()
     parser.feed(source)
+    parser.close()
+    if parser.open_raw_text is not None:
+        parser.issues.append(f"Unclosed {parser.open_raw_text} element at end of HTML")
     return parser.issues

@@ -36,7 +36,62 @@ def read_progress(output: Path) -> dict:
     value = read_json(output / "progress.json")
     if value.get("schema_version") != 1 or not isinstance(value.get("cases"), list):
         raise ValueError("Unsupported compact campaign progress")
+    directory = output.with_name(output.name + "_supervision")
+    if (directory / "launch_receipt.json").is_file():
+        lifecycle = canonical_lifecycle(directory)
+        value = {**value, "lifecycle": lifecycle}
+        if lifecycle.get("actual_wait") is True:
+            value["status"] = lifecycle["checkpoint_status"]
     return value
+
+
+def canonical_lifecycle(directory: Path) -> dict:
+    """Read exact launch/wait lineage; a status string alone is never an exit."""
+    from evaluation.campaign_observation import read_json
+
+    if any(path.is_symlink() for path in (directory, *directory.parents)):
+        raise ValueError("Aliased canonical lifecycle directory")
+    launch = read_json(directory / "launch_receipt.json")
+    expected = launch["identity"]
+    waited_path = directory / "coordinator_exit.json"
+    if not waited_path.exists():
+        return {"status": "exit_not_recorded", "actual_wait": False, "identity": expected,
+                "requires_reconciliation": True}
+    waited = read_json(waited_path)
+    if (waited.get("identity") != expected or waited.get("actual_wait") is not True
+            or type(waited.get("exit_code")) is not int):
+        raise ValueError("Canonical wait is not bound to the original coordinator")
+    state = read_json(directory / "work_state.json")
+    if state.get("identity") != expected:
+        raise ValueError("Canonical state identity conflicts with launch")
+    status = state.get("checkpoint_status", "exit_recorded_checkpoint_unknown")
+    if status not in {"complete", "paused", "stopped_infrastructure", "invalid_source_drift"}:
+        status = "exit_recorded_checkpoint_unknown"
+    return {"status": "coordinator_exited", "actual_wait": True, "identity": expected,
+            "exit_code": waited["exit_code"], "checkpoint_status": status,
+            "wait_sha256": hashlib.sha256(waited_path.read_bytes()).hexdigest(),
+            "requires_reconciliation": False}
+
+
+def read_control_state(path: Path) -> dict:
+    """Resolve an outer view through a canonical reference without writing history."""
+    from evaluation.campaign_observation import read_json
+    from evaluation.disposable_followup_matrix import ROOT
+
+    outer = read_json(path)
+    reference = outer.get("canonical_supervision")
+    if not reference:
+        return outer
+    directory = ROOT / reference
+    if any(candidate.is_symlink() for candidate in (directory, *directory.parents)):
+        raise ValueError('Aliased canonical supervision reference')
+    directory = directory.resolve()
+    if not directory.is_relative_to(ROOT.resolve()):
+        raise ValueError("Canonical supervision escapes the project")
+    current = canonical_lifecycle(directory)
+    paused = outer.get("user_resume_required") is True
+    return {**outer, "status": "paused_by_user" if paused else current.get("checkpoint_status", "unknown"),
+            "canonical_lifecycle": current, "running_verified": False}
 
 
 def result_reference(output: Path, row: dict) -> dict:
@@ -154,7 +209,10 @@ def supervise(command: list[str], output: Path, *, identity, popen=subprocess.Po
             raise ValueError("Control state is not a fresh exact-output authorization")
     exclusive_json(directory / "launch_intent.json", {"command": command, "output": str(output),
                    "status": "launch_intent", "supervisor_pid": os.getpid(), "time": time.time()})
+    from evaluation.campaign_monitoring import CampaignMonitor
     from evaluation.disposable_followup_matrix import save_json
+
+    monitor = CampaignMonitor(output, directory)
 
     flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     with (directory / "stdout.log").open("xb") as stdout, (directory / "stderr.log").open("xb") as stderr:
@@ -171,24 +229,46 @@ def supervise(command: list[str], output: Path, *, identity, popen=subprocess.Po
             exclusive_json(directory / "launch_receipt.json", {"identity": captured, "command": command})
             if control_state is not None:
                 save_json(control_state, {**outer, "status": "running", "identity": captured,
-                                          "actual_wait_recorded": False})
+                                          "execution_started": True, "actual_wait_recorded": False})
             save_json(directory / "work_state.json", {"status": "running", "identity": captured,
                                                       "command": command, "output": str(output)})
         except Exception as exc:  # noqa: BLE001 - retain the owned handle after any post-dispatch failure
             exclusive_json(directory / "post_dispatch_failure.json", {"pid": process.pid, "error": repr(exc),
                            "outcome": "dispatched_do_not_retry", "identity": captured})
         finally:
+            publication_failures = 0
+            monitor_failure = {}
             while True:
                 try:
-                    code = process.wait()
+                    code = process.wait(timeout=60)
                     break
+                except subprocess.TimeoutExpired:
+                    try:
+                        monitor.tick()
+                        publication_failures = 0
+                    except Exception as exc:  # noqa: BLE001 - a monitor failure must not lose the original handle
+                        publication_failures += 1
+                        monitor_failure["error"] = repr(exc)
+                        failure = directory / "monitor_failure.json"
+                        try:
+                            if not failure.exists():
+                                exclusive_json(failure, {"error": repr(exc), "requires_attention": True})
+                        except OSError as error:
+                            monitor_failure["recording_error"] = repr(error)
+                        if publication_failures >= 3 and not monitor.escalated:
+                            try:
+                                monitor.escalate([{"error": repr(exc)}])
+                            except Exception as error:  # noqa: BLE001 - do not replay an uncertain escalation or lose the wait
+                                monitor.escalated = True
+                                monitor_failure["escalation_error"] = repr(error)
                 except KeyboardInterrupt:
                     interrupted = directory / "supervisor_interrupt.json"
                     if not interrupted.exists():
                         exclusive_json(interrupted, {"status": "still_owning_coordinator", "pid": process.pid,
                                                      "no_signal_or_redispatch": True})
             exclusive_json(directory / "coordinator_exit.json", {"pid": process.pid, "identity": captured,
-                           "actual_wait": True, "exit_code": code, "waited_by_pid": os.getpid(), "time": time.time()})
+                           "actual_wait": True, "exit_code": code, "waited_by_pid": os.getpid(), "time": time.time(),
+                           "monitor_failure": monitor_failure or None})
         try:
             from evaluation.campaign_observation import read_json
 
@@ -200,4 +280,9 @@ def supervise(command: list[str], output: Path, *, identity, popen=subprocess.Po
                                                   "actual_wait": True, "exit_code": code, "output": str(output)})
         if control_state is not None:
             reconcile_control_state(control_state, identity=identity)
+        try:
+            monitor.finish()
+        except Exception as exc:  # noqa: BLE001 - lifecycle receipts above survive evidence-drain failure
+            exclusive_json(directory / "monitor_terminal_failure.json", {"error": repr(exc), "actual_wait": True,
+                           "exit_code": code, "evidence_review_complete": False})
     return code

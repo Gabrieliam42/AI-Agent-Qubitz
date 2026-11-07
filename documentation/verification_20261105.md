@@ -1,5 +1,9 @@
 # Remaining Follow-Up Matrix: Partial Stop And Repair Proposals
 
+Historical checkpoint: subsequent implementation and qualification are recorded
+in [the November 7 update](verification_20261107.md). The outcomes and proposal
+status below describe the November 5 review, not the current repaired baseline.
+
 ## Scope And Outcome
 
 Reviewed on 2026-11-05 (Europe/Bucharest). The cooperative stop was recorded at

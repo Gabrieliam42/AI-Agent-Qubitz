@@ -20,7 +20,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "6445191738a188b953f1ad9a37454325705a3865d11152377e2feef04d18ec20"
+      "intentional_residual_sha256": "b5285ada3d1cfd29b4a2eae26a9aee421b78741f541f01736534eea46049861d"
     },
     {
       "filename": "AI_Agent_Qubitz_AREX-2-27B.i1-Q6.py",
@@ -41,7 +41,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "aeec055ff3cd29acecb9f3558ccbccd41c0875f64239b2e2f3d6155ba60c18e0"
+      "intentional_residual_sha256": "2e7aaba71b45c5bfba1dd39c5effd728bea4333274d849b53cf55470c4688f4b"
     },
     {
       "filename": "AI_Agent_Qubitz_CalibForge-35B-A3B.i1-Q4.py",
@@ -62,7 +62,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "e24bddbb2af596982369dabaa9531eab9b6060de38d9060c825619270dfe6b88"
+      "intentional_residual_sha256": "801d72d52a33d91e9389e6eb62b83fee1fcf9f73616dc0fcb7e0d0e1acb966c5"
     },
     {
       "filename": "AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py",
@@ -106,7 +106,7 @@
         "background_prewarm": false,
         "sharded_model": true
       },
-      "intentional_residual_sha256": "bf967ef7ad7893fe5576546e1b066895bff03446e45bbbbde2789d5a860bc863"
+      "intentional_residual_sha256": "416815c73ab8021e029e05174d915b9d1f9974edf918c948ebc071aabddb63aa"
     },
     {
       "filename": "AI_Agent_Qubitz_Devstral-Small-2-24B-Q4.py",
@@ -127,7 +127,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "ff78a4d87e25378a1c9bbfe4acb9d41bcf650d5f8a9d61f740e23885d1005e3e"
+      "intentional_residual_sha256": "895ba95b3c36b7bc261fd5797d55e66d5ff558bb7a9088aac8e74b17863977c1"
     },
     {
       "filename": "AI_Agent_Qubitz_Gemma-4-31B-IT_QAT-Q4.py",
@@ -148,7 +148,7 @@
         "background_prewarm": true,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "9e6c2b3760ffb2450715ed9e8e6cb63e49c07af4e9f7c3300dbf362828487313"
+      "intentional_residual_sha256": "a88fd108f617843af030d6f93d0d075b13776f35fdc270f531a9ba59684a030f"
     },
     {
       "filename": "AI_Agent_Qubitz_GLM-4.6-WX-v3-357B-A32B-IQ3.py",
@@ -213,7 +213,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "8b033379d99550d909c6a5b5168f9fe1ac5beffdd305b6f0c3d88686f17f6001"
+      "intentional_residual_sha256": "65fbce7e052bf2bd3ddcfb2cc5f4cc7a8d3b84f19f5724dc07c351c96b611d44"
     },
     {
       "filename": "AI_Agent_Qubitz_GLM_4.7_Flash_WX-30B-A3B-Q4.py",
@@ -269,7 +269,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "3efa15e50514aadb8943f0fb043b3a575092c80470e83a047b84a9d13dbf7887"
+      "intentional_residual_sha256": "33865aa0457cb6636d6ce4677e0f56d3bc81e722c3e87e0128b88861f42b6f92"
     },
     {
       "filename": "AI_Agent_Qubitz_GPT-OSS-20B_F16.py",
@@ -290,7 +290,7 @@
         "background_prewarm": true,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "02c324a3ca5574382418378f4d1d41050254a3f3f02990ad5ddb5afeb0bffa07"
+      "intentional_residual_sha256": "cec2600d82d39bb1270c8f2ca6cb03e1d9df227c26b4249fe50d13ea2ff7c70a"
     },
     {
       "filename": "AI_Agent_Qubitz_Granite-4.2-30B_Q5.py",
@@ -313,7 +313,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "e9a3c47f750de84503a620595013bd4b32b7527b3be3c14f1195d98a8da1d442"
+      "intentional_residual_sha256": "4545a3d476fd24ce63a6e727a5e35604de72c6b3b3442708793bfbcffc43f0e8"
     },
     {
       "filename": "AI_Agent_Qubitz_Granite-4.2-8B.i1-Q6.py",
@@ -336,7 +336,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "6474156ce785bee8ae176ab402d7b6e4d833bbbf8d8cf2ed5a051d173826fda3"
+      "intentional_residual_sha256": "56d077f4e2e4b11e316b95201e8bc515f0de9042bea5b076e080cec2d03ce257"
     },
     {
       "filename": "AI_Agent_Qubitz_Holo4-27B-Q4.py",
@@ -357,7 +357,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "01f2fa7208a0543b4074357b790311e26a17c1995f1b28a4bb82d212d102f1ff"
+      "intentional_residual_sha256": "8c9647ca3277c4c644a418d09133a95e58616292fc9f027a58dd87f9462ecf43"
     },
     {
       "filename": "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py",
@@ -392,7 +392,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "b2f0726ae754f9f71bcaf2929a6ce369fb76efa8249e00ff4beed7e9ca26c3d0"
+      "intentional_residual_sha256": "24df9193b56a719bab4329d13fd2acd08236cfc38729f90ed747c3cc2beb999c"
     },
     {
       "filename": "AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py",
@@ -413,7 +413,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "d930b01fa6234cb72d0f504ef67fb2e1b73b6096f2f72d18799267116034a0df"
+      "intentional_residual_sha256": "00a2907102cfa489e7c4116ad6c45bca8dc273f8c31f03064670e63e19eba892"
     },
     {
       "filename": "AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py",
@@ -451,7 +451,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "fcd3f7d4be495e1bba8b5c818f9e9331bb869880c830e561dece7bda9c7d49b8"
+      "intentional_residual_sha256": "e2f3b23a1616e9c814152a1aaa1b2347eff70be6714a908ac05b9da52253866d"
     },
     {
       "filename": "AI_Agent_Qubitz_Laguna-XS-2.1-33B-A3B_Q4.py",
@@ -472,7 +472,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "567f037dede166ab44c264edac3804f4462eb2d85b55b3dc30bbb0c3e37c9e85"
+      "intentional_residual_sha256": "d076b9dc66f5d88775fde3f9909c3f0f55a82320f01fa6592ab34a9bd0f7808f"
     },
     {
       "filename": "AI_Agent_Qubitz_LFM2.5-24B-A2B-Q5.py",
@@ -493,7 +493,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "08534e0b3a6940a17e673a2193391d53cb523a9944083e8594d8914cc9c382c7"
+      "intentional_residual_sha256": "81e36c870dbaf2acc112f580b925a8b0f770ba61f0ccf76153dab2945bde7256"
     },
     {
       "filename": "AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py",
@@ -535,7 +535,7 @@
         "background_prewarm": false,
         "sharded_model": true
       },
-      "intentional_residual_sha256": "74217a2aa118b556ca5fe996fba6b057a3ae4500a966c81fc06510ce3ae5aa40"
+      "intentional_residual_sha256": "7d7f00292cde560453369550407fe9fb10785ad3d0baf01d41957371e90e3e3b"
     },
     {
       "filename": "AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py",
@@ -570,7 +570,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "aeaf6269bd5118d5e33a1773624cc76e88160cda7539774b9afaf943cde6fed9"
+      "intentional_residual_sha256": "e995cba425b859c626e988a0b5e6851ee960b4fc0cddeedfde1f45c12ac6d4aa"
     },
     {
       "filename": "AI_Agent_Qubitz_Macaron-V1-Tall-35B-A3B.i1-Q4.py",
@@ -591,7 +591,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "a0ea2740c6a52cb9e30c44ddb7fb61d8fa8222204de3def23b026700a92d0ed0"
+      "intentional_residual_sha256": "68ae6028a514e221066a472a1a508ea2c5a1965a3968e2d975238f56e5ec4e4b"
     },
     {
       "filename": "AI_Agent_Qubitz_Mellum2.1-12B-A2.5B-Thinking-Q6.py",
@@ -612,7 +612,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "62914642d78a62da6b3f874d990c8630741b153a4ab0ca3e7a5697d4305d502f"
+      "intentional_residual_sha256": "1eb3013358b8d2bab006ce6a3786f2b2fc9d61865ecc7ae18c88e8026823e427"
     },
     {
       "filename": "AI_Agent_Qubitz_MiniCPM-V-4.7-35B-A3B-Q4_1.py",
@@ -633,7 +633,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "cf6c9503fcf48e7ccea839f32bbd2e6fefa37205d99eba1201670fc9fbce374d"
+      "intentional_residual_sha256": "9286805acd4739dcab565c19c68904764d6bd1ec849e0623e5c3fabc9b4a0e1a"
     },
     {
       "filename": "AI_Agent_Qubitz_Muse-Glimmer-30B_Q5.py",
@@ -654,7 +654,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "46ac95d3c3e2f93b3287f4d19caace6131ab51a58fbbe5427bbcb1525afd897f"
+      "intentional_residual_sha256": "34b9dfdd700558bb511a438cddd675ebd71fb4dff8af648bb760b166d80388ba"
     },
     {
       "filename": "AI_Agent_Qubitz_Nemotron-3.5-Lightning-30B-A3B-IQ4.py",
@@ -675,7 +675,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "cf0b67a768561c083cef5c01a30ab728589cb20d98888b46e6478864c6937a47"
+      "intentional_residual_sha256": "35142dfbc14af808cd14a7d99c19f62bb5de44536652a7114c421263e7e9ddeb"
     },
     {
       "filename": "AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py",
@@ -720,7 +720,7 @@
         "background_prewarm": false,
         "sharded_model": true
       },
-      "intentional_residual_sha256": "16b3262533724b1640620b543597307f5c42517b362cd407b08cede80a455628"
+      "intentional_residual_sha256": "40ac8ed8aec7e3af9b2c70c60042d40413feeb9568802e8e98658e3b2c8281eb"
     },
     {
       "filename": "AI_Agent_Qubitz_Nemotron-Cascade-2-30B-A3B-IQ4.py",
@@ -741,7 +741,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "12bac54617475e254a5ca96915676206bba6110dcad1bc9bbb42906f8f86f632"
+      "intentional_residual_sha256": "e0af41ab857afcc0aa43f13630f8503dcf205c03c64e35b7fcef81b869d21f70"
     },
     {
       "filename": "AI_Agent_Qubitz_Nex-N2.5-mini-35B-A3B.i1-Q4.py",
@@ -762,7 +762,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "c4230f3e87793d5fdce75c24a05521dd79aee85dc26d944d9fe5ae3ed752bf5e"
+      "intentional_residual_sha256": "f754393592b84aa4a4e29e688b745a55022b5457dc53eb6b64099ba981c3daa7"
     },
     {
       "filename": "AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py",
@@ -786,7 +786,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "bddded3b5e7c53c66eb5b281dc56af1561fa4a9b0dcdbef89d74ac601d9b4e6c"
+      "intentional_residual_sha256": "ca15ce379ac5b12f83d7cc5487c2d8cd9a3b4a86452b08cd28b4d717fa4624d9"
     },
     {
       "filename": "AI_Agent_Qubitz_Occamy-1.0-35B-A3B-Q4.py",
@@ -807,7 +807,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "a8fbb6acfc38ccf8ccc9f75afec80cbde14e2fa6054861c7c0379c78da2e1a65"
+      "intentional_residual_sha256": "536e6b121a2ccf432dc095c12ee61495fe9b9cc2b1e47e13d297deb1b6e4ce39"
     },
     {
       "filename": "AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py",
@@ -850,7 +850,7 @@
         "background_prewarm": false,
         "sharded_model": true
       },
-      "intentional_residual_sha256": "6ae2cafc2566b0c294ca889ae58205e3f474a80b3ce5ecc48b0600a0199bc163"
+      "intentional_residual_sha256": "ee35d477bfb451c1456b22ca000732a7f5bc73ed114d8ca4bb8b170696bf3e85"
     },
     {
       "filename": "AI_Agent_Qubitz_Ornith-1.5-35B-A3B-Q4.py",
@@ -871,7 +871,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "fa7e2dbdac3e472882acf5f981c4622d5e5255c7dfd61d88b474ec8181cc8d0f"
+      "intentional_residual_sha256": "5b0c57d781c9a1bcab711846d521554ba982b5c342349e95bba514ae9a8e3cb8"
     },
     {
       "filename": "AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py",
@@ -906,7 +906,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "59888b4134f0d6a82ba1bc9ff470875b1ac8c4e7f26fe210fc2dddb2af631f38"
+      "intentional_residual_sha256": "882034064d7c606e1ea8b15f496e1803ed409ef714096dba9b3597ad6b6710f8"
     },
     {
       "filename": "AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py",
@@ -930,7 +930,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "4d1271ceb8bf674fbb24a7146d51af9c362c09340c920107f473d92d301c05ca"
+      "intentional_residual_sha256": "d818b9e74e77f68616b40c3aae9c50b4896cc4846d080f53561a288554c667c5"
     },
     {
       "filename": "AI_Agent_Qubitz_Qwen3.6-35B-A3B_MTP_Q4.py",
@@ -951,7 +951,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "7fef2e6cd43e96ef09076441ea5d637e1ac14629568b993c7b28db6f29138d62"
+      "intentional_residual_sha256": "3095ac8a716bb947ffc9c1ea87d7f2e2117ccfe5cee65c5849a3bc45bf490f89"
     },
     {
       "filename": "AI_Agent_Qubitz_Qwen3.8-27B_Q4.py",
@@ -972,7 +972,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "f8939a0c5aa908ad9f1d656d1a936f0aaf3996a86bb94d6d58c4ca41de29d595"
+      "intentional_residual_sha256": "cf90ee8bc747af1f6576d0ea30d544e12de18e178d2dad6d5127e675078e224a"
     },
     {
       "filename": "AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py",
@@ -1015,7 +1015,7 @@
         "background_prewarm": false,
         "sharded_model": true
       },
-      "intentional_residual_sha256": "910124e7c89e9fb78bcdc1cb55994b75cb1f54d26a0bf9dde5b6e68f353290e1"
+      "intentional_residual_sha256": "bdf63fa1869142a42f0d1c310661a157dbbfdb9b26f8f0e38c42f29b0c1f0300"
     },
     {
       "filename": "AI_Agent_Qubitz_SERA-32B.i1-Q5.py",
@@ -1036,7 +1036,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "cde36dfd2cf48ab013d658eaedb47adfe74050511641371198fbbbcf364c0901"
+      "intentional_residual_sha256": "07178621423df4ad6a89d23df863fb8b5f5aab618b32e0863df5a59a3520faf1"
     },
     {
       "filename": "AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py",
@@ -1057,7 +1057,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "3a837d5704e6b714c86eee058129e4e0a28fdaebb92e4a1248a6260e822e4448"
+      "intentional_residual_sha256": "4167ee5a427b3b4d706b93c3ffcde4bcd0f99679c70a3ec3878e7d2cc927a368"
     },
     {
       "filename": "AI_Agent_Qubitz_Xorton.WX-Computing.LARGE.2026.3-Q4.py",
@@ -1117,7 +1117,7 @@
         "background_prewarm": true,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "0f069d8b9d17784b16d321cb38defef5360bf2e44dd34b3d8f0cafeba812afe8"
+      "intentional_residual_sha256": "a7027dd0a876d3f1301d7c2e4798fdd5a20885984aad8db3d5836a16e79e68e8"
     },
     {
       "filename": "AI_Agent_Qubitz_Ministral-3-8B-Instruct-2512-Q5_12G.py",
@@ -1142,7 +1142,7 @@
         "background_prewarm": false,
         "sharded_model": false
       },
-      "intentional_residual_sha256": "477ab2b4c78e8041397290da3d579ebda8483dd8eb420f671fbd4631160edab7"
+      "intentional_residual_sha256": "f5cba23e431e0e0d987753a9817f145611a158261a16f863c69cdc8c24af4e22"
     }
   ]
 }
