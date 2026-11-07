@@ -24,6 +24,13 @@ replay. Native server lifetime receipts distinguish actual child exits from
 proxy exits; missing evidence remains unknown. Tool-result summaries stay valid
 JSON within their cap, and response timings require observed responses.
 
+`browser_evidence.py` supports normal HTML creation and browser-verification
+receipts; it is not the developer browser interface. The public
+`browser_resources.json` is an empty schema-1 catalog: no evaluation fixtures or
+pre-admitted third-party resources are bundled. Keeping this catalog allows the
+runtime to report capabilities honestly without downloading or substituting
+dependencies. Existing network and validation policies are unchanged.
+
 Model availability indicators read declared local GGUF file sets without
 importing or downloading another model. Availability is not proof of model
 integrity, hardware fit or successful inference. Runtime state and caches remain
