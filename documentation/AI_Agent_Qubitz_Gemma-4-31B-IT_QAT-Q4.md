@@ -58,32 +58,6 @@ Local-inference Qubitz variant for Gemma 4 31B IT QAT Q4.
 
 ## Current Project State
 
-- This document describes the variant profile with the same filename in `qubitz_variant_profiles.json`; that profile is the source of truth for this variant's model artifact and scalar runtime settings.
-- Runtime loads `HARNESS.enc` only. `HARNESS.txt` is the editable source and must be re-encrypted after changes.
-- The variant remains independently runnable; `qubitz_variant_builder.py` is development-time synchronization tooling, not a runtime dependency.
-- Headless evaluations capture process output, logs, exit status, structured events, and telemetry; GUI rendering, browser state, and browser devtools are not covered unless separately observed.
-
-## Verification
-- Disposable matrix: 50/50 case runs across 5 full runs (10 cases each), most recently 2026-08-19.
-- Live smoke: clean on 2026-08-19 with no behavior issues, timeouts, or thermal aborts.
-- Median full-matrix wall time: 632 s.
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Current Source-Verified Profile
-
-This section is generated from the current variant profile and script synchronization state; older evaluation notes above are historical evidence and may predate later source changes.
-- Model alias: `unsloth/gemma-4-31B-it-qat-GGUF`
-- GGUF repository: `unsloth/gemma-4-31B-it-qat-GGUF`
-- GGUF file: `gemma-4-31B-it-qat-UD-Q4_K_XL.gguf`
-- GGUF label: `Unsloth-Gemma-4-31B-It-QAT-UD-Q4_K_XL`
-- Requested context ceiling: `262144` tokens; the effective loaded context may be lower when llama.cpp fitting must preserve memory headroom.
-- Default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- This variant uses the shared project llama.cpp runtime unless its script-level model compatibility logic selects another runtime.
-- The GUI performs model prewarm after startup as a variant-specific latency optimization.
-- All variants now include the common exact named-file operation route for explicit create, edit, copy, rename/move, and delete requests, with operation-specific verification; the model and hardware-specific sections remain in each launcher.
-- Historical documentation refresh 2026-09-19: the then-standalone wrapper included follow-up-aware routing, narrow fixed-response fast paths, explicit online/offline research gating, loaded-context request budgeting, adaptive reasoning/tool budgets, GUI elapsed-time and generation-speed telemetry, and verified completion evidence.
-
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

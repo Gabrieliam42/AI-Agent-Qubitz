@@ -1,0 +1,50 @@
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -27,6 +27,33 @@
+ #include <atomic>
+ #include <mutex>
+ #include <cstring>
++
++#ifdef __linux__
++#include <fcntl.h>
++#include <unistd.h>
++
++static void release_uploaded_mmap_pages(llama_mmap & mapping, int fd, size_t offset, size_t bytes) {
++    const long page_query = sysconf(_SC_PAGESIZE);
++    if (page_query <= 0) {
++        throw std::runtime_error("Cannot verify page size for bounded tensor uploads");
++    }
++    const size_t page = size_t(page_query);
++    const size_t skip = (page - offset % page) % page;
++    if (bytes <= skip) {
++        return;
++    }
++    const size_t length = (bytes - skip) / page * page;
++    if (length == 0) {
++        return; // A zero-length fadvise request would discard through EOF.
++    }
++    const size_t first = offset + skip;
++    mapping.dontneed_fragment(first, first + length);
++    const int error = posix_fadvise(fd, off_t(first), off_t(length), POSIX_FADV_DONTNEED);
++    if (error != 0) {
++        throw std::runtime_error(format("Cannot release uploaded tensor file-cache pages: %s", strerror(error)));
++    }
++}
++#endif
+ 
+ #if defined(_WIN32)
+     #define WIN32_LEAN_AND_MEAN
+@@ -1233,6 +1260,13 @@
+                 mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
+             } else {
+                 ggml_backend_tensor_set(cur, data, 0, n_size);
++#ifdef __linux__
++                // Device set_tensor completes its copy before returning. Retain CPU
++                // weights and boundary pages; only release completed GPU uploads.
++                if (defer_experts && !check_tensors && !ggml_backend_buffer_is_host(cur->buffer)) {
++                    release_uploaded_mmap_pages(*mapping, file->file_id(), weight->offs, n_size);
++                }
++#endif
+             }
+             return n_size;
+         }

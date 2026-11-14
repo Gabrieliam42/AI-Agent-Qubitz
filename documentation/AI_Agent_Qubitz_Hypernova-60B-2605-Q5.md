@@ -33,27 +33,6 @@ Local-inference Qubitz variant for Hypernova 60B 2605 i1 Q5.
 - Repository, coding, MCP, and multi-step tasks use local retrieval, bounded tools, transactional edit guards, and verified completion evidence.
 - Supports Windows-hosted and WSL-hosted workspaces through the existing WSL-to-Windows execution paths.
 
-## Verification
-
-- Model identity, declarative profile, Python syntax, shared-wrapper parity, llama.cpp flag availability, and generated dual-GPU launch arguments are checked statically without loading the 44.3 GB model.
-- A live dual-GPU model-load and task benchmark remains separate runtime verification.
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Current Source-Verified Profile
-
-This section is generated from the current variant profile and script synchronization state; older evaluation notes above are historical evidence and may predate later source changes.
-- Model alias: `mradermacher/Hypernova-60B-2605-i1-GGUF`
-- GGUF repository: `mradermacher/Hypernova-60B-2605-i1-GGUF`
-- GGUF file: `Hypernova-60B-2605.i1-Q5_K_M.gguf`
-- GGUF label: `Hypernova-60B-2605.i1-Q5_K_M`
-- Requested context ceiling: `131072` tokens; the effective loaded context may be lower when llama.cpp fitting must preserve memory headroom.
-- Default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- This variant uses the shared project llama.cpp runtime unless its script-level model compatibility logic selects another runtime.
-- This is a dual-GPU placement variant; GPU split, memory reserve, and CPU overflow behavior remain variant-specific.
-- All variants now include the common exact named-file operation route for explicit create, edit, copy, rename/move, and delete requests, with operation-specific verification; the model and hardware-specific sections remain in each launcher.
-- Historical documentation refresh 2026-09-19: the then-standalone wrapper included follow-up-aware routing, narrow fixed-response fast paths, explicit online/offline research gating, loaded-context request budgeting, adaptive reasoning/tool budgets, GUI elapsed-time and generation-speed telemetry, and verified completion evidence.
-
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

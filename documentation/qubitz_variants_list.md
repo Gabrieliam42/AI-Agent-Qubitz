@@ -1,4 +1,4 @@
-- Current local public catalog: 40 user-facing launchers in `variants/`, requiring project-root `runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
+- Current local public catalog: 41 user-facing launchers in `variants/`, requiring project-root `runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 Dense
 - `AI_Agent_Qubitz_Gemma-4-12B-IT-Q4_12G.py` - 12GB VRAM GPU profile, `Google DeepMind's` dense Gemma 4 12B Unified Q4_K_M; text/tool only, loaded context fitted to available memory.
@@ -41,4 +41,5 @@
 - `AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` - two 24 GB VRAM GPUs plus available system RAM, `Ornith AI's` Qwen3.5-family Ornith-1.5-122B MoE UD-Q5_K_XL; text/tool only
 - `AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py` - two 24 GB VRAM GPUs plus available system RAM, `NVIDIA's` Nemotron-H Mamba/attention hybrid MoE UD-Q6_K_XL; text/tool only, vision projector not enabled
 - `AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `DeepSeek AI's` DeepSeek-V4-Flash-0731 MoE UD-IQ4_XS
+- `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py` - five-shard IQ4_XS variant in the 72 GB VRAM+ tier, three 24 GB GPUs plus RAM overflow; isolated backend must be restored separately; current live compatibility and long-run memory fit remain unqualified.
 - `AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `InclusionAI's` Ling-3.0-flash 124B A5.1B hybrid-linear MoE AD-Q5_K_M

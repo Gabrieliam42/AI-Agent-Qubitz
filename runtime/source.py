@@ -110,7 +110,7 @@ def runtime_dependency_paths(root: Path) -> list[Path]:
     directory = root / "runtime"
     paths = [path for path in directory.rglob("*")
              if path.is_file() and "__pycache__" not in path.parts
-             and (path.suffix in {".py", ".json", ".so", ".pyd"} or path.name.endswith(".py.in"))]
+             and (path.suffix in {".py", ".json", ".so", ".pyd", ".patch"} or path.name.endswith(".py.in"))]
     launcher = root / "AI Agent Qubitz.py"
     if launcher.is_file():
         paths.append(launcher)

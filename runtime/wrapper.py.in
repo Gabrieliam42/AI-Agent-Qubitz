@@ -1239,16 +1239,6 @@ _EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
 )
 
 
-# <QUBITZ_SHARED_REFERENCE:wrapper:b8afc08a74689aad>
-# <QUBITZ_SHARED_REFERENCE:wrapper:7eb73c26733fad18>
-if _EMBEDDED_BASE_SOURCE.count(_EMBEDDED_POWERSHELL_LAUNCH_OLD) != 1:
-    raise RuntimeError("Embedded llama-server PowerShell launch block was not found exactly once.")
-_EMBEDDED_BASE_SOURCE = _EMBEDDED_BASE_SOURCE.replace(
-    _EMBEDDED_POWERSHELL_LAUNCH_OLD,
-    _EMBEDDED_POWERSHELL_LAUNCH_NEW,
-)
-
-
 # <QUBITZ_SHARED_REFERENCE:wrapper:216031618ccf2637>
 # <QUBITZ_SHARED_REFERENCE:wrapper:942448bd9f13cec9>
 # <QUBITZ_SHARED_REFERENCE:wrapper:7929c6e8fd1a866e>
@@ -2554,6 +2544,8 @@ def _install_agent_tool_hardening(app: LocalOnlyApp) -> None:
                 task_prompt
             )
             self._focused_missing_postconditions = frozenset(focused)
+            if self._selected_route_name(task_prompt) == "named_file_operation":
+                return self._filter_tools_by_intent(task_prompt, tools)
             if focused:
                 return self._filter_tools_by_intent(task_prompt, tools)
 # <QUBITZ_VARIANT_SECTION:wrapper:248>

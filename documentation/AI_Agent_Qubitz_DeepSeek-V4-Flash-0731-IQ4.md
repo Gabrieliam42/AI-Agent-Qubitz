@@ -1,12 +1,5 @@
 # AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py
 
-## Latest Partial Evaluation
-
-The November 5 remaining matrix recorded a passed multi-module revision and a
-turn-one HTML-generation timeout without a verified artifact. Later HTML turns
-were not reached. This is not a whole-suite pass or proof of a backend hang.
-See the partial review and general repair proposals (maintainer record; not included).
-
 ## Shared Runtime
 
 The normal launcher is `variants/AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
@@ -35,20 +28,6 @@ Local-inference Qubitz variant for DeepSeek-V4-Flash-0731 UD-IQ4_XS.
 
 - Remains independently runnable with its own GUI, CLI, retrieval, MCP/tool, transaction, completion-verification, routing, and thermal behavior.
 - Uses local GGUF inference only and requires no paid service.
-
-## Verification
-
-- Model identity, profile, shard manifest, aggregate-size placement, syntax, and Ruff are checked statically.
-- The model download, live dual-GPU/RAM load, effective context, and generation behavior require separate runtime verification.
-
-## Current Source-Verified Profile
-
-- Model alias and GGUF repository: `unsloth/DeepSeek-V4-Flash-0731-GGUF`.
-- Launch shard: `DeepSeek-V4-Flash-0731-UD-IQ4_XS-00001-of-00004.gguf`; all four shards are required.
-- Requested context ceiling: `262144` tokens; default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- Uses isolated llama.cpp `b10982`, dual-GPU layer fitting over `CUDA0,CUDA1`, a `131072` fit minimum, and `f16` K/V cache; profile records no MTP draft or background prewarm.
-- This profile block reflects current source metadata; live download, load, effective context, and quality still require runtime verification.
 
 ## Behavioral Compatibility Evidence
 

@@ -32,22 +32,6 @@ Local-inference Qubitz variant for Moonshot AI Kimi-Linear 48B A3B Instruct i1 Q
 - Repository and coding tasks use local retrieval, bounded tools, transactional edit guards, and verified completion evidence.
 - Runtime loads `HARNESS.enc`; development-time synchronization is not a runtime dependency.
 
-## Verification
-
-- Model identity, declarative profile, Python syntax, shared-wrapper parity, encrypted-harness integrity, and release metadata are statically verified.
-- Live model download, two-GPU load, effective context, and task quality remain separate runtime verification.
-
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Current Source-Verified Profile
-
-- Model alias and GGUF repository: `mradermacher/Kimi-Linear-48B-A3B-Instruct-i1-GGUF`.
-- GGUF file and label: `Kimi-Linear-48B-A3B-Instruct.i1-Q6_K.gguf` / `Kimi-Linear-48B-A3B-Instruct.i1-Q6_K`.
-- Requested context ceiling: `1048576` tokens; default maximum output: `16384` tokens.
-- Uses a dual-GPU layer split, a `131072` fit minimum, and matching `f16` K/V caches.
-- Documentation refreshed 2026-09-19 against the then-current standalone script and declarative profile.
-- Smoke on 2026-09-12 loaded successfully and completed the task in `9.55 s`, but failed overall because the simple answer did not contain the expected answer and two GUI heartbeat stalls occurred and recovered.
-
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

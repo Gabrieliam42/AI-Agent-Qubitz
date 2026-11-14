@@ -20,23 +20,6 @@ The normal launcher is `variants/AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py
 - The native installer validates archive size and the release SHA256 when supplied. `QUBITZ_OFFLINE=1` prevents missing-runtime downloads.
 - Using the TurboQuant fork does not enable TurboQuant KV compression: this variant retains `q4_0` K/V cache and CUDA FlashAttention.
 
-## Live Observation: 2026-10-02
-
-- The Windows CUDA 12.4 bundle was installed and its archive matched the published SHA256. The manual launch used that isolated executable, loaded the AD model, and entered generation with `131072` tokens of effective context.
-- The earlier `unknown model architecture: 'bailingmoe3'` startup failure did not recur. The run uses `CUDA0,CUDA1` with layer fitting; both GPUs have substantial VRAM allocation.
-- The HTML-creation task failed after about 12:36: chunked content generation produced a grammar containing `char{1,3072}`, which the server rejected with `number of repetitions exceeds sane defaults` / `Failed to initialize samplers: failed to parse grammar`. Streaming and non-streaming requests both returned HTTP 400; no completed output was verified.
-- Other server warnings concern tokenizer EOS metadata, CPU tensor overrides with mmap, and unauthenticated wildcard CORS; these have not been linked to the failure. A GUI heartbeat warning caught the main thread inside the modal error dialog, not model generation.
-- Native Linux fallback and the new focused bootstrap tests remain untested. GUI event text and server logs are observable; native GUI rendering and separate-terminal output are not directly captured.
-
-## Current Source-Verified Profile
-
-- Model alias and GGUF repository: `AtomicChat/Ling-3.0-flash-GGUF`.
-- Launch shard: `Ling-3.0-flash-AD-Q5_K_M-00001-of-00002.gguf`; both shards are required. Profile label: `Ling-3.0-flash-124B-A5.1B-AD-Q5_K_M`.
-- Requested context ceiling: `262144` tokens; default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- Uses isolated `AtomicBot-ai/atomic-llama-cpp-turboquant` `b10269-1.6.0`, dual-GPU layer fitting over `CUDA0,CUDA1`, a `131072` fit minimum, and `q4_0` K/V cache; profile records no MTP draft or background prewarm.
-- This profile block reflects source metadata. The live observation above establishes Windows startup and effective context, not task correctness or performance baselines.
-
 ## Behavioral Compatibility Evidence
 
 The November 5 partial remaining matrix recorded passed read-only-to-full and
@@ -44,6 +27,6 @@ online-source-update trajectories. The multi-module follow-up failed after a
 type-changing candidate was correctly rejected before dispatch; HTML creation
 was interrupted by the user stop. These observations do not erase earlier
 runtime failures or establish general model compatibility. See the
-partial review (maintainer record; not included).
+partial review (maintainer record, not shipped).
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.

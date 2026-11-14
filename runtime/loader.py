@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import linecache
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,15 @@ def initialize_variant(namespace: dict[str, Any], spec: dict[str, Any]) -> None:
     source = compose_variant(spec, path.name)
     tree = ast.parse(source, filename=str(path))
     run_main = namespace.get("__name__") == "__main__"
+    if run_main and not any(flag in sys.argv for flag in ("--help", "-h")):
+        from .wsl_driver import bind_wsl_driver
+
+        bind_wsl_driver()
+    if (run_main and path.name == "AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py"
+            and not any(flag in sys.argv for flag in ("--help", "-h"))):
+        from .bootstrap import ensure_application_dependencies
+
+        ensure_application_dependencies(path.parent.parent)
     if run_main:
         expected = ast.parse('if __name__ == "__main__":\n    main()\n').body[0]
         if not tree.body or ast.dump(tree.body[-1]) != ast.dump(expected):

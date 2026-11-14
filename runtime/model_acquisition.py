@@ -104,7 +104,7 @@ def _install_selected_model_acquisition(app):
             if prewarm is None or self._qubitz_acquisition_closed.is_set():
                 return
             state = self._qubitz_model_acquisition_state["state"]
-            if state in {"pending", "checking", "downloading"}:
+            if state in {"pending", "checking", "downloading", "building", "validating", "ready"}:
                 self.root.after(500, self._maybe_start_background_model_prewarm)
                 return
             if state not in {"cached", "downloaded"}:
@@ -135,6 +135,19 @@ def _install_selected_model_acquisition(app):
 
             def acquire():
                 try:
+                    prepare_runtime = getattr(base, "_qubitz_ensure_selected_runtime", None)
+                    if callable(prepare_runtime):
+                        report("checking", "Checking the selected model's compatible native runtime.")
+                        if (_qubitz_model_download_offline()
+                                or str(getattr(self.config, "network_mode", "")).lower() == "offline"):
+                            try:
+                                base.resolve_llama_server_executable(workspace)
+                            except (RuntimeError, OSError) as error:
+                                raise RuntimeError("Compatible runtime missing or invalid; automatic preparation is disabled offline.") from error
+                        else:
+                            prepare_runtime(workspace, report=report, cancel_event=self._qubitz_acquisition_closed)
+                        if self._qubitz_acquisition_closed.is_set():
+                            return
                     resolved = base.resolve_gguf_model_path(workspace, configured_path, filename)
                     if resolved is not None:
                         report("cached", f"Selected model files found: {filename}. Runtime validation is still required.")

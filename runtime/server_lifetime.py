@@ -70,6 +70,7 @@ def prepare(server, command: list[str], translate) -> list[str]:
     directory.mkdir(parents=True, exist_ok=False)
     server._qubitz_lifetime_directory = directory
     native_command = list(command)
+    native_handle_in_powershell = False
     if Path(command[0]).name.casefold() == "powershell.exe":
         index = next((i + 1 for i, item in enumerate(command[:-1])
                       if item.casefold() == "-encodedcommand"), None)
@@ -88,10 +89,11 @@ def prepare(server, command: list[str], translate) -> list[str]:
         lines[positions[0]] = powershell_launch(native_command, str(translate(directory)), token)
         result = list(command)
         result[index] = base64.b64encode("\n".join(lines).encode("utf-16le")).decode("ascii")
+        native_handle_in_powershell = True
     else:
         result = command
     exclusive(directory / "intent.json", {"owner_token": token, "command": native_command,
-                                          "native_handle_in_powershell": result is not command})
+                                          "native_handle_in_powershell": native_handle_in_powershell})
     return result
 
 
@@ -131,6 +133,31 @@ def observe_native(server) -> None:
     threading.Thread(target=wait, name="qubitz-server-exit", daemon=True).start()
 
 
+def observe_proxy(server) -> None:
+    """Track the WSL interop process separately from its Windows child receipts."""
+    directory = server._qubitz_lifetime_directory
+    process = server.process
+    identity = {"pid": process.pid, "owner_token": directory.name,
+                "command": process.args, "parent_pid": os.getpid(), "role": "wsl_interop_proxy"}
+    try:
+        identity["creation"] = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        identity["namespace"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except (FileNotFoundError, IndexError):
+        identity["creation"] = "unavailable_after_early_exit"
+        identity["namespace"] = "unavailable"
+    exclusive(directory / "proxy_launch.json", identity)
+
+    def wait():
+        code = process.wait()
+        try:
+            exclusive(directory / "proxy_exit.json", {"identity": identity, "actual_wait": True,
+                      "exit_code": code})
+        except OSError as error:
+            server._qubitz_proxy_lifetime_error = str(error)
+
+    threading.Thread(target=wait, name="qubitz-server-proxy-exit", daemon=True).start()
+
+
 def request_shutdown(server) -> None:
     directory = getattr(server, "_qubitz_lifetime_directory", None)
     if directory is not None and not (directory / "shutdown_request.json").exists():
@@ -144,7 +171,8 @@ def snapshot(server) -> dict:
     directory = getattr(server, "_qubitz_lifetime_directory", None)
     result = {"native_exit": "unknown", "directory": str(directory) if directory else None}
     if directory is not None:
-        for name in ("intent.json", "native_launch.json", "native_exit.json", "shutdown_request.json"):
+        for name in ("intent.json", "native_launch.json", "native_exit.json", "proxy_launch.json",
+                     "proxy_exit.json", "shutdown_request.json"):
             path = directory / name
             if path.is_file():
                 try:
@@ -158,6 +186,14 @@ def snapshot(server) -> dict:
                 and exit_record.get("identity") == launch and exit_record.get("actual_wait") is True
                 and type(exit_record.get('exit_code')) is int):
             result["native_exit"] = exit_record.get("exit_code")
+        proxy_launch = result.get("proxy_launch.json", {}).get("value")
+        proxy_exit = result.get("proxy_exit.json", {}).get("value", {})
+        if (proxy_launch and proxy_launch.get("owner_token") == directory.name
+                and proxy_exit.get("identity") == proxy_launch and proxy_exit.get("actual_wait") is True
+                and type(proxy_exit.get("exit_code")) is int):
+            result["proxy_exit"] = proxy_exit.get("exit_code")
+        else:
+            result["proxy_exit"] = "unknown"
     try:
         result["log_tail"] = server.read_log_tail(4000)
     except (OSError, AttributeError) as error:

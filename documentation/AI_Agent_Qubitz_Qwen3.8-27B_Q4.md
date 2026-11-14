@@ -57,36 +57,6 @@ Local-inference Qubitz variant for Qwen 3.8 27B Q4.
 
 ## Current Project State
 
-- This document describes the variant profile with the same filename in `qubitz_variant_profiles.json`; that profile is the source of truth for this variant's model artifact and scalar runtime settings.
-- Runtime loads `HARNESS.enc` only. `HARNESS.txt` is the editable source and must be re-encrypted after changes.
-- The variant remains independently runnable; `qubitz_variant_builder.py` is development-time synchronization tooling, not a runtime dependency.
-- Headless evaluations capture process output, logs, exit status, structured events, and telemetry; GUI rendering, browser state, and browser devtools are not covered unless separately observed.
-
-## Verification
-- Disposable matrix: 64/70 case runs across 7 full runs (10 cases each), most recently 2026-08-19.
-- Carries a 2.0x per-case timeout multiplier in the evaluator. Without it `failing_tests` and `mcp_lifecycle` hit the 600 s default at `rc=124` while still making progress.
-- Historical evaluation found substantially slower reasoning-heavy agentic work despite competitive short-question latency, so short-prompt latency should not be used to predict this variant's agentic throughput. That comparison predates the current release set and should not be treated as a current cross-variant benchmark.
-- `mcp_lifecycle` remains erratic even with the raised ceiling: 516-1152 s across five runs, timing out at 1152 s in the most recent one without ever reaching `mcp ready`. More time does not reliably fix it.
-- Live smoke: clean on 2026-08-19 with no behavior issues, timeouts, or thermal aborts.
-- Pinned `b10549` compatibility smoke on 2026-08-21: question `00:47.31`, direct task `00:02.08`; no behavior issue, timeout, or thermal abort.
-- Median full-matrix wall time: 1647 s.
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Current Source-Verified Profile
-
-This section is generated from the current variant profile and script synchronization state; older evaluation notes above are historical evidence and may predate later source changes.
-- Model alias: `unsloth/Qwen3.8-27B-GGUF`
-- GGUF repository: `unsloth/Qwen3.8-27B-GGUF`
-- GGUF file: `Qwen3.8-27B-UD-Q4_K_XL.gguf`
-- GGUF label: `Qwen3.8-27B-UD-Q4_K_XL`
-- Requested context ceiling: `262144` tokens; the effective loaded context may be lower when llama.cpp fitting must preserve memory headroom.
-- Default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- This variant uses the shared project llama.cpp runtime unless its script-level model compatibility logic selects another runtime.
-- No additional profile-level exception is recorded; model-specific constants and launch logic remain in this variant's launcher.
-- All variants now include the common exact named-file operation route for explicit create, edit, copy, rename/move, and delete requests, with operation-specific verification; the model and hardware-specific sections remain in each launcher.
-- Historical documentation refresh 2026-09-19: the then-standalone wrapper included follow-up-aware routing, narrow fixed-response fast paths, explicit online/offline research gating, loaded-context request budgeting, adaptive reasoning/tool budgets, GUI elapsed-time and generation-speed telemetry, and verified completion evidence.
-
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

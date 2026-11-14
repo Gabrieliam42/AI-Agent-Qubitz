@@ -1,13 +1,5 @@
 # AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py
 
-## Latest Partial Evaluation
-
-The November 5 remaining matrix timed out on the first HTML trajectory turn.
-The artifact was retained with file/browser-load checks, but requested visual
-behavior and interactions remained unverified. Later turns were not reached.
-This run did not reproduce the earlier `createStars` syntax rejection; it does
-not justify weakening validation. See the partial review (maintainer record; not included).
-
 ## Shared Runtime
 
 The normal launcher is `variants/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
@@ -64,35 +56,14 @@ The GUI switch does not select the standard-Q4 or shared-Q8 experimental heads.
 
 Heads must already exist under `.cache/models/unsloth/Qwen3.8-Flash-Next-GGUF/MTP/`. Launch verifies pinned head bytes, base metadata identity, complete base shard sizes, and runtime version. Shared modes additionally verify the locally built runtime against `qubitz-build.json`; missing files never trigger an automatic fork/head download. The main model quantization, sampling, context ceiling, and harness remain unchanged.
 
-The 2026-10-26 b11887 standard-head comparison verified loading, native tool use, cancellation, cleanup, and active speculative acceptance. Its two matched capped decoding probes were about 39% slower with MTP; a shorter GUI run used different model output/tool steps and is not directly comparable. Evidence: `.cache/mtp_qwen38_20261026_01/comparison_review.json`.
-
-Two later headless comparisons each ran two capped 512-token prompts per MTP head. Pooled decoding rates (tokens/s) were standard-Q4 8.24/8.13, shared-Q4 8.33/8.78, and shared-Q8 9.92/9.14 across the two rounds. The shared-Q8 head ranked first in both, but its lead over shared-Q4 changed substantially. Both reviews reported clean infrastructure: `.cache/mtp_head_comparison_20261026_01/comparison_review.json` and `.cache/mtp_head_comparison_repeat_20261026_02/comparison_review.json`. Fixed order, only two prompts per head, no fresh MTP-off arm, and no agent-task or quality comparison mean these data do not justify a default change or predict GUI task latency. MTP is an optional decoding-speed experiment, not a way to improve model capability.
-
 ## Qubitz Behavior
 
 - Remains independently runnable with its own GUI, CLI, retrieval, MCP/tool, transaction, completion-verification, routing, and thermal behavior.
 - Uses Qwen3.8-family route-aware sampling, including the model-card thinking profile for agentic work and non-thinking profile for simple responses.
 - Uses local llama.cpp GGUF inference only; no required paid service or hosted inference account.
-
-## Verification
-
-- Model identity, profile, shard acquisition logic, aggregate-size planning, Python syntax, Ruff, shared-wrapper parity, and release checks are verified statically.
-- The three-shard model and MTP heads loaded in the cited live comparisons at the requested `262144` context; this does not establish all agent-task outcomes or performance under other prompts.
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Current Source-Verified Profile
-
-This section is generated from the current variant profile and script synchronization state; older evaluation notes above are historical evidence and may predate later source changes.
-- Model alias: `unsloth/Qwen3.8-Flash-Next-GGUF`
-- GGUF repository: `unsloth/Qwen3.8-Flash-Next-GGUF`
-- GGUF file: `Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf`
-- GGUF label: `Qwen3.8-Flash-Next-125B-A6B-UD-IQ4_XS`
-- Requested context ceiling: `262144` tokens; the effective loaded context may be lower when llama.cpp fitting must preserve memory headroom.
-- Default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- This variant uses its own isolated llama.cpp runtime selected by the script.
-- This is a three-shard dual-GPU/RAM placement variant; its shard and fit logic remain variant-specific.
-- All variants now include the common exact named-file operation route for explicit create, edit, copy, rename/move, and delete requests, with operation-specific verification; the model and hardware-specific sections remain in each launcher.
-- Historical documentation refresh 2026-09-19: the then-standalone wrapper included follow-up-aware routing, narrow fixed-response fast paths, explicit online/offline research gating, loaded-context request budgeting, adaptive reasoning/tool budgets, GUI elapsed-time and generation-speed telemetry, and verified completion evidence.
+- Displays live backend-counted `tok/s` beside `Show Reasoning`; unavailable
+  prompt-processing counters are not reported as decoding speed. Final token
+  speed excludes startup, retrieval, prefill and tool execution.
 
 ## Behavioral Compatibility Evidence
 

@@ -40,10 +40,16 @@
 38. `AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py`: `262144`
 39. `AI_Agent_Qubitz_Gemma-4-12B-IT-Q4_12G.py`: `262144`
 40. `AI_Agent_Qubitz_Ministral-3-8B-Instruct-2512-Q5_12G.py`: `262144`
+41. `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py`: `202752`
 
 These configured runtime defaults were verified against `qubitz_variant_profiles.json`. The Qwen3.5 9B 12GB variant caps context at `101376` on every GPU.
 
-This list contains the 40 current user-facing variants; developer-only guides and profiles are separate from the public catalog and automated validation.
+This list contains the 41 current user-facing variants; developer-only guides and profiles are separate from the public catalog and automated validation.
+
+GLM-5.3-Flash now uses UD-IQ4_XS, retaining the `202752` default and `1048576`
+architectural ceiling. Its three-GPU/RAM-overflow policy and native memory guards
+still apply. Automatic backend preparation and a narrow live workflow do not
+establish full-context fit or long-context stability.
 
 These are requested context ceilings, not guaranteed effective windows: llama.cpp may fit a lower loaded context when model weights, KV cache, GPU headroom, or dual-GPU placement require it.
 
@@ -76,4 +82,3 @@ Ling-3.0-flash uses `262144` because the official model card documents a context
 Ornith-1.5-122B uses `262144` from its official `text_config.max_position_embeddings` and native-context model card. Automatic fitting may lower the loaded context, with a `131072` fit floor when feasible. The approximately 1M-token YaRN extension described for other serving backends is not enabled by default in this GGUF variant.
 
 Nemotron-3.5-Super-VL-120B-A12B declares `llm_config.max_position_embeddings: 1048576` in NVIDIA's [official configuration](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16/blob/main/config.json). Qubitz keeps `262144` as the default request, rather than preallocating the full native ceiling alongside approximately 112.7 GiB of Q6 weights. `--num-ctx` can request a larger window up to that documented ceiling, subject to actual memory fitting; the fit floor remains `131072` when feasible. This is a hardware policy, not a claim that the model is limited to 256K or that 1M has been load-tested.
-

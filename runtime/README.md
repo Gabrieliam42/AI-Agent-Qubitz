@@ -1,41 +1,46 @@
 # Shared Qubitz Runtime
 
-This package supports the normal Tk GUI, CLI and MCP entrypoints for the 40
-public launchers in `variants/`. Keep the published runtime package together;
-the small launchers do not contain a standalone copy of the implementation.
+This package supports the normal Tk GUI, CLI and MCP entrypoints for the 41
+public launchers in `variants/`. Keep the published package together; the small
+launchers are not standalone copies of the application.
 
-## Required Files
+## Required Components
 
-The loader composes each launcher's literal schema-2 specification with
-`base.py.in`, `wrapper.py.in`, the shared symbol registries and their registered
-Python modules. It preserves the launcher's identity and private mutable state.
-Missing source modules must not be replaced with another variant's files.
+The loader combines each literal schema-2 variant specification with the four
+source templates/registries and their registered modules. Identity and mutable
+state remain isolated per variant. Keep all shipped source modules and assets,
+including `glm53_loader.patch`; do not replace missing modules with another
+variant's files.
 
-Retain both native `_policy_runtime` binaries, `policy_loader.py`,
-`policy_bundle.json` and the matching project-root `HARNESS.enc`. The policy
-loader supports CPython 3.12 x86-64 on Linux/WSL and Windows, verifies binary
-integrity, and does not use a plaintext or key-file fallback. No compiler or
-authoring key is required by users. This is obfuscation, not confidentiality
-against the owner of the local inference server.
+Keep both `_policy_runtime` binaries, `policy_loader.py`, `policy_bundle.json`
+and the matching root `HARNESS.enc`. The native policy loader supports CPython
+3.12 x86-64 on Linux/WSL and Windows and verifies binary integrity. Its authoring
+key, plaintext source and build tools are not required. This is obfuscation,
+not confidentiality against the owner of the local inference server.
 
-The request-budget, memory-context and tool-schema modules are normal runtime
-dependencies. Transport failures retain bounded diagnostics without authorizing
-replay. Native server lifetime receipts distinguish actual child exits from
-proxy exits; missing evidence remains unknown. Tool-result summaries stay valid
-JSON within their cap, and response timings require observed responses.
+`bootstrap.py`, `native_runtime.py`, `glm53_loader.patch` and `wsl_driver.py`
+are normal-user runtime dependencies. They provide missing-only dependencies,
+pinned project-local GLM backend preparation and process-local WSL driver/JIT
+binding. GLM native preparation needs a compatible stack and compiler toolchain;
+the toolchain is acquired separately into the project cache, not installed over
+the active Python stack. Offline operation requires complete local artifacts.
 
-`browser_evidence.py` supports normal HTML creation and browser-verification
-receipts; it is not the developer browser interface. The public
-`browser_resources.json` is an empty schema-1 catalog: no evaluation fixtures or
-pre-admitted third-party resources are bundled. Keeping this catalog allows the
-runtime to report capabilities honestly without downloading or substituting
-dependencies. Existing network and validation policies are unchanged.
+## Runtime Evidence
 
-Model availability indicators read declared local GGUF file sets without
-importing or downloading another model. Availability is not proof of model
-integrity, hardware fit or successful inference. Runtime state and caches remain
-under the project root, not inside `variants/`.
+`generation_telemetry.py` supplies request-local live tok/s and completed weighted
+decode timing. No rate is inferred from characters, words or stream chunks.
+Prompt processing, startup and tool time are not decode throughput.
 
-The developer browser interface, export tools, evaluation suites and maintenance
-scripts are not included in this user runtime tree. See the
-[user guide](../documentation/README.md) for launch and recovery behavior.
+Transport failures retain bounded diagnostics without authorizing replay. Native
+server lifetime receipts distinguish actual child exits from proxy exits; missing
+proof stays unknown. Saved-file and behavior-verification status are separate.
+Unavailable diagnostics are not passing tests. See the user guide for the known
+new-file verification-loop limitation.
+
+Local model indicators check declared file sets without loading other models.
+Availability does not prove integrity, hardware fit or successful inference.
+Caches, owned receipts, logs and downloaded artifacts stay under the project root.
+
+The developer browser frontend, export/build-maintenance tools, evaluation suites,
+test fixtures and private run reports are not included. See the
+[user guide](../documentation/README.md) for normal launch and recovery behavior.

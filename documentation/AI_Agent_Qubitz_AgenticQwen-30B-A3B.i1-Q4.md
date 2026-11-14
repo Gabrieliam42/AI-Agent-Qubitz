@@ -57,42 +57,6 @@ Local-inference Qubitz variant for AgenticQwen 30B-A3B i1 Q4_K_M.
 
 ## Current Project State
 
-- This document describes the variant profile with the same filename in `qubitz_variant_profiles.json`; that profile is the source of truth for this variant's model artifact and scalar runtime settings.
-- Runtime loads `HARNESS.enc` only. `HARNESS.txt` is the editable source and must be re-encrypted after changes.
-- The variant remains independently runnable; `qubitz_variant_builder.py` is development-time synchronization tooling, not a runtime dependency.
-- Headless evaluations capture process output, logs, exit status, structured events, and telemetry; GUI rendering, browser state, and browser devtools are not covered unless separately observed.
-
-## Verification
-- Disposable matrix: 62/70 case runs across 7 full runs (10 cases each), most recently 2026-08-19.
-- The historical 2026-08-19 campaigns recorded intermittent failures on `failing_tests`, `mcp_lifecycle`, and `multi_file_edit`; they do not establish a current cross-model reliability ranking.
-- The `mcp_lifecycle` failure is reproducible and identical across campaigns: the model writes `ok` into the call receipt where the fixture requires `verified`, fabricating the value instead of recording the real tool return. Whether the cause is the model or its imatrix build is unresolved.
-- Removed from the variant set on 2026-08-21, restored the same day, and re-synchronized with the current common wrapper and daily-memory implementation.
-- Live smoke: clean on 2026-08-19 with no behavior issues, timeouts, or thermal aborts.
-- Pinned `b10549` compatibility smoke on 2026-08-21: question `00:43.66`, direct task `00:01.73`; no behavior issue, timeout, or thermal abort.
-- Median full-matrix wall time: 492 s.
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Current Source-Verified Profile
-
-This section is generated from the current variant profile and script synchronization state; older evaluation notes above are historical evidence and may predate later source changes.
-- Model alias: `mradermacher/AgenticQwen-30B-A3B-i1-GGUF`
-- GGUF repository: `mradermacher/AgenticQwen-30B-A3B-i1-GGUF`
-- GGUF file: `AgenticQwen-30B-A3B.i1-Q4_K_M.gguf`
-- GGUF label: `AgenticQwen-30B-A3B.i1-Q4_K_M`
-- Requested context ceiling: `202752` tokens; the effective loaded context may be lower when llama.cpp fitting must preserve memory headroom.
-- Default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- This variant uses the shared project llama.cpp runtime unless its script-level model compatibility logic selects another runtime.
-- No additional profile-level exception is recorded; model-specific constants and launch logic remain in this variant's launcher.
-- All variants now include the common exact named-file operation route for explicit create, edit, copy, rename/move, and delete requests, with operation-specific verification; the model and hardware-specific sections remain in each launcher.
-- Historical documentation refresh 2026-09-19: the then-standalone wrapper included follow-up-aware routing, narrow fixed-response fast paths, explicit online/offline research gating, loaded-context request budgeting, adaptive reasoning/tool budgets, GUI elapsed-time and generation-speed telemetry, and verified completion evidence.
-
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-
-## 2026-10-31 Scoped GUI Check
-
-This variant passed `create_edit_execute` and `structured_error_then_new_task`
-in the accepted four-model GUI smoke, using the unchanged profile. These two
-scenarios do not establish resolution of the historical MCP/full-matrix failures
-or support a model ranking. See the scope and evidence limits (maintainer record; not included).

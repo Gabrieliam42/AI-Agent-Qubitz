@@ -23,21 +23,6 @@ Local-inference Qubitz variant for Tiel-Coder 35B-A3B MTP UD-Q4_K_XL.
 - Uses Tiel's Ornith-derived sampling family: temperature `1.0`, top-p `0.95`, and top-k `20` generally; temperature `0.6` for simple, MCP/tool, and coding/edit routes.
 - Remains independently runnable; builder and evaluation files are development-time tooling, not runtime dependencies.
 
-## Verification
-
-- Identity, profile registration, shared-wrapper parity, syntax, and static checks are verified separately from live model download and inference.
-
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Current Source-Verified Profile
-
-- Model alias and GGUF repository: `peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP`.
-- GGUF file and label: `Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf` / `Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL`.
-- Requested context ceiling: `262144` tokens; default maximum output: `16384` tokens.
-- Uses the shared llama.cpp runtime with the variant-local `draft-mtp` configuration.
-- Documentation refreshed 2026-09-19 against the then-current standalone script and declarative profile.
-- Smoke on 2026-09-12 passed: question `2.05 s`, task `1.57 s`, with no timeout, thermal abort, or behavior issue.
-
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

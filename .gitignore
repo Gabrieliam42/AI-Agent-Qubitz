@@ -92,3 +92,15 @@ changelog.txt
 /variants/AI_Agent_Qubitz_GLM-4.6-WX-v3-357B-A32B-IQ3.py
 /variants/AI_Agent_Qubitz_GLM_4.7_Flash_WX-30B-A3B-Q4.py
 /variants/AI_Agent_Qubitz_Xorton.WX-Computing.LARGE.2026.3-Q4.py
+
+# Private instructions, full local stack snapshots and generated user tasks
+/HARNESS.txt
+/QUBITZ_HARNESS_KEY.local.txt
+/RULES.md
+/AGENTS.md
+/CLAUDE.[mM][dD]
+/requirements-before-*.txt
+/requirements-new.txt
+/decision_model/
+/calc.py
+/calculatorr.py

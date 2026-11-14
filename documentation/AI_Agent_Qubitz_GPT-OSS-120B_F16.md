@@ -17,17 +17,6 @@ Qubitz variant for `unsloth/gpt-oss-120b-GGUF`.
 - This variant retains isolated GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification behavior through the shared runtime.
 - It loads the encrypted harness and uses local llama.cpp GGUF inference; no paid API or hosted inference service is required.
 
-## Current Source-Verified Profile
-
-- Model alias and GGUF repository: `unsloth/gpt-oss-120b-GGUF`.
-- GGUF file and label: `gpt-oss-120b-F16.gguf` / `gpt-oss-120b-F16`.
-- Requested context ceiling: `131072` tokens; default maximum output: `16384` tokens.
-- Embedding model: `BAAI/bge-code-v1`.
-- Requires CUDA devices `0` and `1`; uses llama.cpp layer splitting and fitting with a 1536 MiB reserve per GPU and `32768` fit-context setting. Model-weight overflow remains in system RAM. It uses the shared runtime, with no MTP draft and no background prewarm.
-- The F16 GGUF is not a higher-fidelity all-F16 expert checkpoint: GPT-OSS expert weights are natively MXFP4.
-- This profile block reflects current source metadata; live download, dual-GPU placement, effective context, and generation quality require runtime verification.
-
 ## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
-

@@ -27,15 +27,3 @@ The [official configuration](https://huggingface.co/Qwen/Qwen3-Coder-Next/blob/m
 The copied launcher retains explicit `CUDA0,CUDA1` layer placement, a `1536` MiB safety target per GPU, a `131072` automatic-fit context target, and the existing shared llama.cpp runtime channel. Fitting may lower the effective context and leave unavoidable weight overflow in system RAM. The requested ceiling is not a guarantee that the full context or all weights fit in VRAM.
 
 This is a two-24GB-GPU/48GB aggregate VRAM variant, not a single-24GB full-GPU model. No MTP, tensor-parallel/P2P mode, new backend installation, or reduced memory reserve is introduced.
-
-## Evidence
-
-Publisher metadata checked on 2026-10-14 for the [requested GGUF](https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/blob/main/Qwen3-Coder-Next-UD-Q4_K_S.gguf):
-
-- Repository commit: `ce09c67b53bc8739eef83fe67b2f5d293c270632`.
-- File size: `46079830016` bytes.
-- File SHA256: `beb854e08288f8ed5f790f2eb3d5e8fa3ca36205a282e5d149c15b368292c47b`.
-
-These are remote metadata, not proof of a local download or successful inference. The published `imatrix_unsloth.gguf_file` is a quantization input, not an inference dependency; it is not downloaded or added to the launcher. See [llama.cpp imatrix documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/imatrix/README.md).
-
-The new launcher is not automatically added to the human-approved 27-variant follow-up matrix. CPU/startup, native tool parsing, GUI behavior, hardware fit and coding performance remain runtime validation work; existing historical results are not results for this model.

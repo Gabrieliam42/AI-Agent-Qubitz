@@ -69,6 +69,13 @@ def non_thinking_template_contract(template: Any) -> str:
 def apply_structured_request_policy(payload: dict, capabilities: Any) -> str:
     """Change this internal request only; unknown capabilities retain existing behavior."""
     capabilities = capabilities if isinstance(capabilities, dict) else {}
+    from .reasoning_controls import (
+        REQUIRED_EFFORT_CONTRACT,
+        apply_template_reasoning_controls,
+    )
+
+    if capabilities.get("reasoning_control") == REQUIRED_EFFORT_CONTRACT:
+        return apply_template_reasoning_controls(payload, capabilities)
     template = capabilities.get("structured_thinking_control") in {
         "closed_think_prefill", "closed_channel_prefill", "normalized_thinking_option_prefill",
     }

@@ -35,5 +35,3 @@ Model-free checks do not establish actual two-GPU loading, usable full context, 
 - [Official configuration](https://huggingface.co/ornith-ai/Ornith-1.5-122B/blob/main/config.json)
 - [Official model card](https://huggingface.co/ornith-ai/Ornith-1.5-122B)
 - [Selected Unsloth GGUF files](https://huggingface.co/unsloth/Ornith-1.5-122B-GGUF/tree/main/UD-Q5_K_XL)
-
-Resolved revisions, exact shard metadata, clone provenance and model-free verification receipts are saved under `.cache/ornith122_variant_20261021/`.

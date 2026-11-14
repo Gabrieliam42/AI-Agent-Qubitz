@@ -654,7 +654,7 @@ class _CommandResult(dict[str, Any]):
                 return False, {"status": "scope_denied", "tool": normalized,
                                "policy_id": "creation_target_scope",
                                "reason": "This creation request authorizes only its requested file targets, including when other files do not yet exist.",
-                               "instruction": "Do not retry with another helper or test filename. Verify the requested artifacts with permitted diagnostics or inline checks, then report the results and any unverified behavior.",
+                               "instruction": "Do not retry with another helper or test filename. Use only exposed, permitted diagnostics on the requested artifacts; if none are available, report checks unavailable and any unverified behavior without seeking another execution route.",
                                "retryable": False,
                                "files_unchanged": True}
             for forbidden_action, token in semantic.scoped_prohibitions:
@@ -6174,13 +6174,9 @@ def _patch_streaming_chat(base: Any) -> None:
 
     @staticmethod
     def _positive_metric(value: Any) -> float:
-        if isinstance(value, bool):
-            return 0.0
-        try:
-            resolved = float(value)
-        except (TypeError, ValueError):
-            return 0.0
-        return max(0.0, resolved)
+        from runtime.generation_telemetry import positive
+
+        return positive(value)
 
     def _reset_generation_metrics(self: Any) -> None:
         self._qubitz_context_reload_attempted = False
@@ -6213,8 +6209,7 @@ def _patch_streaming_chat(base: Any) -> None:
             tokens_per_second = _positive_metric(timings.get("predicted_per_second"))
             if tokens > 0.0 and tokens_per_second > 0.0:
                 generation_seconds = tokens / tokens_per_second
-        if generation_seconds <= 0.0 and tokens > 0.0:
-            generation_seconds = max(0.0, float(observed_seconds))
+        # Wall time includes prefill and cannot stand in for backend decode time.
         if tokens <= 0.0 or generation_seconds <= 0.0:
             return
 
@@ -6304,7 +6299,7 @@ def _patch_streaming_chat(base: Any) -> None:
             "truncated_tool_call": bool(truncated and message.get("tool_calls")),
         }
 
-    def _apply_file_creation_schema(payload: dict[str, Any], kwargs: dict[str, Any]) -> None:
+    def _apply_file_creation_schema(self: Any, payload: dict[str, Any], kwargs: dict[str, Any]) -> None:
         schema = kwargs.get("_qubitz_file_creation_schema")
         if schema is None:
             return
@@ -6333,11 +6328,19 @@ def _patch_streaming_chat(base: Any) -> None:
             response_format={"type": "json_schema", "json_schema": {
                 "name": "qubitz_new_text_file", "strict": True, "schema": schema,
             }},
-            chat_template_kwargs={"enable_thinking": False},
         )
         payload.pop("thinking_budget_tokens", None)
         payload.pop("reasoning", None)
-        payload.pop("reasoning_effort", None)
+        from runtime.reasoning_controls import REQUIRED_EFFORT_CONTRACT
+
+        if getattr(self, "_qubitz_reasoning_capabilities", {}).get("reasoning_control") != REQUIRED_EFFORT_CONTRACT:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+            payload.pop("reasoning_effort", None)
+
+    def _apply_template_reasoning(self: Any, payload: dict[str, Any]) -> None:
+        from runtime.reasoning_controls import apply_template_reasoning_controls
+
+        apply_template_reasoning_controls(payload, getattr(self, "_qubitz_reasoning_capabilities", {}))
 
     def _apply_route_chat_template(payload: dict[str, Any]) -> None:
         from runtime.recovery_protocol import validate_tool_history
@@ -6429,8 +6432,9 @@ def _patch_streaming_chat(base: Any) -> None:
         _apply_available_tool_guidance(payload)
         _apply_reasoning_options(payload)
         _apply_route_chat_template(payload)
-        _apply_file_creation_schema(payload, kwargs)
+        _apply_file_creation_schema(self, payload, kwargs)
         _apply_recovery_template_prefill(self, payload)
+        _apply_template_reasoning(self, payload)
         raw = self._call_with_fallback("post_json", "/v1/chat/completions", payload)
         _check_user_cancellation()
         return _normalize_chat_response(self, raw, payload)
@@ -6458,6 +6462,7 @@ def _patch_streaming_chat(base: Any) -> None:
             "messages": kwargs["messages"],
             "stream": True,
             "stream_options": {"include_usage": True},
+            "timings_per_token": True,
             "tools": kwargs["tools"],
             "tool_choice": (forced_tool_choice or "auto") if kwargs["tools"] else "none",
             "parallel_tool_calls": True,
@@ -6473,8 +6478,9 @@ def _patch_streaming_chat(base: Any) -> None:
         _apply_available_tool_guidance(payload)
         _apply_reasoning_options(payload)
         _apply_route_chat_template(payload)
-        _apply_file_creation_schema(payload, kwargs)
+        _apply_file_creation_schema(self, payload, kwargs)
         _apply_recovery_template_prefill(self, payload)
+        _apply_template_reasoning(self, payload)
         content_parts: list[str] = []
         pending_parts: list[str] = []
         pending_chars = 0
@@ -6493,6 +6499,12 @@ def _patch_streaming_chat(base: Any) -> None:
         from uuid import uuid4
 
         request_id = uuid4().hex
+        from runtime.generation_telemetry import LiveTokenMeter
+
+        progress_context = globals().get("_TOOL_CALL_CONTEXT")
+        progress_broker = progress_context.get() if progress_context is not None else None
+        progress = LiveTokenMeter(request_id, getattr(progress_broker, "callback", None))
+        progress.update(phase="prefill")
         backend_fingerprint = None
         guarded_text = ""
         guarded_reasoning = ""
@@ -6572,6 +6584,7 @@ def _patch_streaming_chat(base: Any) -> None:
                             usage = event["usage"]
                         if isinstance(event.get("timings"), dict):
                             timings = event["timings"]
+                            progress.update(timings)
                         choices = event.get("choices") or []
                         if not choices:
                             continue
@@ -6719,6 +6732,7 @@ def _patch_streaming_chat(base: Any) -> None:
                 **kwargs,
             )
         finally:
+            progress.update(timings, phase="complete" if finish_reason else "error", final=True)
             if reasoning_parts:
                 _emit_reasoning(self, "".join(reasoning_parts))
             _reasoning_status(self)
@@ -6896,6 +6910,10 @@ def _patch_streaming_chat(base: Any) -> None:
             "repeat_penalty": 1.02,
         }
         _apply_route_chat_template(payload)
+        from runtime.reasoning_controls import REQUIRED_EFFORT_CONTRACT
+
+        if getattr(self, "_qubitz_reasoning_capabilities", {}).get("reasoning_control") == REQUIRED_EFFORT_CONTRACT:
+            _apply_reasoning_options(payload)
         request_policy = apply_structured_request_policy(payload, getattr(self, "_qubitz_reasoning_capabilities", {}))
         response_formats: list[dict[str, Any] | None] = [
             {
@@ -9983,6 +10001,9 @@ def _sampling_profile_for_route(
         profiles["simple_question"] = (0.70, 0.80, 20, 0.0, 1.0, 1.5)
         profiles["coding_edit"] = (0.60, 0.95, 20, 0.0, 1.0, 0.0)
         profiles["brainstorming_explanation"] = profiles["simple_question"]
+    elif "glm-5.3-flash" in resolved_model:
+        family_name = "glm_5_3_flash"
+        profiles = _uniform((1.00, 0.95, 0, 0.0, 1.0, 0.0))
     elif "glm-4.7" in resolved_model:
         family_name = "glm_4_7_huihui" if "huihui" in resolved_model else "glm_4_7"
         profiles = _uniform((1.00, 0.95, 0, 0.0, 1.0, 0.0))
@@ -12962,6 +12983,12 @@ _HARNESS_ROUTE_BLOCKS = {
                 self._last_generation_metrics = read_metrics()
             elapsed_seconds = base.time.perf_counter() - started_at
             telemetry = self._format_completion_telemetry(elapsed_seconds)
+            if callable(callback):
+                with suppress(Exception):
+                    callback("generation_progress", json.dumps({
+                        "phase": "complete", "final": True,
+                        "tok_s": self._last_generation_metrics.get("tokens_per_second"),
+                    }))
             return f"{str(answer).rstrip()}\n\n{telemetry}"
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:5384bfdb2df380b6> module/ImportFrom:ImportFrom(module='__future__', names=[alias(name='annotations')], level=0):0
@@ -13131,6 +13158,11 @@ ACCESS_MODE_VALUES = tuple(ACCESS_MODE_LABELS.values())
                 lines.append(
                     "- Use the resolved existing project path and its structured result first; complete only verified missing postconditions."
                 )
+            elif route == "named_file_operation":
+                lines.append(
+                    "- This route exposes only tools for the named operation. Use the visible tools and their "
+                    "receipts; do not search for hidden capabilities or infer that shell execution is available."
+                )
             else:
                 lines.append(
                     "- Visible tools are a bounded subset. If a required local capability is missing, use "
@@ -13140,9 +13172,13 @@ ACCESS_MODE_VALUES = tuple(ACCESS_MODE_LABELS.values())
             if route == "named_file_operation" and task_intent.semantic.requests("create"):
                 lines.append(
                     "- Create only the requested targets. Do not create extra test or helper files for verification. "
-                    "After saving, use permitted diagnostics or inline checks on those artifacts; execution still "
-                    "requires permission. Do not repeat a denied verification route. Finish with the saved paths, "
-                    "actual checks and unverified behavior; a write receipt alone does not prove behavior."
+                    "After saving, inspect the requested artifacts with visible, permitted tools. If exposed, "
+                    "codeintel_diagnostics provides static Python diagnostics, not program execution or behavioral proof. "
+                    "If diagnostics are not exposed or report available=false, report those checks unavailable; "
+                    "do not install tools, invent inline checks, seek another execution route, or repeat a denied route. "
+                    "Then give a final response with saved paths, actual checks and unverified behavior rather than "
+                    "continuing to seek unavailable verification. Execution still requires permission; a write receipt "
+                    "or static diagnostic alone does not prove behavior."
                 )
             dependency_action = task_intent.semantic.requests("install", "uninstall", "upgrade")
             dependency_state_question = bool(
@@ -14180,6 +14216,13 @@ def _canonical_http_url(value: Any) -> str:
                     if callable(handler):
                         handler(message)
                     continue
+                if kind == "generation_progress":
+                    from runtime.generation_telemetry import display_rate
+
+                    variable = getattr(self, "token_speed_var", None)
+                    if variable is not None:
+                        variable.set(display_rate(message))
+                    continue
                 message = _normalize_terminal_display_text(message)
                 flush_stream_deltas()
                 flush_reasoning_deltas()
@@ -14192,13 +14235,22 @@ def _canonical_http_url(value: Any) -> str:
                     )
                 self._clear_stream_preview()
                 if kind == "status":
+                    variable = getattr(self, "token_speed_var", None)
+                    if variable is not None:
+                        variable.set("-- tok/s")
                     self.status_var.set(message)
                     self._append_transcript("status", message)
                 elif kind == "tool":
+                    variable = getattr(self, "token_speed_var", None)
+                    if variable is not None:
+                        variable.set("-- tok/s")
                     self._append_transcript("tool", message)
                 elif kind == "answer":
                     self._append_transcript("assistant", self._finalize_elapsed_message(message))
                 elif kind == "error":
+                    variable = getattr(self, "token_speed_var", None)
+                    if variable is not None:
+                        variable.set("-- tok/s")
                     self._append_transcript("error", message)
                     self.messagebox.showerror("AI Agent Qubitz", message)
                 elif kind == "done":
@@ -14403,6 +14455,9 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
                 buttons, text="Show Reasoning", variable=self.reasoning_visible_var,
                 command=self._toggle_reasoning_display,
             ).pack(fill="x", pady=(8, 0))
+            self.token_speed_var = self.tk.StringVar(master=self.root, value="-- tok/s")
+            self.token_speed_label = self.ttk.Label(buttons, textvariable=self.token_speed_var, width=13)
+            self.token_speed_label.pack(fill="x", pady=(8, 0))
             self.ttk.Button(
                 buttons, text="Jump to latest", command=self._jump_to_latest,
             ).pack(fill="x", pady=(4, 0))
@@ -14464,9 +14519,10 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
                     first.winfo_class() in {"Checkbutton", "TCheckbutton"}
                     and first.cget("text") == "Show Reasoning"
                 )
+                speed = first is getattr(self, "token_speed_label", None)
                 if setting:
                     settings_groups.append(group)
-                elif reasoning:
+                elif reasoning or speed:
                     reasoning_controls.extend(group)
                 else:
                     actions.extend(group)
@@ -17595,28 +17651,6 @@ def _extract_structured_result_rows(text: str) -> list[dict[str, Any]]:
                 isError=True,
             )
 # </QUBITZ_SHARED_SYMBOL>
-# <QUBITZ_SHARED_SYMBOL:wrapper:7eb73c26733fad18> module/Assign:Name(id='_EMBEDDED_POWERSHELL_LAUNCH_NEW', ctx=Store()):0
-_EMBEDDED_POWERSHELL_LAUNCH_NEW = """        if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
-            powershell = shutil.which("powershell.exe") or popen_command[0]
-            popen_command[0] = powershell
-            if Path("/init").is_file():
-                popen_command.insert(0, "/init")
-            else:
-                self.process = subprocess.Popen(
-                    render_windows_command_for_wsl_shell(popen_command),
-                    cwd=self.runtime_workspace,
-                    stdout=log_handle,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    shell=True,
-                    executable="/bin/bash",
-                    creationflags=creationflags,
-                    startupinfo=startupinfo,
-                )
-                return
-"""
-# </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:7f47832b252941df> module/FunctionDef:_named_file_operation_request:0
 def _named_file_operation_request(
     base: Any,
@@ -19336,7 +19370,8 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                 }]
             saved_correction = self._tool_permission_broker._saved_contract_correction_active
             if self._selected_route_name(prompt) == "named_file_operation" and not saved_correction:
-                request = _named_file_operation_request(
+                # Bind the operation to the original turn, not the post-write filesystem.
+                request = self._tool_permission_broker.named_operation_contract or _named_file_operation_request(
                     base,
                     self.workspace,
                     getattr(self, "access_mode", DEFAULT_ACCESS_MODE),
@@ -19344,19 +19379,27 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                 )
                 if request is not None:
                     operation = str(request["operation"])
+                    suffix = Path(str(request["target"] or "")).suffix.casefold()
+                    patch_tool = {
+                        ".docx": "apply_docx_text_patch",
+                        ".ipynb": "apply_notebook_text_patch",
+                        ".xlsx": "apply_spreadsheet_cell_patch",
+                        ".xlsm": "apply_spreadsheet_cell_patch",
+                    }.get(suffix, "apply_text_patch")
                     if operation == "create" and not request["exists"]:
-                        allowed_names = {"write_file"}
+                        allowed_names = {"write_file", "read_file_snapshot", patch_tool}
+                        if (Path(str(request["target"])).suffix.casefold() in {".py", ".pyi"}
+                                and "execute" not in semantic.prohibited_actions
+                                and (shutil.which("basedpyright") or shutil.which("pyright"))):
+                            allowed_names.add("codeintel_diagnostics")
                     elif operation == "create_many" and not request["existing_targets"]:
-                        allowed_names = {"write_files"}
+                        allowed_names = {"write_files", "read_file_snapshot", "apply_text_patches"}
                     elif operation in {"create", "edit"}:
-                        suffix = Path(str(request["target"])).suffix.casefold()
-                        patch_tool = {
-                            ".docx": "apply_docx_text_patch",
-                            ".ipynb": "apply_notebook_text_patch",
-                            ".xlsx": "apply_spreadsheet_cell_patch",
-                            ".xlsm": "apply_spreadsheet_cell_patch",
-                        }.get(suffix, "apply_text_patch")
                         allowed_names = {"read_file_snapshot", patch_tool}
+                        if (operation == "create" and suffix in {".py", ".pyi"}
+                                and "execute" not in semantic.prohibited_actions
+                                and (shutil.which("basedpyright") or shutil.which("pyright"))):
+                            allowed_names.add("codeintel_diagnostics")
                     else:
                         allowed_names = {
                             "copy": "copy_path",
@@ -19367,6 +19410,7 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                     operation_tools = [
                         tool for tool in tools if self._tool_name(tool) in allowed_names
                     ]
+                    operation_tools.sort(key=self._tool_name)
                     return preserve_explicit_tools(operation_tools, operation_tools)
             selected_route = self._selected_route_name(prompt)
             if selected_route == "scoped_project_action" and not saved_correction:
@@ -25961,23 +26005,6 @@ def _fence_untrusted_external_content(text: str) -> str:
         f"{end}"
     )
 # </QUBITZ_SHARED_SYMBOL>
-# <QUBITZ_SHARED_SYMBOL:wrapper:b8afc08a74689aad> module/Assign:Name(id='_EMBEDDED_POWERSHELL_LAUNCH_OLD', ctx=Store()):0
-_EMBEDDED_POWERSHELL_LAUNCH_OLD = """        if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
-            self.process = subprocess.Popen(
-                render_windows_command_for_wsl_shell(popen_command),
-                cwd=self.runtime_workspace,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                shell=True,
-                executable="/bin/bash",
-                creationflags=creationflags,
-                startupinfo=startupinfo,
-            )
-            return
-"""
-# </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:b9475277d7efe727> module/FunctionDef:_canonicalize_workspace_command:0
 def _canonicalize_workspace_command(workspace: Path, command: str) -> str:
     normalized = command.strip()
@@ -27060,6 +27087,7 @@ def _direct_text_creation_choice(
             # here instead of being silently unreachable. Tier follows the _12G suffix
             # the 12 GB builds already use; override only where that naming does not.
             variant_tier_overrides = {
+                "AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py": "72 GB VRAM+",
                 "AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py": "48 GB VRAM+",
                 "AI_Agent_Qubitz_GPT-OSS-120B_F16.py": "48 GB VRAM+",
                 "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py": "48 GB VRAM+",
@@ -27075,6 +27103,7 @@ def _direct_text_creation_choice(
                 "12 GB VRAM": [],
                 "24 GB VRAM": [],
                 "48 GB VRAM+": [],
+                "72 GB VRAM+": [],
             }
             for variant_path in sorted(
                 variant_root.glob("AI_Agent_Qubitz_*.py"),
@@ -31120,6 +31149,7 @@ def _wsl_windows_executable_interop_probe() -> bool:
 def _loaded_llamacpp_context_window(client: Any) -> int:
     import hashlib
 
+    from runtime.reasoning_controls import template_reasoning_capabilities
     from runtime.structured_response import non_thinking_template_contract
 
     cached = getattr(client, "_qubitz_server_context_window", None)
@@ -31159,6 +31189,7 @@ def _loaded_llamacpp_context_window(client: Any) -> int:
                 "supports_preserve_reasoning": caps.get("supports_preserve_reasoning"),
                 "supports_closed_thinking_prefill": closed_prefill,
                 "structured_thinking_control": non_thinking_template_contract(template),
+                **template_reasoning_capabilities(template),
             }
             for value in (
                 settings.get("n_ctx") if isinstance(settings, dict) else None,

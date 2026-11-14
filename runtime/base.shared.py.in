@@ -2356,8 +2356,8 @@ class AgentRunner:
                             callback,
                             "status",
                             (
-                                "Project-local llama.cpp runtime is missing required backend files. "
-                                "Downloading the latest official Windows CUDA 12 runtime from GitHub releases into .cache..."
+                                "Preparing the configured project-local llama.cpp runtime; "
+                                "required backend files are missing or need validation."
                             ),
                         )
                         runtime_info = ensure_project_local_llamacpp_runtime(self.runtime_workspace)
@@ -2365,17 +2365,18 @@ class AgentRunner:
                         self._emit(
                             callback,
                             "status",
-                            f"Downloaded llama.cpp runtime {runtime_info['release_tag']} to {runtime_info['runtime_dir']}",
+                            f"Project-local llama.cpp runtime ready at {runtime_info['executable']}",
                         )
                     except Exception as exc:
-                        if not in_wsl():
+                        if (not in_wsl() or ensure_project_local_llamacpp_runtime
+                                is ensure_project_local_native_llamacpp_runtime):
                             raise
                         self._emit(
                             callback,
                             "status",
                             (
-                                "Windows CUDA runtime bootstrap was unavailable; "
-                                "downloading the llama.cpp source tarball and building the native WSL backend instead. "
+                                "Configured runtime preparation was unavailable; "
+                                "trying the native WSL backend. "
                                 f"Reason: {type(exc).__name__}: {shorten(str(exc), 300)}"
                             ),
                         )
@@ -3267,21 +3268,31 @@ class LlamaCppServerProcess:
             log_handle.write("Command: " + " ".join(launch_command) + "\n\n")
         log_handle = self.log_path.open("a", encoding="utf-8", errors="ignore")
         popen_command = launch_command
+        proxy_process = in_wsl() and bool(popen_command) and (
+            popen_command[0].lower() == "powershell.exe" or Path(popen_command[0]).suffix.lower() == ".exe"
+        )
         if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
-            self.process = subprocess.Popen(
-                render_windows_command_for_wsl_shell(popen_command),
-                cwd=self.runtime_workspace,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                shell=True,
-                executable="/bin/bash",
-                creationflags=creationflags,
-                startupinfo=startupinfo,
-            )
-            return
-        if in_wsl() and popen_command and (
+            popen_command[0] = shutil.which("powershell.exe") or popen_command[0]
+            if Path("/init").is_file():
+                popen_command.insert(0, "/init")
+            else:
+                self.process = subprocess.Popen(
+                    render_windows_command_for_wsl_shell(popen_command),
+                    cwd=self.runtime_workspace,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    shell=True,
+                    executable="/bin/bash",
+                    creationflags=creationflags,
+                    startupinfo=startupinfo,
+                )
+                from runtime.server_lifetime import observe_proxy
+
+                observe_proxy(self)
+                return
+        elif in_wsl() and popen_command and (
             popen_command[0].lower().endswith(".exe") or Path(popen_command[0]).suffix.lower() == ".exe"
         ):
             popen_command = wrap_windows_command_for_wsl(popen_command)
@@ -3298,9 +3309,9 @@ class LlamaCppServerProcess:
             creationflags=creationflags,
             startupinfo=startupinfo,
         )
-        from runtime.server_lifetime import observe_native
+        from runtime.server_lifetime import observe_native, observe_proxy
 
-        observe_native(self)
+        (observe_proxy if proxy_process else observe_native)(self)
 
     def read_log_tail(self, max_chars: int = 4000) -> str:
         if not self.log_path.exists():
@@ -4089,6 +4100,16 @@ class LlamaCppClient:
             try:
                 result = getattr(transport, method_name)(*args, **kwargs)
             except Exception as exc:
+                if method_name != "get_json":
+                    from runtime.transport_failures import transport_failure
+
+                    endpoint = str(args[0]) if args else "unknown"
+                    payload = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
+                    bridge = getattr(transport, "_qubitz_bridge_receipt", None)
+                    raise transport_failure(
+                        exc, payload, transport=str(getattr(transport, "label", "unknown")),
+                        endpoint=endpoint, backend=getattr(self.config, "model_name", None), bridge=bridge,
+                    ) from exc
                 errors.append(f"{transport.label}: {type(exc).__name__}: {exc}")
                 continue
             if index != 0:
@@ -4300,7 +4321,27 @@ class LlamaCppClient:
             "min_p": min_p,
             "repeat_penalty": repeat_penalty,
         }
-        raw = self._call_with_fallback("post_json", "/v1/chat/completions", payload)
+        try:
+            raw = self._call_with_fallback("post_json", "/v1/chat/completions", payload)
+        except Exception as exc:
+            from runtime.request_failures import generation_rejection
+            from runtime.transport_failures import TransportFailure
+
+            if not isinstance(exc, TransportFailure):
+                raise
+            receipt = exc.receipt
+            try:
+                body = json.loads(str(receipt.get("http_body") or ""))
+            except ValueError:
+                body = {}
+            rejection = generation_rejection(
+                body.get("error") if isinstance(body, dict) else None, payload,
+                http_status=receipt.get("http_status"), request_id=receipt.get("request_id", ""),
+                backend=receipt.get("backend"),
+            )
+            if rejection is not None:
+                raise rejection from exc
+            raise
         choices = raw.get("choices") or []
         choice = choices[0] if choices else {}
         message = choice.get("message") or {}
