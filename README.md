@@ -19,7 +19,7 @@ loop after new-file creation. Unavailable diagnostics are not passing tests,
 and rejected edits do not establish program correctness. Review the final
 verification status before relying on generated code.
 
-The restored [GLM-5.3-Flash IQ4 variant](documentation/AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.md)
+The [GLM-5.3-Flash IQ4 variant](documentation/AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.md)
 targets the 72 GB VRAM+ tier with three GPUs and retains its memory guards.
 Weights and native runtimes are not shipped in Git. Online startup can prepare
 the pinned compatible native backend and missing essential dependencies in
