@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for Tiel-Coder 35B-A3B MTP UD-Q4_K_XL.
 
@@ -21,7 +21,6 @@ Local-inference Qubitz variant for Tiel-Coder 35B-A3B MTP UD-Q4_K_XL.
 - Uses the standard 24 GB Qubitz GPU-first llama.cpp fitting path; effective context may be reduced to preserve VRAM headroom.
 - Requires a llama.cpp runtime that advertises `--spec-type`; the wrapper adds `--spec-type draft-mtp` so the bundled MTP head is active rather than ignored.
 - Uses Tiel's Ornith-derived sampling family: temperature `1.0`, top-p `0.95`, and top-k `20` generally; temperature `0.6` for simple, MCP/tool, and coding/edit routes.
-- Remains independently runnable; builder and evaluation files are development-time tooling, not runtime dependencies.
 
 ## Behavioral Compatibility Evidence
 

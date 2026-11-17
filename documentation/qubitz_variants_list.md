@@ -32,14 +32,18 @@
 - `AI_Agent_Qubitz_SERA-32B.i1-Q5.py` - 24 GB VRAM GPU `Ai2's` SERA-32B dense Qwen3 repository coding agent i1 Q5_K_S
 - `AI_Agent_Qubitz_Tiel-Coder-35B-A3B-MTP-Q4.py` - 24 GB VRAM GPU `peculiar-ragdoll's` Tiel-Coder 35B A3B MoE MTP UD-Q4_K_XL
 *****
-- `AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM, `Multiverse Computing's` Hypernova-60B-2605 sparse MoE Q5
-- `AI_Agent_Qubitz_GPT-OSS-120B_F16.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `OpenAI's` GPT-OSS-120B MoE, Unsloth F16 GGUF (native MXFP4 expert weights)
-- `AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM, `Moonshot AI's` Kimi-Linear 48B A3B hybrid-attention MoE i1 Q6_K
-- `AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM, `NVIDIA's` Llama-3.3-Nemotron-Super-49B-v1.5 UD-Q6_K_XL
-- `AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py` - two 24 GB VRAM GPUs, 48 GB aggregate VRAM with fitting/CPU overflow when needed, `Qwen Team's` Qwen3-Coder-Next 80B A3B hybrid-attention MoE UD-Q4_K_S
-- `AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `Qwen Team's` Qwen3.8-Flash-Next 125B A6B MoE UD-IQ4_XS
-- `AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` - two 24 GB VRAM GPUs plus available system RAM, `Ornith AI's` Qwen3.5-family Ornith-1.5-122B MoE UD-Q5_K_XL; text/tool only
-- `AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py` - two 24 GB VRAM GPUs plus available system RAM, `NVIDIA's` Nemotron-H Mamba/attention hybrid MoE UD-Q6_K_XL; text/tool only, vision projector not enabled
-- `AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `DeepSeek AI's` DeepSeek-V4-Flash-0731 MoE UD-IQ4_XS
-- `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py` - five-shard IQ4_XS variant in the 72 GB VRAM+ tier, three 24 GB GPUs plus RAM overflow; isolated backend must be restored separately; current live compatibility and long-run memory fit remain unqualified.
-- `AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` - two 24 GB VRAM GPUs plus system-RAM overflow, `InclusionAI's` Ling-3.0-flash 124B A5.1B hybrid-linear MoE AD-Q5_K_M
+- `AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py` - 48 GB VRAM+ tier, `Multiverse Computing's` Hypernova-60B-2605 sparse MoE Q5
+- `AI_Agent_Qubitz_GPT-OSS-120B_F16.py` - 48 GB VRAM+ tier plus RAM overflow, `OpenAI's` GPT-OSS-120B MoE, Unsloth F16 GGUF (native MXFP4 expert weights)
+- `AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py` - 48 GB VRAM+ tier, `Moonshot AI's` Kimi-Linear 48B A3B hybrid-attention MoE i1 Q6_K
+- `AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` - 48 GB VRAM+ tier, `NVIDIA's` Llama-3.3-Nemotron-Super-49B-v1.5 UD-Q6_K_XL
+- `AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py` - 48 GB VRAM+ tier with fitting/CPU overflow, `Qwen Team's` Qwen3-Coder-Next 80B A3B hybrid-attention MoE UD-Q4_K_S
+- `AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` - 48 GB VRAM+ tier plus RAM overflow, `Qwen Team's` Qwen3.8-Flash-Next 125B A6B MoE UD-IQ4_XS
+- `AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` - 48 GB VRAM+ tier plus RAM, `Ornith AI's` Qwen3.5-family Ornith-1.5-122B MoE UD-Q5_K_XL; text/tool only
+- `AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py` - 48 GB VRAM+ tier plus RAM, `NVIDIA's` Nemotron-H Mamba/attention hybrid MoE UD-Q6_K_XL; text/tool only, vision projector not enabled
+- `AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` - 48 GB VRAM+ tier plus RAM overflow, `DeepSeek AI's` DeepSeek-V4-Flash-0731 MoE UD-IQ4_XS
+- `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py` - five-shard IQ4_XS variant in the 72 GB VRAM+ tier plus RAM overflow; missing pinned backend is prepared online; long-task stability remains unqualified.
+- `AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` - 48 GB VRAM+ tier plus RAM overflow, `InclusionAI's` Ling-3.0-flash 124B A5.1B hybrid-linear MoE AD-Q5_K_M
+
+The 24 GB, 48 GB VRAM+ and 72 GB VRAM+ tiers use all visible compatible GPUs,
+not fixed one/two/three-card counts. Capacity, headroom and runtime support still
+determine fit; the 12 GB profiles retain their separate budget.

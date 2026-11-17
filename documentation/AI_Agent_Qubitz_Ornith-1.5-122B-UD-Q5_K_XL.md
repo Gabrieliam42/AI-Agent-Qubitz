@@ -15,9 +15,9 @@ The normal launcher is `variants/AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` 
 
 ## Memory And Context
 
-- Tier: 48 GB VRAM+; two RTX 3090 24GB GPUs plus available system RAM, not a 48GB model-size limit or fixed RAM requirement.
+- Tier: 48 GB VRAM+; all visible compatible GPUs plus available system RAM, not a fixed card count, 48GB model-size limit or fixed RAM requirement.
 - All three published files total 94,611,939,505 bytes (about 88.1 GiB). Shard one is mostly metadata; placement uses the total of all siblings.
-- Uses `CUDA0,CUDA1`, layer splitting, `--fit on`, `q4_0` KV cache, a 131072-token fit floor and 1536 MiB VRAM reserve on each device. Excess weights remain CPU-addressable; memory fitting is not a guarantee of successful loading.
+- Uses all backend-visible compatible GPUs, layer splitting, `--fit on`, `q4_0` KV cache, a 131072-token fit floor and 1536 MiB VRAM reserve on each device. Excess weights remain CPU-addressable; memory fitting is not a guarantee of successful loading.
 - `num_ctx=262144` matches `text_config.max_position_embeddings` and the model card's native context. This is a requested ceiling; Qubitz uses the context actually reported by llama.cpp for request budgeting after fitting.
 - The card describes approximately 1M-token YaRN extension for vLLM/SGLang. No equivalent quality, memory-fit or llama.cpp validation is established here, so no extension is enabled by default.
 - Uses the already established llama.cpp `b10809` runtime directory; no dependency upgrades or runtime rebuild are part of adding the variant.

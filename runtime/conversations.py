@@ -1,6 +1,7 @@
-"""Ordered local transcripts, independent of GUI display and retrieval storage."""
+"""Readable local transcripts with a separate, lossless event journal."""
 import base64 as _conversation_base64
 import hashlib as _conversation_hashlib
+import json as _conversation_json
 import os as _conversation_os
 import queue as _conversation_queue
 import shutil as _conversation_shutil
@@ -17,11 +18,13 @@ RESERVE_BYTES = 20 * 1024**3
 
 class ConversationJournal:
     def __init__(self, root: _ConversationPath, *, pending_bytes: int = 16 * 1024**2,
-                 reserve_bytes: int = RESERVE_BYTES) -> None:
+                 reserve_bytes: int = RESERVE_BYTES, display_events: bool = False) -> None:
         self.root = _ConversationPath(root).resolve()
         self.path = self.root / "conversations" / (_ConversationDatetime.now(_ConversationTimezone.utc).strftime("%Y%m%dT%H%M%S")
                                                    + "_" + _conversation_uuid.uuid4().hex + ".txt")
+        self.events_path = self.path.with_suffix(".events.jsonl")
         self.error = ""
+        self._display_events = display_events
         self._reserve = reserve_bytes
         self._limit = pending_bytes
         self._pending = 0
@@ -38,6 +41,7 @@ class ConversationJournal:
             print(self.error, file=_conversation_sys.stderr)
 
     def record(self, role: str, text: str) -> bool:
+        role = str(role)
         if not isinstance(text, str):
             text = str(text)
         size = 4 * (len(text) + len(role) + 100)
@@ -53,8 +57,26 @@ class ConversationJournal:
             self._queue.put_nowait((self._serial, stamp, role, text, size))
         return True
 
+    def _readable_packet(self, stamp, role, text, stream_role):
+        # GUI messages are recorded after display formatting; producer events stay in JSONL.
+        if self._display_events and role != "reasoning" and not role.startswith("display:"):
+            return b"", stream_role
+        if role.startswith("display:"):
+            text = text.strip()
+        next_stream_role = role if role in {"reasoning", "assistant_delta"} else None
+        if next_stream_role is not None and next_stream_role == stream_role:
+            return text.encode("utf-8"), next_stream_role
+        label = role.removeprefix("display:")
+        label = {"answer": "assistant", "assistant_delta": "assistant (stream)"}.get(label, label)
+        label = label.replace("_", " ").capitalize()
+        clock = _ConversationDatetime.fromisoformat(stamp).astimezone().strftime("%H:%M")
+        separator = "\n\n" if stream_role is not None else "\n"
+        suffix = "" if next_stream_role is not None else "\n"
+        return f"{separator}[{clock}] {label}:\n{text}{suffix}".encode(), next_stream_role
+
     def _write(self) -> None:
         stream = None
+        events = None
         stream_role = None
         try:
             self.path.parent.mkdir(exist_ok=True)
@@ -63,9 +85,8 @@ class ConversationJournal:
             if _conversation_shutil.disk_usage(self.root).free <= self._reserve + 4096:
                 raise OSError("20 GiB reserve prevents transcript creation")
             stream = self.path.open("xb")
-            stream.write(b"\xef\xbb\xbfQubitz emitted conversation events; ordered by capture sequence.\n"
-                         b"Encoding: UTF-8 with BOM. Adjacent stream fragments are concatenated unchanged.\n"
-                         b"Stream and final/display records are labeled separately; no hidden reasoning is invented.\n")
+            events = self.events_path.open("xb")
+            stream.write(b"\xef\xbb\xbfQubitz conversation. Times are local (HH:MM).\n")
             while True:
                 try:
                     item = self._queue.get(timeout=0.2)
@@ -76,37 +97,45 @@ class ConversationJournal:
                 if item is None:
                     break
                 if isinstance(item, _conversation_threading.Event):
-                    stream.flush()
-                    _conversation_os.fsync(stream.fileno())
+                    for output in (events, stream):
+                        output.flush()
+                        _conversation_os.fsync(output.fileno())
                     item.conversation_offset = stream.tell()
                     item.set()
                     continue
                 serial, stamp, role, text, size = item
-                next_stream_role = role if role in {"reasoning", "assistant_delta"} else None
-                if next_stream_role is not None and next_stream_role == stream_role:
-                    packet = text.encode("utf-8")
-                else:
-                    separator = "\n\n" if stream_role is not None else "\n"
-                    suffix = "" if next_stream_role is not None else "\n"
-                    packet = f"{separator}[{serial:08d} {stamp} {role}]\n{text}{suffix}".encode()
+                packet, next_stream_role = self._readable_packet(stamp, role, text, stream_role)
+                event = (_conversation_json.dumps({"sequence": serial, "timestamp": stamp, "role": role, "text": text},
+                                                  ensure_ascii=True, separators=(",", ":")) + "\n").encode("utf-8")
                 with self._lock:
                     self._pending -= size
-                if _conversation_shutil.disk_usage(self.root).free - len(packet) <= self._reserve:
+                if _conversation_shutil.disk_usage(self.root).free - len(packet) - len(event) <= self._reserve:
                     raise OSError("20 GiB reserve prevents further transcript recording")
+                events.write(event)
                 stream.write(packet)
                 stream_role = next_stream_role
+                events.flush()
                 stream.flush()
             if self.error:
                 raise OSError(self.error)
-            stream.flush()
-            _conversation_os.fsync(stream.fileno())
+            for output in (events, stream):
+                output.flush()
+                _conversation_os.fsync(output.fileno())
         except (OSError, ValueError) as exc:
             self._fail(f"{type(exc).__name__}: {exc}")
-            if stream is not None and _conversation_shutil.disk_usage(self.root).free > self._reserve + 4096:
-                stream.write(("\n[RECORDING ERROR]\n" + self.error + "\n").encode("utf-8"))
-        finally:
             if stream is not None:
-                stream.close()
+                try:
+                    if _conversation_shutil.disk_usage(self.root).free > self._reserve + 4096:
+                        stream.write(("\n[RECORDING ERROR]\n" + self.error + "\n").encode("utf-8"))
+                except (OSError, ValueError):
+                    pass
+        finally:
+            for output in (events, stream):
+                if output is not None:
+                    try:
+                        output.close()
+                    except (OSError, ValueError) as exc:
+                        self._fail(f"{type(exc).__name__}: {exc}")
 
     def snapshot(self, timeout: float = 15.0) -> str:
         if self.error:
@@ -187,7 +216,9 @@ Write-Output $hash
 def install_gui_archive(original):
     class ConversationGUI(original):
         def __init__(self, config):
-            self.conversation_journal = ConversationJournal(_ConversationPath(config.runtime_workspace or config.workspace))
+            self.conversation_journal = ConversationJournal(
+                _ConversationPath(config.runtime_workspace or config.workspace), display_events=True,
+            )
             self._copy_results = _conversation_queue.Queue()
             self._archive_error_reported = False
             self._copy_busy = False

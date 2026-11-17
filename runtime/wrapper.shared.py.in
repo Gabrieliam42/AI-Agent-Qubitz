@@ -603,7 +603,7 @@ class _CommandResult(dict[str, Any]):
                            "errors": boundary_errors[:12], "file_unchanged": True}
         if normalized in self.unavailable_tool_names:
             return False, {"status": "capability_unavailable", "tool": normalized,
-                           "reason": "This tool reported unavailable earlier in the current turn; use another verification method."}
+                           "reason": "This tool reported unavailable earlier in the current turn; report that limitation, without repeating it or seeking an unauthorized execution route."}
         mutation_tools = self._MUTATION_TOOLS | {
             "apply_docx_text_patch",
             "apply_notebook_text_patch",
@@ -1664,15 +1664,25 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
 
             broker = self._tool_permission_broker
             task_intent = broker.task_intent or self._task_intent_for_prompt(prompt)
+            from runtime.workflow import current_creations
+
+            correcting_tests = bool(broker._test_correction_targets and broker.transaction_verification_failures)
+            created_hashes = current_creations(broker)
+            correcting_creation = bool(
+                correcting_tests and task_intent.semantic.requests("create")
+                and task_intent.semantic.requests("edit") and _requests_test_execution(prompt)
+                and all(created_hashes.get(path) == digest
+                        for path, digest in broker._test_correction_targets.items())
+            )
             if (
                 task_intent.task_kind not in {"coding_repair_task", "edit_or_refactor_task"}
-                or task_intent.semantic.requests("create", "copy")
+                or task_intent.semantic.requests("copy")
+                or task_intent.semantic.requests("create") and not correcting_creation
                 or broker.no_progress_recovery_exhausted
                 or _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE)) != ACCESS_MODE_FULL
             ):
                 return None
             required, missing = broker.completion_report(prompt)
-            correcting_tests = bool(broker._test_correction_targets and broker.transaction_verification_failures)
             if broker.transaction_verification_failures >= 2:
                 return None
             if not correcting_tests and ("changed_files" not in missing or broker.transaction_changed_hashes):
@@ -1901,7 +1911,8 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
             proposal_hashes: dict[str, str] = {}
             proposal_snapshots: dict[str, str] = {}
             remaining = 24000
-            writable_paths = set(broker.transaction_explicit_file_targets or broker.transaction_snapshot_hashes)
+            writable_paths = set(broker._test_correction_targets if correcting_creation else
+                                 broker.transaction_explicit_file_targets or broker.transaction_snapshot_hashes)
             reference_paths: set[str] = set()
             for token in _explicit_file_reference_tokens(base, prompt):
                 try:
@@ -2305,8 +2316,9 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                     ):
                         return f"Applied the requested focused edit to {len(patches)} file(s), and the existing tests passed."
                     output = "\n".join(str(test_data.get(key) or "") for key in ("stdout", "stderr")) or "verification failed"
+                    repair_hashes = {**current_creations(broker), **broker.transaction_changed_hashes}
                     if not _actionable_committed_pytest_failure(
-                        self.workspace, broker.transaction_changed_hashes, test_data, explicit_test=True,
+                        self.workspace, repair_hashes, test_data, explicit_test=True,
                     ):
                         return (
                             "Applied the focused edit, but existing tests could not be verified; "
@@ -2315,7 +2327,7 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                     if self._cancel_source == "user" or self._cancel_event.is_set():
                         self._raise_if_cancelled()
                     broker.transaction_verification_failures += 1
-                    broker._test_correction_targets = dict(broker.transaction_changed_hashes)
+                    broker._test_correction_targets = dict(repair_hashes)
                     correcting_tests = True
                     if broker.transaction_verification_failures >= 2:
                         return (
@@ -6184,6 +6196,8 @@ def _patch_streaming_chat(base: Any) -> None:
         self._qubitz_generation_measured_calls = 0
         self._qubitz_generation_tokens = 0.0
         self._qubitz_generation_seconds = 0.0
+        self._qubitz_decode_speed_summary = None
+        self._qubitz_pending_decode_speed = None
         self._qubitz_reasoning_received = 0
         self._qubitz_reasoning_forwarded = 0
         self._qubitz_reasoning_only_turn = None
@@ -6193,6 +6207,10 @@ def _patch_streaming_chat(base: Any) -> None:
         response: dict[str, Any],
         observed_seconds: float,
     ) -> None:
+        from runtime.generation_telemetry import DecodeSpeedSummary
+
+        intervals = getattr(self, "_qubitz_pending_decode_speed", None)
+        self._qubitz_pending_decode_speed = None
         self._qubitz_generation_model_calls = int(
             getattr(self, "_qubitz_generation_model_calls", 0)
         ) + 1
@@ -6222,16 +6240,29 @@ def _patch_streaming_chat(base: Any) -> None:
         self._qubitz_generation_seconds = float(
             getattr(self, "_qubitz_generation_seconds", 0.0)
         ) + generation_seconds
+        if (isinstance(intervals, DecodeSpeedSummary) and intervals.tokens <= tokens
+                and intervals.seconds <= generation_seconds):
+            summary = getattr(self, "_qubitz_decode_speed_summary", None)
+            if summary is None:
+                summary = self._qubitz_decode_speed_summary = DecodeSpeedSummary()
+            summary.merge(intervals)
 
     def _generation_metrics(self: Any) -> dict[str, Any]:
         tokens = float(getattr(self, "_qubitz_generation_tokens", 0.0))
         seconds = float(getattr(self, "_qubitz_generation_seconds", 0.0))
+        summary = getattr(self, "_qubitz_decode_speed_summary", None)
+        sampled_tokens = summary.tokens if summary is not None else 0.0
+        typical = summary.median() if summary is not None and tokens > 0 and sampled_tokens / tokens >= 0.8 else None
         return {
             "model_calls": int(getattr(self, "_qubitz_generation_model_calls", 0)),
             "measured_calls": int(getattr(self, "_qubitz_generation_measured_calls", 0)),
             "completion_tokens": round(tokens),
             "generation_seconds": seconds,
             "tokens_per_second": tokens / seconds if tokens > 0.0 and seconds > 0.0 else None,
+            "typical_tokens_per_second": typical,
+            "decode_speed_basis": "token_weighted_median_backend_intervals" if typical else "aggregate_average_only",
+            "decode_sampled_tokens": sampled_tokens,
+            "decode_peak_tokens_per_second": summary.peak if summary is not None else None,
         }
 
     def _record_reasoning_only_response(self: Any, reasoning: bool, content: str,
@@ -6411,6 +6442,7 @@ def _patch_streaming_chat(base: Any) -> None:
         forced_tool_choice: dict[str, Any] | str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        self._qubitz_pending_decode_speed = None
         _sync_loaded_context(self)
         stream_state.forced_tool_choice = None
         payload = {
@@ -6504,6 +6536,7 @@ def _patch_streaming_chat(base: Any) -> None:
         progress_context = globals().get("_TOOL_CALL_CONTEXT")
         progress_broker = progress_context.get() if progress_context is not None else None
         progress = LiveTokenMeter(request_id, getattr(progress_broker, "callback", None))
+        self._qubitz_pending_decode_speed = None
         progress.update(phase="prefill")
         backend_fingerprint = None
         guarded_text = ""
@@ -6748,6 +6781,7 @@ def _patch_streaming_chat(base: Any) -> None:
             raise RuntimeError("llama.cpp returned an unsupported terminal reason; no tool call was accepted.")
         tool_calls = [tool_parts[index] for index in sorted(tool_parts)]
         _record_reasoning_only_response(self, reasoning_received, "".join(content_parts), tool_calls, finish_reason)
+        self._qubitz_pending_decode_speed = progress.decode_rates
         return {
             "message": {
                 "role": "assistant",
@@ -11812,7 +11846,19 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
                 " Compare prior and current implementations and relevant same-input tests when available; otherwise state what remains unverified."
                 " Scope compatibility claims to observed cases."
             )
-            return f"{rendered_prompt}{discovery_section}{contract_section}{compatibility_contract}"
+            identity_facts = {
+                "configured_model_alias": str(getattr(self.config, "model_name", "")),
+                "configured_model_file": str(getattr(self.config, "selected_model_filename", "")),
+                "provenance": "host configuration, not independent model-origin verification",
+            }
+            grounding = (
+                "\n\nHost identity facts: " + json.dumps(identity_facts, ensure_ascii=True)
+                + "\nA configured alias is not evidence that a model is fictional, a placeholder, or a "
+                "particular architecture. Earlier assistant assertions are unverified unless backed by "
+                "a source or host receipt. Do not promote them into facts. Distinguish configured identity, "
+                "externally verified information and unknown capabilities."
+            )
+            return f"{rendered_prompt}{discovery_section}{contract_section}{compatibility_contract}{grounding}"
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:4dfd415919ac00b8> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:_select_task_guidance:0
         def _select_task_guidance(self, prompt: str) -> str:
@@ -11915,6 +11961,9 @@ def _install_gui_temperature_status_patch(app: LocalOnlyApp) -> None:
             else:
                 self.temperature_var.set(f"{self._temperature_profile_default:g}")
             self._mtp_control = MTPGuiControl(self, base)
+            from runtime.gui_window import install_responsive_header
+
+            install_responsive_header(self)
             backend_url = getattr(config, "server_url", "") or base.DEFAULT_LLAMACPP_BASE_URL
             self._append_transcript("system", f"Local llama.cpp backend: {backend_url}")
 
@@ -12987,7 +13036,8 @@ _HARNESS_ROUTE_BLOCKS = {
                 with suppress(Exception):
                     callback("generation_progress", json.dumps({
                         "phase": "complete", "final": True,
-                        "tok_s": self._last_generation_metrics.get("tokens_per_second"),
+                        "tok_s": (self._last_generation_metrics.get("typical_tokens_per_second")
+                                  or self._last_generation_metrics.get("tokens_per_second")),
                     }))
             return f"{str(answer).rstrip()}\n\n{telemetry}"
 # </QUBITZ_SHARED_SYMBOL>
@@ -13169,17 +13219,28 @@ ACCESS_MODE_VALUES = tuple(ACCESS_MODE_LABELS.values())
                     "search_tools before claiming it unavailable; eligible matches are exposed on the next step. "
                     "Catalog discovery never grants permission to perform an unrequested action."
                 )
-            if route == "named_file_operation" and task_intent.semantic.requests("create"):
-                lines.append(
-                    "- Create only the requested targets. Do not create extra test or helper files for verification. "
-                    "After saving, inspect the requested artifacts with visible, permitted tools. If exposed, "
-                    "codeintel_diagnostics provides static Python diagnostics, not program execution or behavioral proof. "
-                    "If diagnostics are not exposed or report available=false, report those checks unavailable; "
-                    "do not install tools, invent inline checks, seek another execution route, or repeat a denied route. "
-                    "Then give a final response with saved paths, actual checks and unverified behavior rather than "
-                    "continuing to seek unavailable verification. Execution still requires permission; a write receipt "
-                    "or static diagnostic alone does not prove behavior."
-                )
+            if task_intent.semantic.requests("create"):
+                if mode == ACCESS_MODE_FULL and task_intent.semantic.requests("execute"):
+                    lines.append(
+                        "- Create only the requested targets, then complete the explicitly requested execution or tests "
+                        "using permitted execution tools. A verified creation is mutation progress; it does not require "
+                        "an artificial existing-file edit before execution. Unavailable optional static diagnostics do "
+                        "not cancel authorized execution or count as passed tests. Do not invent extra test/helper files, "
+                        "commands or permissions; use the requested checks and report their actual outcomes. If correction "
+                        "was authorized, use only the bounded, snapshot-bound same-scope repair. A saved file or a static "
+                        "diagnostic alone does not prove behavior."
+                    )
+                else:
+                    lines.append(
+                        "- Create only the requested targets. Do not create extra test or helper files for verification. "
+                        "After saving, inspect the requested artifacts with visible, permitted tools. If exposed, "
+                        "codeintel_diagnostics provides static Python diagnostics, not program execution or behavioral proof. "
+                        "If diagnostics are not exposed or report available=false, report those checks unavailable; "
+                        "do not install tools, invent inline checks, seek another execution route, or repeat a denied route. "
+                        "Then give a final response with saved paths, actual checks and unverified behavior rather than "
+                        "continuing to seek unavailable verification. Execution still requires permission; a write receipt "
+                        "or static diagnostic alone does not prove behavior."
+                    )
             dependency_action = task_intent.semantic.requests("install", "uninstall", "upgrade")
             dependency_state_question = bool(
                 re.search(
@@ -13208,12 +13269,17 @@ ACCESS_MODE_VALUES = tuple(ACCESS_MODE_LABELS.values())
                 lines.append(
                     "- Before stating current package, requirements, CUDA-stack, or interpreter facts, inspect the active workspace and exact target interpreter in this turn. Do not infer current state from memory, model knowledge, or a failed web request."
                 )
-            if task in {"coding_repair_task", "edit_or_refactor_task"}:
+            from runtime.workflow import creation_only
+
+            if task in {"coding_repair_task", "edit_or_refactor_task"} and not creation_only(self._tool_permission_broker):
                 lines.extend(
                     [
                         "- For one existing UTF-8 or BOM-marked UTF-16/UTF-32 file within the transaction limit, use read_file_snapshot then apply_text_patch. For one DOCX document, use read_file_snapshot then apply_docx_text_patch; never send its raw bytes to text patch or command mutation tools. For multiple supported text files, call apply_text_patches once with only paths and exact replacements; the wrapper preserves each encoding and owns snapshots, hashes, ordering, atomicity, and rollback.",
                         "- Preserve the target's existing format and local conventions. Replacement or inserted content must inherit the corresponding surrounding style; retain encoding, line endings, syntax, indentation, character and paragraph formatting, lists, layout, metadata, structure, and unaffected content unless the user explicitly requests a style change. If faithful format-aware editing is unavailable, report that limitation instead of flattening or silently converting the file.",
-                        "- During an edit transaction, inspect and submit edits before verification; command and test tools become available after a transactional edit succeeds.",
+                        ("- During an edit transaction, inspect and submit edits before verification; command and test tools "
+                         "become available after a verified creation or transactional edit succeeds."
+                         if task_intent.semantic.requests("create") else
+                         "- During an edit transaction, inspect and submit edits before verification; command and test tools become available after a transactional edit succeeds."),
                         "- Required tests or checks must pass after edits. Preserve committed work if verification fails; use only the wrapper's bounded same-scope correction, then report any unresolved failure.",
                     ]
                 )
@@ -13405,6 +13471,11 @@ GPU_THERMAL_ACTIVE_GRACE_SECONDS = 42.0
                     default=0,
                 )
             parts.append(f"{category.replace('_', ' ')} {observed}/{expected}")
+        from runtime.workflow import creation_summary
+
+        created_summary = creation_summary(self)
+        if created_summary:
+            parts.append(created_summary)
         return "; ".join(dict.fromkeys(parts)) or "none"
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:56f41749a264c9b4> module/FunctionDef:_access_mode_label:0
@@ -16883,7 +16954,11 @@ def _requests_test_execution(prompt: str, *, require_success: bool = False) -> b
             raise OSError(f"Creation could not be verified: {path}; inspect the current file.")
         return {"path": base.relative_path(target, workspace), "bytes_written": len(payload),
                 "new_sha256": expected_hash, "created": True, "content_repair": content_repair,
-                "artifact_validation": artifact_validation}
+                "artifact_validation": artifact_validation,
+                "verification_checks": ([{"kind": "python_syntax", "status": "passed",
+                                           "path": base.relative_path(target, workspace),
+                                           "sha256": expected_hash, "behavior_verified": False}]
+                                        if target.suffix.casefold() == ".py" else [])}
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:75f43c7067dc7cd4> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_agent_runner_class:0/ClassDef:EnhancedAgentRunner:0/FunctionDef:_system_prompt:0/Return:Return:0
                 return combined
@@ -17851,7 +17926,10 @@ def _tool_annotations(base: Any, name: str) -> Any:
             callback: Callable[[str, str], None] | None,
         ) -> tuple[bool | None, str] | None:
             broker = self._tool_permission_broker
-            if not broker.transaction_changed_hashes:
+            from runtime.workflow import current_creations
+
+            committed_hashes = {**current_creations(broker), **broker.transaction_changed_hashes}
+            if not committed_hashes:
                 return None
             required, missing = broker.completion_report(prompt)
             if "tests" not in required or "tests" not in missing:
@@ -17908,7 +17986,7 @@ def _tool_annotations(base: Any, name: str) -> Any:
                 broker.transaction_nonprogress_calls = 0
                 return (
                     True,
-                    f"Applied the requested atomic edit to {len(broker.transaction_changed_hashes)} file(s), "
+                    f"Saved the requested changes to {len(committed_hashes)} file(s), "
                     "and the existing tests passed.",
                 )
 
@@ -17918,7 +17996,7 @@ def _tool_annotations(base: Any, name: str) -> Any:
                               and broker.access_mode == ACCESS_MODE_FULL)
             if (not repair_allowed or broker.transaction_verification_failures >= 2
                     or not _actionable_committed_pytest_failure(
-                        self.workspace, broker.transaction_changed_hashes, test_data, explicit_test=True,
+                        self.workspace, committed_hashes, test_data, explicit_test=True,
                     )):
                 return None, (
                     "Existing tests could not be verified; committed edits were preserved. "
@@ -17928,7 +18006,7 @@ def _tool_annotations(base: Any, name: str) -> Any:
             if self._cancel_source == "user" or self._cancel_event.is_set():
                 self._raise_if_cancelled()
             broker.transaction_verification_failures += 1
-            broker._test_correction_targets = dict(broker.transaction_changed_hashes)
+            broker._test_correction_targets = dict(committed_hashes)
             broker.failed_test_outputs[str((self.workspace / test_path).resolve())] = output[-4000:]
             if broker.transaction_verification_failures >= 2:
                 return None, f"The bounded repair still failed tests; saved edits were preserved. {output[-1600:]}"
@@ -19262,6 +19340,7 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
 # <QUBITZ_SHARED_SYMBOL:wrapper:94c7f5e0559995ae> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:_filter_tools_by_intent:0
         def _filter_tools_by_intent(self, prompt: str, tools: Sequence[Any]) -> list[Any]:
             lowered = prompt.lower()
+            inventory_names = {self._tool_name(tool) for tool in tools}
             self._tool_permission_broker._search_eligible_tool_names = None
             mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
             task_intent = self._task_intent_for_prompt(
@@ -19317,7 +19396,13 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                 candidate_tools: Sequence[Any] | None = None,
             ) -> list[Any]:
                 selected_list = list(selected_tools)
-                candidate_list = list(tools if candidate_tools is None else candidate_tools)
+                candidate_list = list(selected_list if candidate_tools is None else candidate_tools)
+                if candidate_tools is None:
+                    # Discovery may promote relevant read capabilities, never a hidden mutation/command.
+                    selected_names = {self._tool_name(tool) for tool in candidate_list}
+                    candidate_list.extend(tool for tool in tools
+                                          if self._tool_name(tool) in _ToolPermissionBroker._READ_TOOLS
+                                          and self._tool_name(tool) not in selected_names)
                 candidate_by_name = {
                     self._tool_name(tool): tool for tool in candidate_list
                 }
@@ -19339,13 +19424,13 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
 
             explicit_tool_selection = False
             only_clause = re.search(
-                r"\buse\s+([a-z][a-z0-9_]*(?:\s*(?:,|and)\s*[a-z][a-z0-9_]*)*)\s+only\b",
+                r"\buse\s+(?:only\s+([a-z][a-z0-9_]*(?:\s*(?:,|and)\s*[a-z][a-z0-9_]*)*)"
+                r"|([a-z][a-z0-9_]*(?:\s*(?:,|and)\s*[a-z][a-z0-9_]*)*)\s+only)\b",
                 lowered,
             )
             if only_clause is not None and semantic.speech_act == "request":
-                requested_tool_names = set(re.findall(r"[a-z][a-z0-9_]*", only_clause.group(1)))
-                available_tool_names = {self._tool_name(tool) for tool in tools}
-                requested_tool_names.intersection_update(available_tool_names)
+                requested_tool_names = set(re.findall(r"[a-z][a-z0-9_]*", only_clause.group(1) or only_clause.group(2)))
+                requested_tool_names.intersection_update(inventory_names)
                 if requested_tool_names:
                     tools = [tool for tool in tools if self._tool_name(tool) in requested_tool_names]
                     explicit_tool_selection = True
@@ -19369,6 +19454,28 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                     "read_file_snapshot", "apply_text_patch",
                 }]
             saved_correction = self._tool_permission_broker._saved_contract_correction_active
+            from runtime.workflow import creation_only
+
+            broker = self._tool_permission_broker
+            if (creation_only(broker) and broker.creation_targets and not saved_correction
+                    and self._selected_route_name(prompt) != "named_file_operation"
+                    and not explicit_tool_selection):
+                suffixes = {Path(path).suffix.casefold() for path in broker.creation_targets}
+                allowed = {"read_file_snapshot", "write_files" if len(broker.creation_targets) > 1 else "write_file"}
+                patches = {".docx": "apply_docx_text_patch", ".ipynb": "apply_notebook_text_patch",
+                           ".xlsx": "apply_spreadsheet_cell_patch", ".xlsm": "apply_spreadsheet_cell_patch"}
+                allowed.update(patches.get(suffix, "apply_text_patch") for suffix in suffixes)
+                if len(broker.creation_targets) > 1:
+                    allowed.add("apply_text_patches")
+                if (suffixes.intersection({".py", ".pyi"}) and "execute" not in semantic.prohibited_actions
+                        and (shutil.which("basedpyright") or shutil.which("pyright"))):
+                    allowed.add("codeintel_diagnostics")
+                if network_research_allowed:
+                    allowed.add("fetch_url")
+                    if research_decision.search_requested:
+                        allowed.add("search_web")
+                scoped = sorted((tool for tool in tools if self._tool_name(tool) in allowed), key=self._tool_name)
+                return preserve_explicit_tools(scoped, scoped)
             if self._selected_route_name(prompt) == "named_file_operation" and not saved_correction:
                 # Bind the operation to the original turn, not the post-write filesystem.
                 request = self._tool_permission_broker.named_operation_contract or _named_file_operation_request(
@@ -19444,7 +19551,10 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
             transaction_recovery = bool(getattr(self._tool_permission_broker, "transaction_recovery_required", False))
             if transaction_recovery and "mcp_tool_called" not in focused_postconditions:
                 explicitly_mcp.clear()
-            if transaction_recovery and not self._tool_permission_broker.transaction_changed_hashes:
+            from runtime.workflow import current_creations
+
+            mutation_progress = bool(broker.transaction_changed_hashes or current_creations(broker))
+            if transaction_recovery and not mutation_progress:
                 focused_postconditions.add("changed_files")
                 self._focused_missing_postconditions = frozenset(focused_postconditions)
             if focused_postconditions:
@@ -19492,13 +19602,13 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                     focused_names.update({"write_file", "write_files"})
                 if (
                     "changed_files" in focused_postconditions
-                    and not self._tool_permission_broker.transaction_changed_hashes
+                    and not mutation_progress
                 ):
                     focused_names.difference_update(_ToolPermissionBroker._EXECUTION_TOOLS)
                     if self._is_coding_repair_task(prompt) and not transaction_recovery:
                         focused_names.add("run_existing_entrypoint")
                 if transaction_recovery:
-                    if self._tool_permission_broker.transaction_changed_hashes and not getattr(self._tool_permission_broker, "_saved_file_contract_issues", ()):
+                    if mutation_progress and not getattr(self._tool_permission_broker, "_saved_file_contract_issues", ()):
                         focused_names.difference_update(_ToolPermissionBroker._MUTATION_TOOLS)
                         focused_names.discard("apply_docx_text_patch")
                         focused_names.difference_update(_ToolPermissionBroker._EXECUTION_TOOLS)
@@ -25408,6 +25518,9 @@ _SEMANTIC_SIDE_EFFECT_ACTIONS = frozenset(
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:b749b5cbe346992a> module/ClassDef:_ToolPermissionBroker:0/FunctionDef:end_turn:0
     def end_turn(self) -> None:
+        from runtime.workflow import capture_terminal_workflow
+
+        capture_terminal_workflow(self)
         if getattr(self.base, "_qubitz_active_permission_broker", None) is self:
             delattr(self.base, "_qubitz_active_permission_broker")
         self.current_prompt = ""
@@ -26392,11 +26505,42 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             return False
         return size * 5 <= usable_mib * 2
 
-    def _fit_extension_args(executable: str, model_path: str) -> list[str] | None:
+    def _auto_devices(executable: str) -> list[dict[str, Any]] | None:
+        # Large profiles supply their own fit dialect, MTP reserve and host guards.
+        # Keep the separate 12 GB class constrained as before.
+        if _variant_vram_budget_mib() or any(key.endswith("_split_plan") for key in globals()):
+            return None
+        from runtime.gpu_devices import discover_devices, usable_memory
+
+        devices = discover_devices(executable)
+        usable_memory(devices, safety_margin_mib)
+        return devices
+
+    def _available_mib(devices: list[dict[str, Any]] | None) -> int:
+        if devices is None:
+            total = _total_vram_mib()
+            return max(0, total - _fit_margin_mib(total))
+        from runtime.gpu_devices import usable_memory
+
+        return usable_memory(devices, safety_margin_mib)
+
+    def _device_args(self: Any, devices: list[dict[str, Any]] | None) -> list[str]:
+        if devices is None:
+            return []
+        from runtime.gpu_devices import device_names
+
+        self._qubitz_auto_gpu_plan = {"devices": [dict(item) for item in devices],
+                                     "usable_mib": _available_mib(devices),
+                                     "margin_mib_per_device": safety_margin_mib}
+        return ["--device", device_names(devices) if devices else "none", "--split-mode", "layer"]
+
+    def _fit_extension_args(executable: str, model_path: str,
+                            devices: list[dict[str, Any]] | None = None) -> list[str] | None:
         help_text = _server_help_text(executable)
         if "--fit-ctx" not in help_text:
             return None
-        total_mib = _total_vram_mib()
+        total_mib = (_total_vram_mib() if devices is None
+                     else sum(int(item["total_mib"]) for item in devices))
         margin_mib = _fit_margin_mib(total_mib) if total_mib else safety_margin_mib
         args = [
             "--fit",
@@ -26404,15 +26548,16 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             "--fit-ctx",
             str(_fit_context_floor()),
             "--fit-target",
-            str(margin_mib),
+            (",".join(str(safety_margin_mib) for _ in devices) if devices else str(margin_mib)),
         ]
-        usable_mib = max(0, total_mib - margin_mib)
+        usable_mib = _available_mib(devices)
         size_mib = _model_size_mib(model_path)
         crowded = usable_mib > 0 and size_mib > (usable_mib * 9) // 10
         if "--cache-type-k" in help_text:
             kv_type = "q4_0" if crowded else "q8_0"
             args.extend(["--cache-type-k", kv_type, "--cache-type-v", kv_type])
-        if crowded and not _variant_vram_budget_mib() and "--n-gpu-layers" in help_text:
+        if (crowded and size_mib <= usable_mib and not _variant_vram_budget_mib()
+                and "--n-gpu-layers" in help_text):
             # Pin every layer to the GPU so fit may only shrink the context;
             # otherwise fit protects its margin by offloading layers instead.
             # Budget-constrained variants are exempt, since holding the smaller
@@ -26482,22 +26627,24 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
                 command[encoded_index] = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
             model_match = re.search(r"'--model'\s+'([^']+)'", script)
             model_path = model_match.group(1) if model_match is not None else ""
-            fit_args = _fit_extension_args(exe_match.group(1), model_path)
+            devices = (_auto_devices(exe_match.group(1))
+                       if "--fit-ctx" in _server_help_text(exe_match.group(1)) else None)
+            fit_args = _fit_extension_args(exe_match.group(1), model_path, devices)
             if fit_args is None:
                 return command
-            total_mib = _total_vram_mib()
-            usable_mib = max(0, total_mib - _fit_margin_mib(total_mib)) if total_mib else 0
+            usable_mib = _available_mib(devices)
             keep_ctx = bool(model_path) and _keep_configured_context(model_path, usable_mib)
             new_script = script if keep_ctx else re.sub(
                 r"\s*'--ctx-size'\s+'[0-9]+'", "", script, count=1
             )
-            for option in _fit_replaced_options(fit_args):
+            for option in (_fit_replaced_options(fit_args)
+                           | ({"--device", "--split-mode"} if devices is not None else set())):
                 new_script = re.sub(
                     rf"\s*'{re.escape(option)}'(?:\s+'[^']*'|=[^\s]+)",
                     "",
                     new_script,
                 )
-            new_script = new_script.rstrip() + "".join(f" '{arg}'" for arg in fit_args)
+            new_script = new_script.rstrip() + "".join(f" '{arg}'" for arg in [*_device_args(self, devices), *fit_args])
             command[encoded_index] = base64.b64encode(new_script.encode("utf-16-le")).decode("ascii")
             return command
         command.extend(_endpoint_args(str(command[0]), " ".join(map(str, command))))
@@ -26506,19 +26653,23 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             model_index = command.index("--model")
             if model_index + 1 < len(command):
                 model_argument = str(command[model_index + 1])
-        fit_args = _fit_extension_args(str(command[0]), model_argument)
+        devices = (_auto_devices(str(command[0]))
+                   if "--fit-ctx" in _server_help_text(str(command[0])) else None)
+        fit_args = _fit_extension_args(str(command[0]), model_argument, devices)
         if fit_args is None:
             return command
-        total_mib = _total_vram_mib()
-        usable_mib = max(0, total_mib - _fit_margin_mib(total_mib)) if total_mib else 0
+        usable_mib = _available_mib(devices)
         if not _keep_configured_context(model_argument, usable_mib):
             try:
                 ctx_index = command.index("--ctx-size")
                 del command[ctx_index : ctx_index + 2]
             except ValueError:
                 pass
-        command = _strip_replaced_cli_options(command, _fit_replaced_options(fit_args))
-        command.extend(fit_args)
+        command = _strip_replaced_cli_options(
+            command, _fit_replaced_options(fit_args)
+            | ({"--device", "--split-mode"} if devices is not None else set()),
+        )
+        command.extend([*_device_args(self, devices), *fit_args])
         return command
 
     def _ensure_started_with_owner(self) -> None:
@@ -29997,10 +30148,20 @@ def _file_token_candidates(prompt: str) -> list[str]:
                     "created": True,
                     "content_repair": item["content_repair"],
                     "artifact_validation": item["artifact_validation"],
+                    "verification_checks": ([{"kind": "python_syntax", "status": "passed",
+                                               "path": base.relative_path(item["target"], workspace),
+                                               "sha256": item["sha256"], "behavior_verified": False}]
+                                            if item["target"].suffix.casefold() == ".py" else []),
                 }
                 for item in prepared
             ],
             "created_count": len(prepared),
+            "verification_checks": [
+                {"kind": "python_syntax", "status": "passed",
+                 "path": base.relative_path(item["target"], workspace),
+                 "sha256": item["sha256"], "behavior_verified": False}
+                for item in prepared if item["target"].suffix.casefold() == ".py"
+            ],
             "atomic": True,
             "rollback_on_failure": True,
         }
@@ -31881,10 +32042,17 @@ _INSTALL_REQUIREMENT_PATTERN = re.compile(
             and self.transaction_recovery_callback is not None
         ):
             self.transaction_recovery_interrupt_requested = True
-            self._emit(
-                "Transactional edit made no verified progress across four tool results; "
-                "switching to a focused snapshot-and-patch continuation."
-            )
+            from runtime.workflow import creation_only, current_creations
+
+            if creation_only(self) and current_creations(self) and not self._saved_file_contract_issues:
+                self.no_progress_recovery_exhausted = True
+                self._emit("Creation is saved; further tool calls made no verified progress. "
+                           "Preserve the artifact and finalize with actual checks and verification limits.")
+            else:
+                self._emit(
+                    "Transactional edit made no verified progress across four tool results; "
+                    "switching to a focused snapshot-and-patch continuation."
+                )
             self.transaction_recovery_callback()
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:e069f3be9691355b> module/ClassDef:LocalBackgroundJobManager:0/FunctionDef:start_command:0
@@ -32958,6 +33126,9 @@ class LocalSandboxManager:
         for evidence in evidence_items:
             if evidence.get("workspace_generation", self.workspace_generation) != self.workspace_generation:
                 continue
+            source_hashes = evidence.get("source_hashes", {})
+            if source_hashes and _current_file_hashes(list(source_hashes)) != source_hashes:
+                continue
             if evidence.get("verification_kind") == "bounded_ast_numeric_probe":
                 from runtime.behavioral_checks import numeric_hashes_current
 
@@ -33638,6 +33809,8 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
     def record_result(
         self, name: str, arguments: dict[str, Any], result: Any, *, wrapper_rejected: bool = False,
     ) -> None:
+        from runtime.workflow import current_creations, verification_checks
+
         normalized = name.lower()
         mutation_tools = self._MUTATION_TOOLS | {
             "apply_docx_text_patch",
@@ -33671,7 +33844,7 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             self.unavailable_tool_names.add(normalized)
         status = str(structured.get("status", "")).strip().lower()
         return_code = structured.get("returncode", structured.get("return_code", structured.get("exit_code")))
-        success = not _mcp_result_has_error(result)
+        success = not _mcp_result_has_error(result) and structured.get("available") is not False
         success = success and return_code in {None, 0}
         success = success and status not in {
             "ambiguous",
@@ -33753,6 +33926,9 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
                 for item in self._available_tool_definitions
                 if isinstance(item, dict)
             }
+            if self._search_eligible_tool_names is not None:
+                available_names.intersection_update(self._search_eligible_tool_names)
+            available_names.difference_update(self.unavailable_tool_names)
             self.discovered_tool_names = tuple(dict.fromkeys(
                 str(item.get("name") or "")
                 for item in matches if isinstance(item, dict)
@@ -34208,6 +34384,7 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             "status": status,
             "return_code": return_code,
             "execution_verified": execution_verified,
+            "verification_checks": verification_checks(normalized, structured, success=success),
             "read_receipt": locals().get("read_receipt"),
             "failure_detail": (json.dumps(structured.get("issues") or structured.get("errors") or
                                           structured.get("reason") or structured.get("status") or "", ensure_ascii=True)[:1200]
@@ -34215,8 +34392,9 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             "execution_receipt": execution_receipt if isinstance(execution_receipt, dict) else None,
             "source_hashes": _current_file_hashes(list(dict.fromkeys([
                 *self.transaction_changed_hashes,
-                *getattr(self, "prior_behavior_sources", {}),
-            ]))[:6]) if execution_verified else {},
+                *current_creations(self),
+                *list(getattr(self, "prior_behavior_sources", {}))[:6],
+            ]))) if execution_verified else {},
             "stdout": str(structured.get("stdout") or "")[-4000:] if execution_verified else "",
             "stderr": str(structured.get("stderr") or "")[-4000:] if execution_verified else "",
             "workspace_generation": self.workspace_generation,
@@ -34407,6 +34585,7 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
                 read_count >= 3
                 and "changed_files" in self.required_postconditions
                 and not self.transaction_changed_hashes
+                and not current_creations(self)
                 and not self.transaction_recovery_required
                 and not self.repeated_snapshot_recovery_used
                 and self.transaction_recovery_callback is not None
@@ -34726,13 +34905,15 @@ def _classify_turn_relation(
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:f8c8d344fadda96d> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:_format_completion_telemetry:0
         def _format_completion_telemetry(self, elapsed_seconds: float) -> str:
+            from runtime.generation_telemetry import completion_speed
+
             rounded_elapsed = max(0, round(elapsed_seconds))
             minutes, seconds = divmod(rounded_elapsed, 60)
             metrics = getattr(self, "_last_generation_metrics", {})
             speed = metrics.get("tokens_per_second") if isinstance(metrics, dict) else None
             telemetry_parts = [f"Elapsed time: {minutes:02d}:{seconds:02d}"]
             if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0.0:
-                telemetry_parts.append(f"Token speed: {speed:.2f} tokens/s")
+                telemetry_parts.append(completion_speed(metrics))
             elif isinstance(metrics, dict) and int(metrics.get("model_calls", 0) or 0) > 0:
                 telemetry_parts.append("Token speed: unavailable")
             return f"({' | '.join(telemetry_parts)})"
@@ -35408,7 +35589,9 @@ class LocalCodeIntel:
         target = (self.workspace / path).resolve()
         executable = shutil.which("basedpyright") or shutil.which("pyright")
         if executable is None:
-            return {"path": self._relative(target), "available": False, "diagnostics": []}
+            return {"path": self._relative(target), "available": False, "status": "capability_unavailable",
+                    "verification_kind": "python_type_diagnostics", "diagnostics": [], "behavior_verified": False}
+        original_hash = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
         completed = subprocess.run(
             [executable, "--outputjson", str(target)],
             capture_output=True,
@@ -35418,15 +35601,28 @@ class LocalCodeIntel:
             check=False,
         )
         output = completed.stdout.strip() or completed.stderr.strip()
+        common = {"path": self._relative(target), "available": True,
+                  "verification_kind": "python_type_diagnostics", "provider": Path(executable).name,
+                  "returncode": completed.returncode, "behavior_verified": False,
+                  "sha256": hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None}
+        if not original_hash or common["sha256"] != original_hash:
+            return {**common, "status": "error", "diagnostics": [],
+                    "reason": "Target changed during diagnostics; no current-file check is verified."}
         if not output:
-            return {"path": self._relative(target), "available": True, "diagnostics": []}
+            return {**common, "status": "error", "diagnostics": [], "reason": "Provider returned no JSON diagnostics."}
         try:
             payload = json.loads(output)
-        except Exception:
-            return {"path": self._relative(target), "available": True, "diagnostics": [{"raw": _shorten(output, 4000)}]}
+            if not isinstance(payload, dict) or not isinstance(payload.get("summary"), dict):
+                raise ValueError("Missing diagnostic summary")
+            count = payload["summary"].get("errorCount")
+            if type(count) is not int or count < 0:
+                raise ValueError("Invalid error count")
+        except (ValueError, TypeError):
+            return {**common, "status": "error", "diagnostics": [{"raw": _shorten(output, 4000)}],
+                    "reason": "Provider did not return valid JSON diagnostics."}
         return {
-            "path": self._relative(target),
-            "available": True,
+            **common,
+            "status": "passed" if completed.returncode == 0 and count == 0 else "failed",
             "summary": payload.get("summary", {}),
             "diagnostics": payload.get("generalDiagnostics", []),
         }

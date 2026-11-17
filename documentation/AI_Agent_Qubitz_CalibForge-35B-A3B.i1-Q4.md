@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_CalibForge-35B-A3B.i1-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_CalibForge-35B-A3B.i1-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_CalibForge-35B-A3B.i1-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_CalibForge-35B-A3B.i1-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for CalibForge 35B-A3B i1 Q4.
 
@@ -17,7 +17,6 @@ Local-inference Qubitz variant for CalibForge 35B-A3B i1 Q4.
 - Default maximum output: `16384` tokens.
 - Uses the standard 24 GB Qubitz GPU-first llama.cpp fitting path; effective context may be reduced to preserve VRAM headroom.
 - Uses the established Qwen3.6 35B route-sampling contract because the source does not publish a distinct generation configuration.
-- Remains independently runnable; builder and evaluation files are development-time tooling, not runtime dependencies.
 
 ## Behavioral Compatibility Evidence
 

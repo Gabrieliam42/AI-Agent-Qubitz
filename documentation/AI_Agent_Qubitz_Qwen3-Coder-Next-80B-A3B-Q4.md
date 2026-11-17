@@ -24,6 +24,6 @@ The [official configuration](https://huggingface.co/Qwen/Qwen3-Coder-Next/blob/m
 
 ## Placement
 
-The copied launcher retains explicit `CUDA0,CUDA1` layer placement, a `1536` MiB safety target per GPU, a `131072` automatic-fit context target, and the existing shared llama.cpp runtime channel. Fitting may lower the effective context and leave unavoidable weight overflow in system RAM. The requested ceiling is not a guarantee that the full context or all weights fit in VRAM.
+The launcher uses automatic backend-visible GPU layer placement, a `1536` MiB safety target per GPU, a `131072` automatic-fit context target, and the existing shared llama.cpp runtime channel. Fitting may lower the effective context and leave unavoidable weight overflow in system RAM. The requested ceiling is not a guarantee that the full context or all weights fit in VRAM.
 
 This is a two-24GB-GPU/48GB aggregate VRAM variant, not a single-24GB full-GPU model. No MTP, tensor-parallel/P2P mode, new backend installation, or reduced memory reserve is introduced.

@@ -43,6 +43,9 @@ def initialize_variant(namespace: dict[str, Any], spec: dict[str, Any]) -> None:
     # source must also remain available to traceback and inspect consumers.
     linecache.cache[str(path)] = (len(source.encode("utf-8")), None, source.splitlines(keepends=True), str(path))
     exec(code, namespace, namespace)  # noqa: S102 - trusted project source, not user/model text
+    from .workflow import install_workflow_records
+
+    install_workflow_records(namespace["_APP"].base)
     if developer_web:
         from .browser_entrypoint import install_browser_entrypoint
 

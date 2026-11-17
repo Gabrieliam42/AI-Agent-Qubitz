@@ -1,66 +1,60 @@
 # GLM-5.3-Flash UD-IQ4_XS
 
 Launcher: `variants/AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py`.
-Keep project-root `runtime/` beside `variants/`; launch through the normal root
-selector or run this variant directly with the project Python environment.
+Keep the project-root `runtime/` package with the launcher.
 
 ## Model And Hardware
 
-- Repository: `unsloth/GLM-5.3-Flash-GGUF`, revision
-  `a38483c8cd5df544f53d70fb281afe97369d5ab6`.
-- Five UD-IQ4_XS shards total 156,822,111,200 bytes, about 146.1 GiB.
-- Tier: 72 GB VRAM+, three RTX 3090 GPUs with CUDA0,CUDA1,CUDA2 layer splitting
-  and system-RAM overflow. Separate GPUs are not a single unified allocation.
-- Requested context 202752; architectural ceiling 1048576; output limit 16384.
-  Context size is a ceiling, not a full-window fit guarantee.
-- F16 K/V cache, batch 512, microbatch 128, 1536 MiB reserve per GPU,
-  1024 MiB prompt-cache budget and four checkpoints.
-- Temperature 1.0, top-p 0.95, top-k 0, min-p 0, repeat penalty 1,
-  presence penalty 0. Retrieval defaults to exact flat cuVS search; ANN is opt-in.
+- Model: `unsloth/GLM-5.3-Flash-GGUF`, revision `a38483c8cd5df544f53d70fb281afe97369d5ab6`.
+- Five `UD-IQ4_XS` shards total 156,822,111,200 bytes (about 146.1 GiB).
+- Default context: 202752; architectural ceiling: 1048576; output limit: 16384.
+- Tier: 72 GB VRAM+, selecting all visible compatible CUDA devices with 1536 MiB
+  reserve per GPU and CPU overflow. Separate GPUs do not form unified VRAM.
+- F16 K/V cache; batch 512, microbatch 128, prompt-cache budget 1024 MiB and four checkpoints.
+- Temperature 1.0, top-p 0.95, top-k 0, min-p 0, repeat penalty 1, presence penalty 0.
+- Retrieval defaults to exact flat cuVS search. ANN is optional, not universally better.
 
-## Automatic Native Preparation
+Available system RAM, WSL limits, Windows commit and runtime buffers matter in
+addition to aggregate VRAM. Paging can be much slower than resident memory.
+The context ceiling and tier are not a full-window fit or performance guarantee.
 
-Online startup prepares missing essential dependencies and a pinned compatible
-ik_llama.cpp backend. Source commit
-`d741de5074cd424dd3ba7cfc4d9b7649f1eb0463` and the bounded loader patch are
-verified before building for Ampere sm_86. The backend must support both the
-`glm5-next` GGUF architecture and metadata namespace; it is not stock llama.cpp.
+## Native Backend
 
-Supported profiles are Torch 2.15.0+cu134 with CUDA runtime 13.4.49/cuBLAS
-13.7.0.27, or Torch 2.9.1+cu130 with CUDA runtime 13.0.48/cuBLAS 13.0.0.19.
-Unknown or mixed stacks fail explicitly. Compiler toolchains are isolated from
-the active environment; existing packages are not silently upgraded or downgraded.
-Install uv in the project environment for missing-artifact preparation.
+The default is the pinned compatible ik backend. Online startup prepares missing
+supported model/backend artifacts in project-local caches; installed artifacts
+are checked before reuse. Native preparation may need substantial disk space
+and build time. Offline use requires complete cached artifacts. Incompatible or
+unverifiable CUDA/PyTorch profiles fail explicitly rather than altering the stack.
 
-Verified manifests live under `.cache/runtimes/`; owned build outputs live under
-`.cache/runtime-builds/`. Valid complete installations are reused. First-time
-downloads/builds require network access, disk space and time. Offline mode
-requires complete cached artifacts. Partial or mismatched installations are not
-treated as ready, and no unrelated backend/model is substituted.
+Set `QUBITZ_GLM53_RUNTIME=official` before launch to select the isolated official
+llama.cpp v1.0.0 provider, pinned to
+`b1b770d90d94cad9e9ea5b993bdbc383a522fb28`. Use `ik` for the default. A provider
+change requires a new Qubitz session; caches are separate. A scoped backend
+protocol test passed, not a long GUI task or proof of improved speed. This
+option does not change other variants' required backends.
 
-## Memory And Reasoning
+The ik path requires deferred expert loading and preserves mmap-backed CPU
+weights. Physical/commit and WSL guards retain 4 GiB admission and 2 GiB runtime
+reserves. Unknown or low memory latches the session instead of silently
+restarting or replaying generation. Do not bypass guards to force a load.
 
-CPU weights stay mmap-backed; deferred experts and advisory upload-page release
-reduce eager residency, not total model size. Windows physical/commit and WSL
-memory counters retain a 4 GiB admission floor and 2 GiB runtime reserve.
-Unknown or low-memory state stops/latches the session rather than replaying it.
-Adequate physical RAM does not by itself establish Windows commit headroom.
+## Progress And Known Limits
 
-The pinned template always starts thinking. Supported controls are
-`reasoning_effort` low/high/max and boolean `clear_thinking`; unsupported
-thinking-disable requests fail before dispatch. Omitted effort retains Max;
-history clearing removes earlier reasoning, not current generation. Hiding
-`Show Reasoning` changes display only. Live tok/s uses backend counters.
+Initial loading, prefill and CPU-offloaded decoding can be slow. Live `tok/s`
+comes from backend counters; `-- tok/s` means no valid current rate. Completed
+summaries distinguish actual aggregate average from an optional typical
+token-weighted interval median; neither is total-task throughput.
 
-## Limits
+The GUI's 12,000-character reasoning tail does not truncate the full emitted
+reasoning in private conversation records. New transcripts have local
+`[HH:MM] Role:` headers and precise event sidecars; historical files are unchanged.
 
-Small write/readback workflows have completed with cache reuse, but slow initial
-prefill and decoding remain. Native cache-advice, tokenizer EOT/EOM and disabled
-recurrent-context-shift warnings remain unresolved; they are not silently ignored
-as proof of correctness. Long-context stability, numerical fidelity and general
-task quality are not established by those small workflows. Keep memory guards
-enabled and inspect both completion and behavior-verification status.
+Long repetitive drafting can consume a generation budget without writing a file.
+Steering is queued until a generation boundary, not applied immediately.
+Creation and behavior verification are separate: inspect actual tool receipts,
+saved artifacts and final status rather than treating reasoning as completion.
+Short successful workflows do not establish long-task stability or correctness.
+Cache-advice, tokenizer EOT/EOM and disabled recurrent context-shift warnings
+have been observed; a warning alone establishes neither failure nor health.
 
-Model weights, toolchains and backend binaries are not shipped in this Git tree.
-Projectors, imatrix files, MTP and speculative/experimental loaders are not enabled
-by this text/tool configuration.
+See the [user guide](README.md) and [multi-GPU notes](multiGPU_tier_48gb.md).

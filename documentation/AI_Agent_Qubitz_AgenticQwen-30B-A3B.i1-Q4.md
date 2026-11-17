@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_AgenticQwen-30B-A3B.i1-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for AgenticQwen 30B-A3B i1 Q4_K_M.
 
@@ -54,8 +54,6 @@ Local-inference Qubitz variant for AgenticQwen 30B-A3B i1 Q4_K_M.
 - Wrapper-initiated transaction recovery or policy stops are reported separately from genuine user cancellation, internal recovery prompts are removed from persistent history, and completion status cites only verified current-turn evidence.
 - Supports direct existing entrypoints such as `.py`, `.ps1`, `.sh`, `.bat`, `.cmd`, `uv run`, package scripts, and make targets.
 - Final GUI and CLI outputs include wrapper-measured elapsed time in `(MM:SS)` format.
-
-## Current Project State
 
 ## Behavioral Compatibility Evidence
 

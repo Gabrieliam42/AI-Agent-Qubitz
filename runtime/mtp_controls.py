@@ -13,16 +13,22 @@ def mtp_control_status(base, config):
     return provider(config)
 
 
-def configured_mtp(base, config, enabled):
+def configured_mtp(base, config, enabled, head_mode=None):
     if type(enabled) is not bool:
         raise ValueError("MTP selection must be boolean.")
     status = mtp_control_status(base, config)
     if not status["supported"]:
         raise ValueError("This variant does not expose a validated MTP toggle.")
     candidate = _mtp_copy.copy(config)
-    if enabled == status["enabled"]:
+    choices = status.get("head_modes", {})
+    if head_mode is not None and head_mode not in choices.values():
+        raise ValueError("Unsupported MTP head selection.")
+    if enabled == status["enabled"] and (head_mode is None or head_mode == status.get("selected_head")):
         return candidate
-    base.qubitz_configure_mtp(candidate, enabled)
+    if head_mode is None:
+        base.qubitz_configure_mtp(candidate, enabled)
+    else:
+        base.qubitz_configure_mtp(candidate, enabled, head_mode)
     return candidate
 
 
@@ -45,15 +51,22 @@ class MTPGuiControl:
         self.transition = None
         self.closing = False
         self.selection = getattr(gui.config, "mtp_enabled", None)
+        self.head_selection = getattr(gui.config, "mtp_head_mode", None)
         self.original_busy = gui._set_busy
         self.original_close = gui._handle_close
         controls = gui.temperature_entry.master
-        gui.ttk.Label(controls, text="MTP").pack(side="left", padx=(16, 0))
+        # The responsive header positions this group; its children stay packed.
+        self.group = gui.ttk.Frame(controls)
+        self.group.pack(side="left", padx=(16, 0))
+        gui.ttk.Label(self.group, text="MTP").pack(side="left")
         self.variable = gui.tk.StringVar(master=gui.root)
-        self.selector = gui.ttk.Combobox(controls, textvariable=self.variable, values=("Off", "On"), width=5, state="readonly")
+        self.selector = gui.ttk.Combobox(self.group, textvariable=self.variable, values=("Off", "On"), width=4, state="readonly")
         self.selector.pack(side="left", padx=(6, 0))
         self.selector.bind("<<ComboboxSelected>>", self.change)
-        self.detail = gui.ttk.Label(controls)
+        self.head_variable = gui.tk.StringVar(master=gui.root)
+        self.head_selector = gui.ttk.Combobox(self.group, textvariable=self.head_variable, width=10, state="readonly")
+        self.head_selector.bind("<<ComboboxSelected>>", self.change)
+        self.detail = gui.ttk.Label(self.group)
         self.detail.pack(side="left", padx=(6, 0))
         gui._set_busy = self.set_busy
         gui._handle_close = self.close
@@ -66,6 +79,18 @@ class MTPGuiControl:
         self.detail.configure(text=status.get("label", "variant-managed"))
         disabled = bool(self.gui.busy or self.transition or not status["supported"])
         self.selector.configure(state="disabled" if disabled else "readonly")
+        choices = status.get("head_modes", {})
+        if choices and status["enabled"]:
+            self.detail.configure(text="" if status.get("selected_head") else status.get("label", ""))
+            self.head_selector.configure(values=tuple(choices), state="disabled" if disabled else "readonly")
+            selected = status.get("selected_head")
+            self.head_variable.set(next((label for label, mode in choices.items() if mode == selected), ""))
+            self.head_selector.pack(side="left", padx=(6, 0), before=self.detail)
+        else:
+            self.head_selector.pack_forget()
+        refresh_header = getattr(self.gui, "_qubitz_refresh_responsive_header", None)
+        if callable(refresh_header):
+            refresh_header()
 
     def set_busy(self, value):
         self.original_busy(value)
@@ -76,10 +101,16 @@ class MTPGuiControl:
         if self.selection is not None:
             for config in (self.gui.config, self.gui.agent.config):
                 config.mtp_enabled = self.selection
+                if self.head_selection is not None:
+                    config.mtp_head_mode = self.head_selection
 
     def change(self, _event=None):
         gui = self.gui
         enabled = self.variable.get() == "On"
+        status = mtp_control_status(self.base, gui.config)
+        choices = status.get("head_modes", {})
+        head_mode = (choices.get(self.head_variable.get(), status.get("selected_head"))
+                     if choices else None)
         if (gui.busy or self.transition or self.closing or getattr(gui, "pending_prompts", ())
                 or getattr(gui, "_qubitz_close_started", False)
                 or getattr(gui, "_qubitz_workspace_transition", None) is not None
@@ -87,12 +118,12 @@ class MTPGuiControl:
             self.refresh()
             return
         try:
-            candidate = configured_mtp(self.base, gui.config, enabled)
+            candidate = configured_mtp(self.base, gui.config, enabled, head_mode)
         except (ValueError, RuntimeError, OSError) as exc:
             self.refresh()
             gui.messagebox.showerror("MTP selection unavailable", str(exc))
             return
-        if mtp_control_status(self.base, gui.config)["enabled"] == enabled:
+        if status["enabled"] == enabled and (head_mode is None or head_mode == status.get("selected_head")):
             self.refresh()
             return
         old_agent = gui.agent
@@ -141,6 +172,7 @@ class MTPGuiControl:
         state, gui = self.transition, self.gui
         gui.config, gui.agent = state["config"], state["agent"]
         self.selection = gui.config.mtp_enabled
+        self.head_selection = getattr(gui.config, "mtp_head_mode", None)
         gui._qubitz_mtp_cleanup_receipt = state["cleanup"]
         self.transition = None
         gui._qubitz_workspace_transition = None
@@ -148,7 +180,9 @@ class MTPGuiControl:
         gui.cancel_requested = False
         gui._set_busy(False)
         gui.status_var.set("Ready")
-        gui._append_transcript("status", f"MTP {'On' if self.selection else 'Off'} selected. Backend starts on the next task; transcript retained.")
+        status = mtp_control_status(self.base, gui.config)
+        label = status.get("label", "On") if self.selection else "Off"
+        gui._append_transcript("status", f"MTP {label} selected. Backend starts on the next task; transcript retained.")
 
     def close(self):
         state, gui = self.transition, self.gui

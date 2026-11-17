@@ -2,13 +2,13 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_GPT-OSS-120B_F16.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_GPT-OSS-120B_F16.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_GPT-OSS-120B_F16.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_GPT-OSS-120B_F16.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Qubitz variant for `unsloth/gpt-oss-120b-GGUF`.
 
 - Model file: `gpt-oss-120b-F16.gguf` (65.4 GB); the original GPT-OSS expert weights are native MXFP4, so this GGUF is not a higher-fidelity all-F16 expert checkpoint.
 - Requested context: `131072` tokens, matching the [OpenAI configuration](https://huggingface.co/openai/gpt-oss-120b/blob/main/config.json). The effective loaded context can be lower if llama.cpp fitting requires it.
-- Placement: llama.cpp `layer` split over `CUDA0,CUDA1`, with a 1536 MiB fit target on each RTX 3090; weights that cannot fit on the GPUs remain in system RAM. Requires both GPUs.
+- Placement: llama.cpp `layer` split over all backend-visible compatible GPUs, with a 1536 MiB fit target on each device; weights that cannot fit on the GPUs remain in system RAM. One or more GPUs are supported, subject to available memory.
 - Uses the shared llama.cpp runtime, no speculative draft model, and no Xorton-specific transactional response cap.
 - Static checks do not establish download completion, actual dual-GPU placement, response quality, or tokens per second. Those require a live run after the model is downloaded.
 

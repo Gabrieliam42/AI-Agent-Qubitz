@@ -42,8 +42,6 @@
 40. `AI_Agent_Qubitz_Ministral-3-8B-Instruct-2512-Q5_12G.py`: `262144`
 41. `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py`: `202752`
 
-These configured runtime defaults were verified against `qubitz_variant_profiles.json`. The Qwen3.5 9B 12GB variant caps context at `101376` on every GPU.
-
 This list contains the 41 current user-facing variants; developer-only guides and profiles are separate from the public catalog and automated validation.
 
 GLM-5.3-Flash now uses UD-IQ4_XS, retaining the `202752` default and `1048576`
@@ -51,20 +49,20 @@ architectural ceiling. Its three-GPU/RAM-overflow policy and native memory guard
 still apply. Automatic backend preparation and a narrow live workflow do not
 establish full-context fit or long-context stability.
 
-These are requested context ceilings, not guaranteed effective windows: llama.cpp may fit a lower loaded context when model weights, KV cache, GPU headroom, or dual-GPU placement require it.
+These are requested context ceilings, not guaranteed effective windows: llama.cpp may fit a lower loaded context when model weights, KV cache, GPU headroom or multi-GPU placement require it.
 
 Gemma 4 12B Unified and Ministral 3 8B Instruct 2512 both retain `262144`: Google's `text_config.max_position_embeddings` and Mistral's corresponding configuration declare that value, and the GGUF repository metadata agrees. Their 12 GB single-GPU fitting policy may load a smaller effective window; it does not increase either model's declared ceiling or guarantee 256K fits in 12 GB. See their model guides for source links and memory limitations.
 
-Hypernova 60B 2605 uses `131072` because its authoritative model configuration declares `max_position_embeddings: 131072`. Its YaRN configuration scales an original `4096` positions by a factor of `32`, producing `131072`; the model card also evaluates Terminal-Bench with `max-model-len 131072`. The dual-GPU Qubitz implementation provides enough aggregate VRAM for the Q5 weights and KV cache, but additional VRAM does not change the model's declared context limit. Setting it to `262144` would be unsupported context extrapolation, not restoration of a documented 256K trained context.
+Hypernova 60B 2605 uses `131072` because its authoritative model configuration declares `max_position_embeddings: 131072`. Its YaRN configuration scales an original `4096` positions by a factor of `32`, producing `131072`; the model card also evaluates Terminal-Bench with `max-model-len 131072`. Automatic multi-GPU selection does not guarantee full-window fit or change the declared context limit. Setting it to `262144` would be unsupported context extrapolation, not restoration of a documented 256K trained context.
 
 Llama-3.3-Nemotron-Super-49B-v1.5 uses `131072` because NVIDIA's authoritative model configuration declares `max_position_embeddings: 131072`, with Llama 3 RoPE scaling from an original `8192` positions by a factor of `16`.
 
 
-Qwen3-Coder-Next also keeps `262144`: its [official configuration](https://huggingface.co/Qwen/Qwen3-Coder-Next/blob/main/config.json) and [model card](https://huggingface.co/Qwen/Qwen3-Coder-Next) declare that native limit. The inherited two-GPU fitting may lower the effective loaded window; adding a coding-specialized model does not authorize context extrapolation.
+Qwen3-Coder-Next also keeps `262144`: its [official configuration](https://huggingface.co/Qwen/Qwen3-Coder-Next/blob/main/config.json) and [model card](https://huggingface.co/Qwen/Qwen3-Coder-Next) declare that native limit. Automatic multi-GPU fitting may lower the effective loaded window; adding a coding-specialized model does not authorize context extrapolation.
 
-Kimi-Linear 48B A3B Instruct uses `1048576` because Moonshot AI's configuration and model card declare a native 1M-token context. Its hybrid linear-attention architecture reduces KV-cache growth, but the wrapper still treats 1M as a requested ceiling and allows llama.cpp to fit a lower effective window while preserving dual-GPU headroom and a `131072` minimum fit target.
+Kimi-Linear 48B A3B Instruct uses `1048576` because Moonshot AI's configuration and model card declare a native 1M-token context. Its hybrid linear-attention architecture reduces KV-cache growth, but the wrapper still treats 1M as a requested ceiling and allows llama.cpp to fit a lower effective window while preserving per-GPU headroom and a `131072` minimum fit target.
 
-Qwen3.8-Flash-Next 125B A6B uses `262144` because the official model card and configuration declare a native context length of 262,144 tokens. Its three-shard wrapper requests that ceiling while allowing llama.cpp to fit a lower effective context if the two-GPU and system-RAM placement cannot safely sustain the full window.
+Qwen3.8-Flash-Next 125B A6B uses `262144` because the official model card and configuration declare a native context length of 262,144 tokens. Its three-shard wrapper requests that ceiling while allowing llama.cpp to fit a lower effective context if the available GPUs and system-RAM placement cannot safely sustain the full window.
 
 Nex-N2.5-mini uses `262144` because its official configuration declares `max_position_embeddings: 262144`; the configured value remains a ceiling that llama.cpp can reduce to fit available VRAM.
 

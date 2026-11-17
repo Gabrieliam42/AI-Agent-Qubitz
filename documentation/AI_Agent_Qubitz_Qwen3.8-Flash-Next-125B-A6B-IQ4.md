@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for Qwen3.8-Flash-Next 125B A6B UD-IQ4_XS.
 
@@ -17,10 +17,10 @@ Local-inference Qubitz variant for Qwen3.8-Flash-Next 125B A6B UD-IQ4_XS.
 
 ## Runtime
 
-- Requires two 24 GB CUDA GPUs and system RAM for the model-weight overflow.
+- Uses all backend-visible compatible GPUs (including one, two or three) and system RAM for model-weight overflow; fit and per-device memory guards still apply.
 - Requests the model's native `262144`-token context; llama.cpp may fit a lower effective context when required by available memory.
 - Downloads and verifies all three GGUF shards, then launches llama.cpp with shard 1 so its standard split-file loader discovers the siblings.
-- Uses `CUDA0,CUDA1`, `layer` split, automatic fit, `q4_0` KV cache, a 131072-token fit floor, and a 1536 MiB safety margin on each GPU.
+- Uses all backend-visible compatible GPUs, `layer` split, automatic fit, `q4_0` KV cache, a 131072-token fit floor, and a 1536 MiB safety margin on each GPU. MTP's additional per-GPU reserve remains required when enabled.
 - Computes placement against the aggregate size of all shards, not the small metadata-heavy first shard alone.
 - Keeps as much of the model as safely fits in aggregate VRAM and leaves unavoidable overflow in system RAM.
 - Uses isolated llama.cpp `b10809`, the binary release associated with v0.4.0 and required for Qwen3.8 Flash Next support.
@@ -44,10 +44,15 @@ Invalid values or options unsupported by the selected llama.cpp runtime stop bef
 The default remains b10809 with MTP off. These controls affect only this variant:
 
 The normal Tk GUI also shows an MTP Off/On control beside Temperature. Off retains b10809;
-On selects the cached shared-Q4 head and pinned `6fcaa16f` fork. Switching is available
+On shows a head selector: `Shared Q4` uses `mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf`,
+and `Shared Q8` uses `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`. Shared Q4 remains the
+initial GUI choice. Both use the pinned `6fcaa16f` fork. Switching is available
 only after the current task is idle and owned backend cleanup is verified; the next task
 starts a fresh backend. A missing head or runtime fails closed without downloading it.
-The GUI switch does not select the standard-Q4 or shared-Q8 experimental heads.
+Changing Q4/Q8 requires the same verified owned-backend cleanup as toggling MTP.
+The choice survives workspace changes and Off/On toggles; unavailable heads fail
+without changing the current selection or downloading files. The standard-Q4 head
+remains an environment-only experiment, not a GUI choice.
 
 - `QUBITZ_QWEN38_FLASH_NEXT_MTP=off|standard|shared-q8|shared-q4`: `standard` selects the pinned standard Q4_K_M head and b11887; shared modes select the pinned Unsloth fork `6fcaa16f` and the corresponding local shared head. `shared` aliases `shared-q8`.
 - `QUBITZ_QWEN38_FLASH_NEXT_RUNTIME_TAG=b10809|b11887|unsloth-mtp-6fcaa16f` explicitly selects an isolated runtime, including for an MTP-off control arm.
@@ -63,7 +68,8 @@ Heads must already exist under `.cache/models/unsloth/Qwen3.8-Flash-Next-GGUF/MT
 - Uses local llama.cpp GGUF inference only; no required paid service or hosted inference account.
 - Displays live backend-counted `tok/s` beside `Show Reasoning`; unavailable
   prompt-processing counters are not reported as decoding speed. Final token
-  speed excludes startup, retrieval, prefill and tool execution.
+  speed distinguishes actual aggregate average from the optional token-weighted
+  interval-median typical rate; both exclude startup, retrieval, prefill and tools.
 
 ## Behavioral Compatibility Evidence
 

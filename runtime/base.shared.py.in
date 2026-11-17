@@ -3271,6 +3271,11 @@ class LlamaCppServerProcess:
         proxy_process = in_wsl() and bool(popen_command) and (
             popen_command[0].lower() == "powershell.exe" or Path(popen_command[0]).suffix.lower() == ".exe"
         )
+        from runtime.gpu_devices import child_environment
+
+        launch_environment = child_environment(
+            getattr(self, "_qubitz_child_environment", None), windows_interop=proxy_process,
+        )
         if in_wsl() and popen_command and popen_command[0].lower() == "powershell.exe":
             popen_command[0] = shutil.which("powershell.exe") or popen_command[0]
             if Path("/init").is_file():
@@ -3279,6 +3284,7 @@ class LlamaCppServerProcess:
                 self.process = subprocess.Popen(
                     render_windows_command_for_wsl_shell(popen_command),
                     cwd=self.runtime_workspace,
+                    env=launch_environment,
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -3296,8 +3302,6 @@ class LlamaCppServerProcess:
             popen_command[0].lower().endswith(".exe") or Path(popen_command[0]).suffix.lower() == ".exe"
         ):
             popen_command = wrap_windows_command_for_wsl(popen_command)
-        environment_overrides = getattr(self, "_qubitz_child_environment", None)
-        launch_environment = {**os.environ, **environment_overrides} if environment_overrides else None
         self.process = subprocess.Popen(
             popen_command,
             cwd=self.runtime_workspace,

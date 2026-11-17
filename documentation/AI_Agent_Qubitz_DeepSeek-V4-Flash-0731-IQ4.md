@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for DeepSeek-V4-Flash-0731 UD-IQ4_XS.
 
@@ -19,7 +19,7 @@ Local-inference Qubitz variant for DeepSeek-V4-Flash-0731 UD-IQ4_XS.
 - Requires two 24 GB CUDA GPUs and substantial system RAM for model-weight overflow.
 - Requests `262144` context, below the model configuration's `1048576` architectural ceiling; automatic fitting retains a `131072` minimum target when feasible.
 - Downloads and verifies all four GGUF shards and calculates placement from their aggregate size.
-- Uses `CUDA0,CUDA1`, layer splitting, correctness-first `f16` KV cache, automatic fit, and a 1536 MiB safety margin per GPU. Quantized K cache remains an explicit benchmark override because affected upstream DeepSeek-V4 builds can silently produce corrupted output with it.
+- Uses all backend-visible compatible GPUs, layer splitting, correctness-first `f16` KV cache, automatic fit, and a 1536 MiB safety margin per GPU. Quantized K cache remains an explicit benchmark override because affected upstream DeepSeek-V4 builds can silently produce corrupted output with it.
 - Uses isolated official llama.cpp `b10982` for DeepSeek-V4 architecture support.
 - `UD-IQ4_XS` is selected instead of `UD-IQ4_NL` to reduce RAM and transfer pressure on this 48 GB VRAM plus 128 GB RAM host.
 - MTP/speculative decoding is not enabled initially; the target model runs directly to avoid known multi-GPU speculative-decoding instability until live validation supports enabling it.

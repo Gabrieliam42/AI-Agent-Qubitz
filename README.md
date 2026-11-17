@@ -9,8 +9,15 @@ providers can use the network when enabled.
 
 The shared GUI shows backend-counted live `tok/s` beside `Show Reasoning`.
 `-- tok/s` means a rate is not yet available, including prompt processing; the
-completed-turn rate excludes startup, retrieval, tools and prompt processing.
-It is not end-to-end task throughput.
+completed-turn summary distinguishes the actual aggregate decode average from
+an optional token-weighted median (typical rate) of backend-timed intervals.
+Missing interval coverage falls back to the average. Neither includes startup,
+retrieval, tools or prompt processing, nor measures end-to-end task throughput.
+
+New conversations use readable `[HH:MM] Role:` headers in local time and retain
+the full emitted reasoning, independently of the GUI's 12,000-character live
+tail. An adjacent `.events.jsonl` preserves precise timestamps and event order.
+Both are private local files; historical transcripts are not converted.
 
 File creation and behavioral verification are separate. A saved file can have
 `Completion status: verified` together with `Behavior status: unverified`.
@@ -19,8 +26,12 @@ loop after new-file creation. Unavailable diagnostics are not passing tests,
 and rejected edits do not establish program correctness. Review the final
 verification status before relying on generated code.
 
+Steering is queued until a generation boundary, not applied immediately.
+Repeated reasoning can consume a generation budget without writing a file;
+reasoning and elapsed time alone do not establish task progress or completion.
+
 The [GLM-5.3-Flash IQ4 variant](documentation/AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.md)
-targets the 72 GB VRAM+ tier with three GPUs and retains its memory guards.
+targets the 72 GB VRAM+ tier and retains its memory guards.
 Weights and native runtimes are not shipped in Git. Online startup can prepare
 the pinned compatible native backend and missing essential dependencies in
 project-local caches; an unsupported or mixed CUDA/PyTorch stack fails closed.
@@ -33,7 +44,7 @@ Existing packages are not silently upgraded to make an incompatible stack fit.
   environment before launch.
 - A compatible GPU, with enough VRAM (at least 12 GB) and RAM, and free disk space for the selected
   model.
-- Larger variants target two 24 GB GPUs in the [48 GB VRAM+ tier](documentation/multiGPU_tier_48gb.md); GLM-5.3-Flash IQ4 targets three in the 72 GB VRAM+ tier, with system-RAM overflow.
+- The 24 GB, [48 GB VRAM+](documentation/multiGPU_tier_48gb.md), and 72 GB VRAM+ tiers automatically select all compatible GPUs visible to their backend, using one when only one is visible. Each GPU retains memory headroom; larger models may still need CPU offload and sufficient system RAM. The separate 12 GB profiles retain their budget.
 - Network access for a first run with missing model weights or llama.cpp
   runtimes. The selected variant prepares its supported missing artifacts on
   demand; offline mode requires complete local artifacts. Download success does
@@ -89,7 +100,7 @@ locally generated caches are not shipped with this release.
 Shared source is composed into each launcher's private namespace, preserving
 its entrypoint identity and isolated mutable state. This is not proof that all
 models have the same behavior or performance. See the
-[runtime layout notes](runtime/README.md) for maintenance details.
+[runtime layout notes](runtime/README.md) for required components.
 
 ## Public Package Scope
 

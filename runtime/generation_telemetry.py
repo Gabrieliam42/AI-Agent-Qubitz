@@ -22,6 +22,59 @@ def positive(value: Any) -> float:
 
 
 @dataclass
+class DecodeSpeedSummary:
+    """Token-weighted distribution; logarithmic bins bound storage, about 1% wide."""
+
+    buckets: dict[int, list[float]] = field(default_factory=dict)
+    peak: float = 0.0
+
+    def add(self, tokens: float, seconds: float) -> None:
+        tokens, seconds = positive(tokens), positive(seconds)
+        rate = positive(tokens / seconds) if seconds else 0.0
+        if not rate:
+            return
+        key = round(math.log2(rate) * 64)
+        bucket = self.buckets.setdefault(key, [0.0, 0.0])
+        bucket[0] += tokens
+        bucket[1] += seconds
+        self.peak = max(self.peak, rate)
+
+    def merge(self, other: DecodeSpeedSummary) -> None:
+        for key, values in other.buckets.items():
+            bucket = self.buckets.setdefault(key, [0.0, 0.0])
+            bucket[0] += values[0]
+            bucket[1] += values[1]
+        self.peak = max(self.peak, other.peak)
+
+    @property
+    def tokens(self) -> float:
+        return sum(values[0] for values in self.buckets.values())
+
+    @property
+    def seconds(self) -> float:
+        return sum(values[1] for values in self.buckets.values())
+
+    def median(self) -> float | None:
+        target = self.tokens / 2
+        cumulative = 0.0
+        for _key, (tokens, seconds) in sorted(self.buckets.items()):
+            cumulative += tokens
+            if cumulative >= target:
+                return positive(tokens / seconds) or None
+        return None
+
+
+def completion_speed(metrics: dict) -> str:
+    average = positive(metrics.get("tokens_per_second"))
+    typical = positive(metrics.get("typical_tokens_per_second"))
+    if not average:
+        return "Token speed: unavailable"
+    if typical:
+        return f"Token speed: {typical:.2f} tokens/s typical; {average:.2f} tokens/s average"
+    return f"Token speed: {average:.2f} tokens/s average"
+
+
+@dataclass
 class LiveTokenMeter:
     request_id: str
     emit: Callable[[str, str], None] | None = None
@@ -31,6 +84,31 @@ class LiveTokenMeter:
     last_emit: float = float("-inf")
     last_count: float = 0.0
     display_error: str = ""
+    decode_rates: DecodeSpeedSummary = field(default_factory=DecodeSpeedSummary)
+    decode_anchor: tuple[float, float] | None = None
+    decode_last: tuple[float, float] | None = None
+    decode_valid: bool = True
+
+    def _decode_interval(self, count: float, seconds: float, final: bool) -> None:
+        if not self.decode_valid or not count or not seconds:
+            return
+        if self.decode_last is not None and (
+            count < self.decode_last[0] or seconds < self.decode_last[1]
+        ):
+            self.decode_valid = False
+            self.decode_rates = DecodeSpeedSummary()
+            return
+        self.decode_last = count, seconds
+        if self.decode_anchor is None:
+            # A final aggregate alone contains no interval/peak distribution.
+            if final:
+                return
+            self.decode_anchor = 0.0, 0.0
+        delta_tokens = count - self.decode_anchor[0]
+        delta_seconds = seconds - self.decode_anchor[1]
+        if delta_tokens > 0 and (delta_seconds >= 5 or final and delta_seconds >= 1):
+            self.decode_rates.add(delta_tokens, delta_seconds)
+            self.decode_anchor = count, seconds
 
     def update(
         self, timings: Any = None, *, phase: str = "generating", final: bool = False
@@ -39,6 +117,7 @@ class LiveTokenMeter:
         timing = timings if isinstance(timings, dict) else {}
         count = positive(timing.get("predicted_n"))
         seconds = positive(timing.get("predicted_ms")) / 1000
+        self._decode_interval(count, seconds, final)
         rate = None
         if count and count >= self.last_count:
             if count > self.last_count:

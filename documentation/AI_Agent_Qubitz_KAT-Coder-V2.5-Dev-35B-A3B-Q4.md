@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_KAT-Coder-V2.5-Dev-35B-A3B-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for Kwaipilot KAT-Coder-V2.5-Dev 35B-A3B Q4.
 
@@ -17,7 +17,6 @@ Local-inference Qubitz variant for Kwaipilot KAT-Coder-V2.5-Dev 35B-A3B Q4.
 - Default maximum output: `16384` tokens.
 - Uses the standard 24 GB Qubitz GPU-first llama.cpp fitting path; effective context may be reduced to preserve VRAM headroom.
 - Uses the Qwen3.6 35B route-sampling contract, consistent with the source generation defaults of temperature `1.0`, top-p `0.95`, and top-k `20` for general generation.
-- Remains independently runnable; builder and evaluation files are development-time tooling, not runtime dependencies.
 
 ## Behavioral Compatibility Evidence
 

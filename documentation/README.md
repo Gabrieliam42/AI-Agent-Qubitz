@@ -4,21 +4,22 @@
 
 The shared GUI displays backend-counted live `tok/s` beside `Show Reasoning`.
 Prompt processing or missing/stale counters display `-- tok/s`; completion uses
-the backend's weighted decode rate, not elapsed wall time or text length.
+backend decode measurements, not elapsed wall time or text length.
 Hiding reasoning does not hide this counter or disable model thinking.
 
 Creation-only requests can still encounter an unnecessary edit/verification
 recovery loop. A verified saved file is not a behaviorally tested program;
 `available=false` diagnostics are unavailable, not successful. Read both the
-completion and behavior status. Maintainer evidence and pending general repairs
-are recorded locally in the November 14 review (maintainer record, not shipped).
+completion and behavior status. Repetitive reasoning can exhaust a generation
+budget without a tool call or file write. Steering waits for a generation
+boundary; a queued message is not proof that the current call has received it.
 
 ## Purpose
 
 Qubitz is a WSL2 AI coding agent built around local GGUF inference, with 41 user-facing Python launchers for different models and VRAM budgets. Universal GUI, CLI, retrieval, MCP/tool, transaction, and completion-verification code lives in `runtime/`; each launcher retains its variant-specific source and an isolated runtime namespace.
 
 The restored [GLM-5.3-Flash IQ4 launcher](AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.md)
-targets the 72 GB VRAM+ tier using three 24 GB GPUs plus system-RAM overflow and
+targets the 72 GB VRAM+ tier using visible compatible GPUs plus system-RAM overflow and
 can acquire/build its pinned isolated backend online when missing. Compatible
 cached artifacts are reused, and offline or unsupported-stack failures remain
 explicit. Weights are not shipped in Git.
@@ -45,21 +46,10 @@ need a harness key, Cython, or a compiler for the policy loader. GLM native back
 preparation acquires its separate compiler toolchain when needed. Plaintext `HARNESS.txt`, the authoring key and
 private native build sources are not shipped. This packaging discourages casual inspection;
 it does not prevent extraction of the harness on a user-controlled machine. Model weights, downloaded runtimes, caches,
-evaluation artifacts, maintainer-only builder tooling, and the optional browser frontend are not shipped
 in this public Tk/CLI/MCP runtime tree. Keep the published runtime package together;
 source/package checks are not full live-workflow acceptance.
 
 ## Environment
-
-- Primary runtime: WSL2 project environment `.venv/bin/python`.
-- Default Python target: Python 3.12.
-- Target hardware: one RTX 3090 24 GB for standard variants; DeepSeek-V4-Flash, GPT-OSS-120B, Hypernova, Kimi-Linear, Ling-3.0-flash, Llama-3.3-Nemotron-Super, Nemotron-3.5-Super-VL, Ornith-1.5-122B, Qwen3-Coder-Next, and Qwen3.8-Flash-Next use two RTX 3090 GPUs with 48 GB aggregate VRAM. The target host also has an Intel i9-14900KF and 128 GB RAM.
-- The three 12GB-class wrappers are Qwen3.5 9B, Gemma 4 12B, and Ministral 3 8B. Gemma and Ministral use a single-GPU 12288 MiB budget; their 262144-token requested ceiling is not a full-window memory-fit guarantee.
-- GPU inference uses the project-managed llama.cpp GGUF runtime and CUDA retrieval/embedding stack where supported.
-- North Mini Code, DeepSeek-V4-Flash, Gemma-4-12B, Ministral-3-8B, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use isolated llama.cpp runtime channels; other variants use the shared project runtime channel unless their profile requires otherwise. Gemma and Ministral pin official `b11887`; their two-scenario GUI smoke passed on 2026-10-31, within the recorded scope and limitations (maintainer record, not shipped).
-- Ling's AD GGUF requires the isolated Atomic TurboQuant `b10269-1.6.0` runtime. Online startup downloads a missing Windows CUDA 12 bundle or, when Windows execution is unavailable under WSL, the same fork's native Linux CUDA 12.4 bundle; cached runtimes are reused. It does not substitute stock llama.cpp or automatically enable TurboQuant KV compression.
-- Known Ling limitation: the current runtime rejected a chunked file-content grammar with HTTP 400 (`number of repetitions exceeds sane defaults`). Successful model loading does not yet establish file-creation compatibility.
-- Hypernova, Kimi-Linear, Llama-3.3-Nemotron-Super, and Qwen3-Coder-Next use explicit llama.cpp layer placement across `CUDA0` and `CUDA1` with a 1536 MiB safety margin on each GPU. DeepSeek-V4-Flash, GPT-OSS-120B, Ling-3.0-flash, Nemotron-3.5-Super-VL, Ornith-1.5-122B, and Qwen3.8-Flash-Next use automatic dual-GPU layer fitting with the same per-GPU margin and retain unavoidable model-weight overflow in system RAM; other variants retain their existing single-GPU launch behavior.
 
 ## Dependencies
 
@@ -75,8 +65,6 @@ Automatic retrieval and embedding indexes exclude the encrypted harness, private
 
 Normal launchers require the complete project-root `runtime/` package. Their import bootstrap works from `variants/` without relying on the current working directory. Models, caches, memory, harness, plugins, and the project interpreter remain rooted at the project, not `variants/`. Builder JSON templates and profile tooling remain maintenance-only dependencies. The loader assembles trusted source in each launcher's own namespace, preserving its entrypoint identity and private mutable classes/state. It does not execute model-provided source as part of this composition.
 
-Universal code is maintained once in the shared runtime and composed into each launcher's private namespace from validated template symbols and registered source modules. This keeps GUI queues, locks, counters, and mutable model state local to each variant while avoiding a runtime dependency on the builder. Exports contain the composed implementation; normal launchers use the project runtime package. Some composed paths still import `runtime` modules, so do not assume an export is package-free.
-
 Launch from the project root with the project interpreter:
 
 ```text
@@ -89,6 +77,10 @@ Launch from the project root with the project interpreter:
 The root launcher's default is the existing GLM-4.7-Flash 24GB reference variant; it does not choose by GPU size. Explicit selection and the existing GUI variant menu remain available. Without `--workspace`, the root launcher uses the project root; an explicit workspace is forwarded unchanged. Variant switching stops the current owned runtime before replacing the process with the selected launcher.
 
 Variant menu entries are white when the exact default GGUF file/shard set is locally available and gray when missing or unknown; both remain selectable. Opening the menu starts read-only local checks in one background reader, keeping the GUI responsive; entries remain gray until verified and update on the Tk event loop. Repeated requests are coalesced. No weights are downloaded and other variants are not imported. The check rejects empty/misnamed files and invalid GGUF prefixes but is not a full weight-integrity, launch-success, hardware-fit, or performance guarantee. Variant-specific warmup and download policies are unchanged when selecting a model.
+
+The public package is the normal-user runtime, not the maintenance checkout.
+Keep the shipped runtime and encrypted policy bundle together. See the
+[runtime component guide](../runtime/README.md).
 
 Documentation is stored in this directory. Commands and code paths in these documents are relative to the project root, not the documentation directory. See the [variant catalog](qubitz_variants_list.md) and [context values](num_ctx_values.md).
 
@@ -123,12 +115,32 @@ a user pause still requires an explicit resume.
 ## Live Token Rate
 
 Live rates use request-local backend token counts over a short time window.
-The completed rate uses backend decode tokens/time across model calls; startup,
-prefill, tool work and idle time are not included. Rates from different prompts,
+The actual average is total measured completion tokens divided by total backend
+decode seconds across model calls. The optional typical rate is an approximate
+token-weighted median of non-overlapping five-second decode intervals; a final
+interval needs at least one second and intervals must cover at least 80 percent
+of measured tokens. Otherwise the summary uses the actual average. Peak rates
+are not arbitrarily boosted. Startup, prefill, tool work and idle time are not
+included. Rates from different prompts,
 contexts or output lengths are not controlled performance comparisons. Missing
 backend counters remain unavailable; Qubitz does not estimate tokens from
 characters, reasoning words or streamed chunks.
 
 ## Reasoning Display
 
-The GUI's `Show Reasoning` checkbox is checked by default and streams separate runtime `reasoning_content` inline as provisional text. Chat follows all new output, including reasoning, until the user scrolls up; scrolling to the bottom or pressing `Jump to latest` resumes following. After a task finishes, reasoning collapses after the `Reading Speed` delay; manual scrolling keeps it visible until the next task. Click the summary to expand it in the original chat order. The GUI retains at most 100,000 displayed reasoning characters per turn and the latest 10 collapsed turns; older reasoning text is cleared. Unchecking stops new display without changing model thinking or inference settings. Reasoning is excluded from answer previews, model history, and persistent GUI logs. Missing reasoning text does not prove thinking is disabled; rendering adds GUI work, not a model call, and the text is not verified evidence.
+The GUI's `Show Reasoning` checkbox displays provisional `reasoning_content`.
+Its live tail is capped at 12,000 characters, not the full conversation record.
+Hiding it does not disable model thinking or change inference settings. Chat
+follows new output until the user scrolls up; `Jump to latest` resumes following.
+Reasoning is not verified execution evidence or an accepted final answer.
+
+## Private Conversation Records
+
+New GUI sessions save readable transcripts under `conversations/` with local
+`[HH:MM] System:`, `Status:`, `User:`, `Reasoning:` and other role headers.
+The text follows displayed messages and retains full emitted reasoning, even
+when the live tail is capped. Internal producer duplicates and transient answer
+previews remain in the adjacent `.events.jsonl`, which preserves capture order,
+exact UTC timestamps, original roles and emitted text. Historical files are not
+rewritten. These records can contain prompts, code and tool results; they are
+private local artifacts and are not shipped to GitHub.

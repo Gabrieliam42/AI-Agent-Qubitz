@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for Moonshot AI Kimi-Linear 48B A3B Instruct i1 Q6_K.
 
@@ -17,7 +17,7 @@ Local-inference Qubitz variant for Moonshot AI Kimi-Linear 48B A3B Instruct i1 Q
 
 ## Runtime
 
-- Dual-RTX-3090 variant requiring CUDA devices `0` and `1` with 48 GB aggregate VRAM.
+- 48 GB VRAM+ tier selecting all visible compatible GPUs, not requiring exactly two RTX 3090 cards.
 - Requested native context ceiling: `1048576` tokens, matching the source configuration and model card. This is a ceiling, not a promise that the full window fits on this host.
 - Default maximum output: `16384` tokens.
 - Uses llama.cpp's stable layer split and `--fit`, reserves 1536 MiB on each GPU, and requires a feasible minimum loaded context of `131072` tokens. llama.cpp may reduce the requested 1M window and may retain unavoidable model or runtime overflow in system RAM.

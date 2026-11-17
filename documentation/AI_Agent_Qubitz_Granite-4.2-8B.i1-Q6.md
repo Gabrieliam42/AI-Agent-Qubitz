@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Granite-4.2-8B.i1-Q6.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Granite-4.2-8B.i1-Q6.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [packaging and standalone export](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_Granite-4.2-8B.i1-Q6.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Granite-4.2-8B.i1-Q6.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for IBM Granite 4.2 8B imatrix Q6_K.
 
@@ -25,8 +25,5 @@ Local-inference Qubitz variant for IBM Granite 4.2 8B imatrix Q6_K.
 - IBM model card: https://huggingface.co/ibm-granite/granite-4.2-8b
 - IBM model configuration: https://huggingface.co/ibm-granite/granite-4.2-8b/blob/main/config.json
 - Selected GGUF: https://huggingface.co/mradermacher/granite-4.2-8b-i1-GGUF/blob/main/granite-4.2-8b.i1-Q6_K.gguf
-
-- Historical static source audit 2026-09-19: shared hardening was synchronized through the builder; intentional model-specific runtime, placement, MTP, sampling, and recovery branches were standalone.
-## Behavioral Compatibility Evidence
 
 The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
