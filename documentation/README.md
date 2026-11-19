@@ -30,7 +30,7 @@ The project supports private local inference without requiring an API, cloud acc
 ## Current Structure
 
 - `AI Agent Qubitz.py`: normal Tk GUI launcher; loads only the selected variant.
-- `variants/AI_Agent_Qubitz_*.py`: 41 user-facing release launchers; three developer-only local launchers are excluded from this release.
+- `variants/AI_Agent_Qubitz_*.py`: 41 public launchers; private local launchers are not shipped.
 - `runtime/`: required shared runtime source and loader; local development/export tools are not shipped.
 - `documentation/`: public model/context catalog and 41 user-facing model guides.
 - `HARNESS.enc`: runtime harness artifact loaded by variants.
@@ -45,11 +45,10 @@ and `HARNESS.enc`. Use a CPython 3.12 x86-64 environment and applicable dependen
 need a harness key, Cython, or a compiler for the policy loader. GLM native backend
 preparation acquires its separate compiler toolchain when needed. Plaintext `HARNESS.txt`, the authoring key and
 private native build sources are not shipped. This packaging discourages casual inspection;
-it does not prevent extraction of the harness on a user-controlled machine. Model weights, downloaded runtimes, caches,
-in this public Tk/CLI/MCP runtime tree. Keep the published runtime package together;
+it does not prevent extraction of the harness on a user-controlled machine.
+Model weights, downloaded runtimes, and caches are not shipped in Git.
+Keep the published runtime package together;
 source/package checks are not full live-workflow acceptance.
-
-## Environment
 
 ## Dependencies
 
@@ -76,7 +75,18 @@ Launch from the project root with the project interpreter:
 
 The root launcher's default is the existing GLM-4.7-Flash 24GB reference variant; it does not choose by GPU size. Explicit selection and the existing GUI variant menu remain available. Without `--workspace`, the root launcher uses the project root; an explicit workspace is forwarded unchanged. Variant switching stops the current owned runtime before replacing the process with the selected launcher.
 
-Variant menu entries are white when the exact default GGUF file/shard set is locally available and gray when missing or unknown; both remain selectable. Opening the menu starts read-only local checks in one background reader, keeping the GUI responsive; entries remain gray until verified and update on the Tk event loop. Repeated requests are coalesced. No weights are downloaded and other variants are not imported. The check rejects empty/misnamed files and invalid GGUF prefixes but is not a full weight-integrity, launch-success, hardware-fit, or performance guarantee. Variant-specific warmup and download policies are unchanged when selecting a model.
+On WSL, Qubitz makes one maximize request four seconds after the window appears.
+Input or minimizing the window cancels the request. To disable it for one launch,
+run `QUBITZ_START_MAXIMIZED=0 .venv/bin/python "AI Agent Qubitz.py"` in WSL.
+
+The Variant menu scans this installation's local model cache in the background.
+White entries have the expected GGUF file set; gray means missing or not yet
+confirmed. Opening the menu does not download weights. Selecting a variant can
+download missing model files when online, after checking their metadata and
+available storage. During preparation, managed files with an unexpected size or
+invalid header are moved aside rather than deleted. An explicitly configured
+model path is not automatically replaced. Cache indicators do not establish full
+file integrity or hardware fit.
 
 The public package is the normal-user runtime, not the maintenance checkout.
 Keep the shipped runtime and encrypted policy bundle together. See the

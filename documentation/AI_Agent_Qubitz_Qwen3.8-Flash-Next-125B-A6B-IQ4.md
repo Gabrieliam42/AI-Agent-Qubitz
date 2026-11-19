@@ -10,6 +10,8 @@ Local-inference Qubitz variant for Qwen3.8-Flash-Next 125B A6B UD-IQ4_XS.
 
 - Served alias and GGUF repo: `unsloth/Qwen3.8-Flash-Next-GGUF`
 - GGUF directory: `UD-IQ4_XS`
+- Model files are pinned to the [compatible three-shard revision](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-IQ4_XS).
+  The newer four-shard layout on `main` is not interchangeable with this profile.
 - Launch shard: `Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf`
 - Required siblings: shards `00002-of-00003` and `00003-of-00003`
 - GGUF label: `Qwen3.8-Flash-Next-125B-A6B-UD-IQ4_XS`
@@ -19,7 +21,8 @@ Local-inference Qubitz variant for Qwen3.8-Flash-Next 125B A6B UD-IQ4_XS.
 
 - Uses all backend-visible compatible GPUs (including one, two or three) and system RAM for model-weight overflow; fit and per-device memory guards still apply.
 - Requests the model's native `262144`-token context; llama.cpp may fit a lower effective context when required by available memory.
-- Downloads and verifies all three GGUF shards, then launches llama.cpp with shard 1 so its standard split-file loader discovers the siblings.
+- Reuses a complete local set or downloads missing shards online. Checks the
+  expected sizes and GGUF headers before launching llama.cpp with shard 1.
 - Uses all backend-visible compatible GPUs, `layer` split, automatic fit, `q4_0` KV cache, a 131072-token fit floor, and a 1536 MiB safety margin on each GPU. MTP's additional per-GPU reserve remains required when enabled.
 - Computes placement against the aggregate size of all shards, not the small metadata-heavy first shard alone.
 - Keeps as much of the model as safely fits in aggregate VRAM and leaves unavoidable overflow in system RAM.

@@ -21,8 +21,8 @@ Both are private local files; historical transcripts are not converted.
 
 File creation and behavioral verification are separate. A saved file can have
 `Completion status: verified` together with `Behavior status: unverified`.
-The current release can still enter an unnecessary edit/verification recovery
-loop after new-file creation. Unavailable diagnostics are not passing tests,
+Follow-up edits prefer localized patches and use bounded recovery when no
+verified progress is made. Unavailable diagnostics are not passing tests,
 and rejected edits do not establish program correctness. Review the final
 verification status before relying on generated code.
 
@@ -69,10 +69,15 @@ the default is not selected by GPU size. Use a variant's own `--help` for its
 CLI and MCP-server options. An explicit `--workspace` is forwarded unchanged;
 otherwise the root launcher uses the project root.
 
+On WSL, the window opens at normal size and requests maximization once after
+four seconds. Interacting with the window or minimizing it cancels the request.
+Set `QUBITZ_START_MAXIMIZED=0` for a normal-sized launch. If input becomes
+unresponsive, note whether it happened before or after the window maximized.
+
 ## Runtime Layout
 
-- `variants/` contains 41 public schema-2 launchers. The three developer-only
-  local variants are not included in this release.
+- `variants/` contains 41 public schema-2 launchers. Private local variants
+  are not included.
 - `runtime/` contains the loader, shared source templates and symbol
   registries, and runtime modules. Keep the whole package for a normal launch;
   schema 1 and the former `qubitz_runtime/v2/` layout are not supported. The

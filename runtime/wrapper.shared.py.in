@@ -6634,7 +6634,9 @@ def _patch_streaming_chat(base: Any) -> None:
                             reasoning_guard_chars += len(reasoning)
                             if (guard_enabled or tool_text_guard_enabled) and not tool_parts and not delta.get("tool_calls") and reasoning_guard_chars >= 256:
                                 reasoning_guard_chars = 0
-                                if ((guard_enabled and _degenerate_prose(guarded_reasoning))
+                                from runtime.action_progress import repetitive_reasoning
+
+                                if ((guard_enabled and repetitive_reasoning(guarded_reasoning, _degenerate_prose))
                                         or (tool_text_guard_enabled and _degenerate_tool_text(guarded_tool_reasoning, tool_text_names))):
                                     finish_reason = "repetition_guard"
                                     broker._emit("Stopped repetitive runtime reasoning; preserving verified progress.")
@@ -7746,8 +7748,9 @@ def _patch_streaming_chat(base: Any) -> None:
             kwargs["messages"] = _append_adapter_instruction(
                 kwargs["messages"],
                 "The existing target has been inspected. Use a focused native edit tool call now; "
-                "prefer a minimal patch over rewriting the whole file. Preserve the requested behavior "
-                "and do not replace the tool call with a prose description.",
+                "replace only affected spans and preserve unrelated code, comments, formatting, and behavior. "
+                "A whole-file replacement needs a concrete structural reason, not convenience. "
+                "Do not regenerate an unchanged file, repeat the plan, or replace the tool call with prose.",
             )
         response = _chat_with_transport_retry(self, **kwargs)
         if (broker is None or not kwargs.get("tools")
@@ -10120,8 +10123,8 @@ def _sampling_profile_for_route(
         annotations=annotations("search_tools"),
         structured_output=True,
     )
-    def search_tools(query: str, max_results: int = TOOL_SEARCH_RESULT_MAX) -> dict[str, Any]:
-        query_tokens = set(re.findall(r"[a-z0-9_]+", query.lower()))
+    def search_tools(query: str, max_results: int = TOOL_SEARCH_RESULT_MAX, offset: int = 0) -> dict[str, Any]:
+        query_tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
         broker = _TOOL_CALL_CONTEXT.get()
         eligible_names = getattr(broker, "_search_eligible_tool_names", None)
         ranked: list[tuple[int, str, Any]] = []
@@ -10134,18 +10137,26 @@ def _sampling_profile_for_route(
             name_tokens = set(re.findall(r"[a-z0-9_]+", tool.name.lower().replace("_", " ")))
             score = 4 * len(query_tokens.intersection(name_tokens))
             score += sum(1 for token in query_tokens if token and token in haystack)
+            if " ".join(re.findall(r"[a-z0-9]+", query.casefold())) == " ".join(
+                re.findall(r"[a-z0-9]+", tool.name.casefold())
+            ):
+                score += 10000
             if score > 0:
                 ranked.append((score, tool.name, tool))
         ranked.sort(key=lambda item: (-item[0], item[1]))
+        offset = max(0, int(offset))
+        count = max(1, min(int(max_results), TOOL_SEARCH_RESULT_MAX))
         matches = [
             {
                 "name": tool.name,
                 "description": tool.description or "",
                 "input_schema": _strict_tool_schema(tool.parameters),
             }
-            for _, _, tool in ranked[: max(1, min(int(max_results), TOOL_SEARCH_RESULT_MAX))]
+            for _, _, tool in ranked[offset:offset + count]
         ]
-        return {"query": query, "matches": matches, "usage": "Call a returned tool by its exact name and schema."}
+        return {"query": query, "matches": matches, "offset": offset,
+                "next_offset": offset + len(matches) if offset + len(matches) < len(ranked) else None,
+                "usage": "Call a returned tool by its exact name and schema. Use offset for another page, or an exact tool name with max_results=1 for its schema."}
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:43cea638744211e8> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_agent_runner_class:0/ClassDef:EnhancedAgentRunner:0/FunctionDef:_adaptive_step_budget:0
             def _adaptive_step_budget(self, prompt: str) -> tuple[int, list[str]]:
@@ -10162,7 +10173,14 @@ def _sampling_profile_for_route(
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:43f02116a852d15f> module/Assign:Name(id='_EMBEDDED_TOOL_PROGRESS_NEW', ctx=Store()):0
 _EMBEDDED_TOOL_PROGRESS_NEW = """                    if tool_calls:
-                        empty_model_steps = 0
+                        broker = getattr(self, "_tool_permission_broker", None)
+                        current_progress = (
+                            broker.progress_token(pending_only=True),
+                            tuple(sorted(broker.transaction_snapshot_hashes.items())),
+                        ) if broker is not None else None
+                        if current_progress is None or current_progress != model_loop_progress:
+                            empty_model_steps = 0
+                        model_loop_progress = current_progress
                         assistant_message = {
 """
 # </QUBITZ_SHARED_SYMBOL>
@@ -13025,7 +13043,11 @@ _HARNESS_ROUTE_BLOCKS = {
                 reset_metrics()
             self._last_generation_metrics: dict[str, Any] = {}
             started_at = base.time.perf_counter()
-            answer = super().run_sync(prompt, callback)
+            sampling_state = _sampling_state_snapshot(self.config)
+            try:
+                answer = super().run_sync(prompt, callback)
+            finally:
+                _restore_sampling_state(self.config, sampling_state)
             active_llm = getattr(self, "_llm", None)
             read_metrics = getattr(active_llm, "qubitz_generation_metrics", None)
             if callable(read_metrics):
@@ -15144,13 +15166,14 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
             self.root.after(0, finish_close)
 
         def _schedule_startup_visibility_recovery(self) -> None:
-            for delay_ms in (0, 250, 900):
-                self.root.after(delay_ms, self._raise_gui_window)
+            if not (sys.platform.startswith("linux") and base.in_wsl()):
+                self.root.after_idle(self._raise_gui_window)
+                return
             skip_probe = os.environ.get(
                 "QUBITZ_SKIP_WSLG_VISIBILITY_PROBE",
                 "",
             ).strip().casefold() in {"1", "on", "true", "yes"}
-            if sys.platform.startswith("linux") and base.in_wsl() and not skip_probe:
+            if not skip_probe:
                 self.root.after(350, self._start_wslg_visibility_probe)
 
         def _poll_events(self) -> None:
@@ -15233,17 +15256,17 @@ do {
         Select-Object -First 1
     if ($null -ne $target) {
         $copyMode = $target.MainWindowTitle.StartsWith('[WARN:COPY MODE]')
+        if (-not $copyMode) {
+            Write-Output 'normal_window_found'
+            exit 0
+        }
         # Restore only minimized windows; SW_SHOW preserves maximized/current placement.
         $showCommand = if ([QubitzWindowActivation]::IsIconic($target.MainWindowHandle)) { 9 } else { 5 }
         [void][QubitzWindowActivation]::ShowWindowAsync($target.MainWindowHandle, $showCommand)
         [void][QubitzWindowActivation]::BringWindowToTop($target.MainWindowHandle)
         [void][QubitzWindowActivation]::SetForegroundWindow($target.MainWindowHandle)
-        if ($copyMode) {
-            Write-Output 'copy_mode_foreground_requested'
-            exit 42
-        }
-        Write-Output 'foreground_requested'
-        exit 0
+        Write-Output 'copy_mode_foreground_requested'
+        exit 42
     }
     Start-Sleep -Milliseconds 200
 } while ((Get-Date) -lt $deadline)
@@ -15876,6 +15899,7 @@ def _path_hash(path: Path) -> str:
 # <QUBITZ_SHARED_SYMBOL:wrapper:6bd555664d169480> module/Assign:Name(id='_EMBEDDED_NO_PROGRESS_NEW', ctx=Store()):0
 _EMBEDDED_NO_PROGRESS_NEW = """                repeated_calls: dict[str, int] = {}
                 empty_model_steps = 0
+                model_loop_progress = None
                 focused_no_progress_recovery_used = False
                 step_limit_label = "unlimited" if unlimited_steps else str(step_budget)
 """
@@ -16796,7 +16820,7 @@ from contextlib import suppress
 def _implicit_artifact_revision_request(prompt: str, target_paths: Sequence[str]) -> bool:
     """Bind a declarative revision only when it describes the sole prior text artifact."""
     normalized = " ".join(str(prompt or "").strip().split())
-    if len(target_paths) != 1 or not normalized or len(normalized.split()) > 100:
+    if len(target_paths) != 1 or not normalized or len(normalized) > 12000:
         return False
     if "?" in normalized or re.match(
         r"^(?:new|separate|unrelated|different)\s+(?:question|request|task|topic)\b",
@@ -16825,8 +16849,24 @@ def _implicit_artifact_revision_request(prompt: str, target_paths: Sequence[str]
         ".py", ".js", ".ts", ".html", ".css", ".json", ".md", ".txt", ".svg",
     }:
         return False
-    named_files = re.findall(r"\b[\w.-]+\.(?:py|js|ts|html|css|json|md|txt|svg)\b", normalized, re.IGNORECASE)
-    if named_files and any(name.casefold() != target.name.casefold() for name in named_files):
+    named_files = re.findall(r"(?<![\w/\\])(?:[A-Za-z]:)?[\w./\\-]+\.(?:py|js|ts|html|css|json|md|txt|svg)\b", normalized, re.IGNORECASE)
+    for name in named_files:
+        named_path = name.replace("\\", "/")
+        while named_path.startswith("./"):
+            named_path = named_path[2:]
+        if "/" not in named_path:
+            if named_path.casefold() != target.name.casefold():
+                return False
+        elif named_path.startswith("/") or ":" in named_path:
+            if named_path.casefold() != target.as_posix().casefold():
+                return False
+        elif ".." in named_path.split("/") or not target.as_posix().casefold().endswith("/" + named_path.casefold()):
+            return False
+    semantic = _analyze_semantic_intent(prompt)
+    if (named_files and semantic.speech_act == "request" and semantic.requests("edit")
+            and not semantic.prohibited_actions.intersection({"edit", "tool_use"})):
+        return True
+    if len(normalized.split()) > 100:
         return False
     if pronoun_revision:
         return True
@@ -16980,20 +17020,30 @@ def _project_launch_command_executable(*names: str) -> str | None:
                 self._link_tag_serial = 0
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:783d3ba4f67563f1> module/FunctionDef:_model_storage_preflight:0
-def _model_storage_preflight(workspace: Path, repo: str, filename: str) -> dict[str, Any]:
+def _model_storage_preflight(
+    workspace: Path, repo: str, filename: str, *, subdir: str | None = None,
+    revision: str | None = None, repair: bool = False,
+) -> dict[str, Any]:
     """Resolve the requested file set, not an entire repo or a directory-exists hint."""
     from huggingface_hub import HfApi
 
-    info = HfApi().model_info(repo_id=repo, files_metadata=True)
-    matches = [item for item in info.siblings if Path(item.rfilename).name == filename]
+    info = HfApi().model_info(repo_id=repo, files_metadata=True, revision=revision)
+    siblings = [
+        item for item in info.siblings
+        if subdir is None or Path(item.rfilename).parent.as_posix() == (subdir or ".")
+    ]
+    matches = [item for item in siblings if Path(item.rfilename).name == filename]
     multipart = False
     if not matches:
         pattern = re.compile(re.escape(filename) + r"\.part([1-9]\d*)of([1-9]\d*)")
         groups = {}
-        for item in info.siblings:
+        for item in siblings:
             part = pattern.fullmatch(Path(item.rfilename).name)
             if part:
                 groups.setdefault((str(Path(item.rfilename).parent), int(part[2])), []).append(item)
+        if not groups:
+            path = f"{subdir}/{filename}" if subdir else filename
+            raise RuntimeError(f"Requested model metadata not found: {repo}/{path} at {revision or 'default revision'}")
         if len(groups) != 1:
             raise RuntimeError(f"Cannot uniquely resolve requested model metadata: {repo}/{filename}")
         (parent, count), parts = next(iter(groups.items()))
@@ -17007,13 +17057,17 @@ def _model_storage_preflight(workspace: Path, repo: str, filename: str) -> dict[
     first = matches[0]
     split = re.fullmatch(r"(.+)-\d{5}-of-(\d{5})\.gguf", filename)
     requested = matches if multipart else [first]
-    if split:
-        names = {f"{split[1]}-{number:05}-of-{int(split[2]):05}.gguf" for number in range(1, int(split[2]) + 1)}
-        requested = [item for item in info.siblings if Path(item.rfilename).parent == Path(first.rfilename).parent and Path(item.rfilename).name in names]
-        if {Path(item.rfilename).name for item in requested} != names:
-            raise RuntimeError("Requested GGUF shard metadata is incomplete; no download started.")
+    if split and not multipart:
+        count = int(split[2])
+        if not 1 <= count <= 256:
+            raise RuntimeError("Requested GGUF shard count is outside the supported range.")
+        names = {f"{split[1]}-{number:05}-of-{count:05}.gguf" for number in range(1, count + 1)}
+        requested = [item for item in siblings if Path(item.rfilename).parent == Path(first.rfilename).parent and Path(item.rfilename).name in names]
+        if len(requested) != count or {Path(item.rfilename).name for item in requested} != names:
+            raise RuntimeError("Requested GGUF shard metadata is incomplete or duplicated; no download started.")
     local_dir = workspace / ".cache" / "models" / repo
     rows = []
+    invalid = []
     for item in requested:
         relative = Path(item.rfilename)
         if (relative.is_absolute() or ".." in relative.parts or "\\" in item.rfilename or ":" in item.rfilename
@@ -17025,15 +17079,23 @@ def _model_storage_preflight(workspace: Path, repo: str, filename: str) -> dict[
         lfs = item.lfs
         etag = getattr(lfs, "sha256", None) or (lfs.get("sha256") if isinstance(lfs, dict) else None) or item.blob_id
         completed = 0
+        valid_local = False
+        if target.is_file():
+            observed = target.stat()
+            valid_local = observed.st_size == item.size
+            if valid_local and (not multipart or item is first):
+                with target.open("rb") as stream:
+                    valid_local = observed.st_size >= 24 and stream.read(4) == b"GGUF"
+            if not valid_local:
+                invalid.append((target, observed))
         metadata_path = local_dir / ".cache" / "huggingface" / "download" / relative.parent / (relative.name + ".metadata")
         # The Hub reader deletes malformed metadata; preflight must preserve it instead.
         with suppress(OSError, UnicodeError, ValueError, IndexError):
             if metadata_path.stat().st_size <= 4096:
                 metadata = metadata_path.read_text(encoding="utf-8").splitlines()
                 timestamp = float(metadata[2])
-                if (metadata[1] == etag and 0 <= timestamp <= time.time() + 60
-                        and target.is_file() and target.stat().st_size == item.size
-                        and target.stat().st_mtime - 1 <= timestamp):
+                if (valid_local and metadata[1] == etag and 0 <= timestamp <= time.time() + 60
+                        and observed.st_mtime - 1 <= timestamp):
                     completed = item.size
         partial_bytes = 0
         if etag and not completed:
@@ -17059,11 +17121,29 @@ def _model_storage_preflight(workspace: Path, repo: str, filename: str) -> dict[
             assembly = expected_size
         remaining += assembly
     headroom = max(2 * 1024 ** 3, sum(row["size"] for row in rows) // 20)
-    receipt = {"repo": repo, "requested": filename, "files": rows, "free_bytes": free,
+    receipt = {"repo": repo, "requested": filename, "revision": revision, "subdir": subdir,
+               "files": rows, "free_bytes": free,
                "remaining_bytes": remaining, "assembly_remaining_bytes": assembly, "headroom_bytes": headroom,
                "status": "ready" if remaining + headroom <= free else "insufficient_space"}
     if receipt["status"] != "ready":
         raise RuntimeError("Model download storage preflight failed: " + json.dumps(receipt))
+    if repair:
+        # Do not follow aliases or move a file that changed since inspection.
+        workspace = workspace.resolve()
+        for target, observed in invalid:
+            relative = target.relative_to(local_dir)
+            canonical = workspace / ".cache" / "models" / repo / relative
+            current = target.lstat()
+            if (target.resolve() != canonical or target.is_symlink()
+                    or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+                    != (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns)):
+                raise RuntimeError(f"Refusing to move an aliased or changed model cache file: {relative}")
+        quarantined = []
+        for target, _ in invalid:
+            destination = target.with_name(f".{target.name}.invalid-{uuid.uuid4().hex}")
+            target.rename(destination)
+            quarantined.append(destination.relative_to(local_dir).as_posix())
+        receipt["quarantined_files"] = quarantined
     return receipt
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:7873f4bb2ec60cea> module/FunctionDef:_install_agent_tool_hardening:0/FunctionDef:build_semantic_mcp_server:0/FunctionDef:search_web:0
@@ -19838,12 +19918,24 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                 )
                 pinned_names = [creation_tool, "list_files", "read_file", "search_text"]
             elif edit_intent:
+                target_suffixes = {
+                    Path(path).suffix.casefold()
+                    for path in self._tool_permission_broker.transaction_explicit_file_targets
+                }
+                format_tools = {
+                    ".docx": "apply_docx_text_patch", ".ipynb": "apply_notebook_text_patch",
+                    ".xlsx": "apply_spreadsheet_cell_patch", ".xlsm": "apply_spreadsheet_cell_patch",
+                }
+                patch_names = sorted({format_tools.get(suffix, "apply_text_patch")
+                                      for suffix in target_suffixes}) or ["apply_text_patch"]
+                if (len(self._tool_permission_broker.transaction_explicit_file_targets) > 1
+                        and not target_suffixes.intersection(format_tools)):
+                    patch_names = ["apply_text_patches", *patch_names]
                 pinned_names = [
                     "read_file_snapshot",
-                    "apply_docx_text_patch",
+                    *patch_names,
                     "apply_text_patches",
                     "search_text",
-                    "apply_text_patch",
                     "list_files",
                     "run_existing_entrypoint",
                     "codeintel_diagnostics",
@@ -20304,7 +20396,24 @@ def _install_model_storage_preflight(base: Any) -> None:
 
     def checked_download(workspace: Path, filename: str = base.DEFAULT_GGUF_MODEL_FILENAME) -> Path:
         if os.environ.get("QUBITZ_OFFLINE") != "1":
-            receipt = _model_storage_preflight(workspace, base.DEFAULT_HF_GGUF_REPO_ID, filename)
+            # Custom providers declare their shard/part list and optional
+            # subdirectory and revision under the same GGUF constant prefix.
+            provider = getattr(original, "__globals__", {})
+            scopes = {
+                (provider.get(prefix + "_SUBDIR", ""), provider.get(prefix + "_REVISION"))
+                for key, names in provider.items()
+                if isinstance(names, (list, tuple)) and names
+                for prefix in (key.removesuffix("_SHARDS").removesuffix("_PARTS"),)
+                if ((key.endswith("_GGUF_SHARDS") and names[0] == filename)
+                    or (key.endswith("_GGUF_PARTS") and names[0] == filename + f".part1of{len(names)}"))
+            }
+            if len(scopes) > 1:
+                raise RuntimeError("Conflicting download scopes for the selected model.")
+            subdir, revision = next(iter(scopes), ("", None))
+            receipt = _model_storage_preflight(
+                workspace, base.DEFAULT_HF_GGUF_REPO_ID, filename, subdir=subdir,
+                revision=revision, repair=True,
+            )
             print("[model-storage] " + json.dumps(receipt), file=sys.stderr)
         return original(workspace, filename)
 
@@ -27234,6 +27343,8 @@ def _direct_text_creation_choice(
             variant_root = Path(__file__).resolve().parent
             runtime_root = _APP.runtime_workspace
             current_filename = Path(__file__).name
+            selector_allowed = getattr(base, "_qubitz_variant_selector_allowed", user_variant_allowed)
+            selector_group = getattr(base, "_qubitz_variant_selector_group", None)
             # Derived from the variants actually present so a newly added one appears
             # here instead of being silently unreachable. Tier follows the _12G suffix
             # the 12 GB builds already use; override only where that naming does not.
@@ -27260,10 +27371,10 @@ def _direct_text_creation_choice(
                 variant_root.glob("AI_Agent_Qubitz_*.py"),
                 key=lambda item: item.name.casefold(),
             ):
-                if (not user_variant_allowed(variant_path.name) or not variant_path.is_file()
+                if (not selector_allowed(variant_path.name) or not variant_path.is_file()
                         or variant_path.resolve() != variant_path):
                     continue
-                tier = variant_tier_overrides.get(variant_path.name)
+                tier = selector_group or variant_tier_overrides.get(variant_path.name)
                 if tier is None:
                     tier = (
                         "12 GB VRAM"
@@ -27381,9 +27492,15 @@ def _direct_text_creation_choice(
                     self.root.after_idle(post_variant_menu)
                 return "break"
 
+            def press_variant_selector(event: Any) -> str:
+                observe = getattr(self, "_startup_user_interaction", None)
+                if callable(observe):
+                    observe(event)
+                return "break"
+
             # Post after the opening release, so an overlapping popup cannot
             # interpret that same click as selection of a model.
-            self.variant_selector.bind("<Button-1>", lambda _event: "break")
+            self.variant_selector.bind("<Button-1>", press_variant_selector)
             self.variant_selector.bind("<ButtonRelease-1>", release_variant_selector)
             self._qubitz_variant_switch_pending: Path | None = None
             self._qubitz_variant_switch_in_progress = False
@@ -27404,7 +27521,8 @@ def _direct_text_creation_choice(
                 if target is None:
                     restore_current_selection()
                     return
-                if not target.is_file() or target.parent != variant_root or target.resolve() != target:
+                if (not selector_allowed(target.name) or not target.is_file()
+                        or target.parent != variant_root or target.resolve() != target):
                     restore_current_selection(
                         f"Variant switch failed because {target.name} is no longer available."
                     )
@@ -27423,6 +27541,13 @@ def _direct_text_creation_choice(
                     "--workspace",
                     str(workspace),
                 ]
+                command_builder = getattr(base, "_qubitz_variant_switch_command", None)
+                if command_builder is not None:
+                    try:
+                        command = command_builder(target, workspace)
+                    except (OSError, ValueError) as exc:
+                        restore_current_selection(f"Variant switch failed: {exc}")
+                        return
                 self._append_transcript(
                     "status",
                     f"Switching to {target.name}; stopping the current model runtime first.",
@@ -27448,7 +27573,8 @@ def _direct_text_creation_choice(
                     self.variant_selector_var.set(current_filename)
                     return
                 target = variant_root / filename
-                if target.parent != variant_root or not target.is_file() or target.resolve() != target:
+                if (not selector_allowed(filename) or target.parent != variant_root
+                        or not target.is_file() or target.resolve() != target):
                     restore_current_selection(
                         f"Variant switch failed because {filename} is unavailable."
                     )
@@ -29138,6 +29264,22 @@ _EMBEDDED_EMPTY_STEP_NEW = """                    empty_model_steps += 1
                             "You returned neither tool calls nor a final answer. Either call one concrete relevant tool "
                             "or answer directly."
                         )
+                    broker = getattr(self, "_tool_permission_broker", None)
+                    if broker is not None:
+                        from json import dumps as recovery_json_dumps
+
+                        _required, pending = broker.completion_report(broker.current_prompt)
+                        state = {
+                            "pending_postconditions": sorted(pending),
+                            "inspected_paths": sorted(broker.transaction_snapshot_hashes)[:16],
+                            "inspected_paths_omitted": max(0, len(broker.transaction_snapshot_hashes) - 16),
+                            "discovered_tools": list(broker.discovered_tool_names),
+                        }
+                        recovery_message += (
+                            " Current host evidence (not new authorization): "
+                            + recovery_json_dumps(state, ensure_ascii=True, sort_keys=True)
+                            + ". Continue from these facts; do not regenerate the same plan or search for an already exposed tool."
+                        )
                     messages.append({"role": "assistant", "content": ""})
                     messages.append({"role": "user", "content": recovery_message})
                     step += 1
@@ -29363,6 +29505,19 @@ def _task_harness_block_names(
                 return min(effective, prompt_limit)
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:c9d807657280c82a> module/FunctionDef:_install_agent_tool_hardening:0/Assign:Attribute(value=Name(id='base', ctx=Load()), attr='AgentRunner', ctx=Store()):0
+    original_operation_prioritizer = HardenedAgentRunner._prioritize_tools_for_prompt
+
+    def prioritize_operation_tools(self: Any, prompt: str, tools: Sequence[Any]) -> list[Any]:
+        broker = self._tool_permission_broker
+        task_prompt = broker.follow_up_repair_prompt or broker.current_prompt or prompt
+        semantic = _analyze_semantic_intent(task_prompt)
+        if semantic.speech_act == "request" and semantic.requests("copy", "create", "delete", "edit", "move", "open_browser"):
+            focused = broker.update_focused_postconditions(task_prompt)
+            self._focused_missing_postconditions = frozenset(focused)
+            return self._filter_tools_by_intent(task_prompt, tools)
+        return original_operation_prioritizer(self, prompt, tools)
+
+    HardenedAgentRunner._prioritize_tools_for_prompt = prioritize_operation_tools
     base.AgentRunner = HardenedAgentRunner
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:ca00275669f84d7f> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_gui_class:0/ClassDef:EnhancedGUI:0/FunctionDef:_poll_events:0
@@ -33929,12 +34084,15 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             if self._search_eligible_tool_names is not None:
                 available_names.intersection_update(self._search_eligible_tool_names)
             available_names.difference_update(self.unavailable_tool_names)
-            self.discovered_tool_names = tuple(dict.fromkeys(
+            new_names = tuple(dict.fromkeys(
                 str(item.get("name") or "")
                 for item in matches if isinstance(item, dict)
                 and str(item.get("name") or "") in available_names
                 and item.get("name") != "search_tools"
-            ))[:TOOL_SEARCH_RESULT_MAX]
+            ))
+            self.discovered_tool_names = tuple(dict.fromkeys((
+                *new_names, *(name for name in self.discovered_tool_names if name in available_names),
+            )))[:TOOL_EXPOSURE_MAX]
         result_fingerprint = self._result_fingerprint(normalized, arguments)
         untracked_failure_statuses = {
             "access_mode_denied",
@@ -34578,6 +34736,23 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
         fingerprint = self._result_fingerprint(normalized, arguments)
         self._audit("completed" if success else "failed", normalized, arguments, fingerprint, status)
         self._track_transaction_recovery_progress()
+        if (normalized == "search_tools" and success and self.completion_interrupt_enabled
+                and "changed_files" in self.required_postconditions
+                and self.transaction_explicit_file_targets
+                and set(self.transaction_explicit_file_targets).issubset(self.transaction_snapshot_hashes)
+                and not self.transaction_changed_hashes and not current_creations(self)
+                and not self.transaction_recovery_required
+                and self.transaction_recovery_callback is not None
+                and set(self.discovered_tool_names).intersection({
+                    "apply_text_patch", "apply_text_patches", "apply_docx_text_patch",
+                    "apply_notebook_text_patch", "apply_spreadsheet_cell_patch",
+                })
+                and self.action_progress.catalog_stalled(self.progress_token(pending_only=True))
+                and self.action_progress.reserve_recovery("catalog")):
+            self.mark_transaction_recovery_required()
+            self.transaction_recovery_interrupt_requested = True
+            self._emit("The verified target and patch tool are already available; handing off once to a focused edit instead of repeating discovery.")
+            self.transaction_recovery_callback()
         if repeated_snapshot_key and self.completion_interrupt_enabled:
             read_count = self.repeated_snapshot_reads.get(repeated_snapshot_key, 0) + 1
             self.repeated_snapshot_reads[repeated_snapshot_key] = read_count

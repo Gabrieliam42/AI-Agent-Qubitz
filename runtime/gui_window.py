@@ -1,5 +1,9 @@
 """Shared maximized startup; normal user restore/resize remains available."""
 
+import os as _gui_window_os
+
+_QUBITZ_WSL_STARTUP_MAXIMIZE_DELAY_MS = 4000
+
 
 def header_rows(widths, available):
     """Keep label/control groups together while wrapping at the actual viewport."""
@@ -90,46 +94,81 @@ def _install_maximized_gui_startup(app):
 
     class MaximizedStartupGUI(base.QubitzGUI):
         def _apply_theme(self):
-            if not getattr(self, "_qubitz_initial_maximize_requested", False):
-                self._qubitz_initial_maximize_requested = True
-                self._qubitz_startup_maximize_pending = True
-                self._qubitz_startup_maximize_attempts = 0
+            if not getattr(self, "_qubitz_startup_window_bound", False):
+                self._qubitz_startup_window_bound = True
+                self._qubitz_startup_maximize_pending = (
+                    _gui_window_os.environ.get("QUBITZ_START_MAXIMIZED", "1").strip().casefold()
+                    not in {"0", "no", "off", "false"}
+                )
                 self._qubitz_startup_maximize_timer = None
-                # Do not expose the constructor's default 800x800 window.
-                self.root.withdraw()
+                self._qubitz_startup_map_seen = False
+                self._qubitz_startup_input_seen = False
                 self.root.bind("<Map>", self._startup_window_mapped, add="+")
+                self.root.bind("<Unmap>", self._startup_window_hidden, add="+")
                 self.root.bind("<ButtonPress>", self._startup_user_interaction, add="+")
                 self.root.bind("<KeyPress>", self._startup_user_interaction, add="+")
-                self.root.bind("<Destroy>", self._startup_user_interaction, add="+")
-                self._maximize_window()
+                self.root.bind("<Destroy>", self._startup_window_hidden, add="+")
             super()._apply_theme()
 
-        def _startup_user_interaction(self, _event=None):
+        def _startup_window_log(self, event):
+            log = getattr(self, "_qubitz_gui_log_event", None)
+            if callable(log):
+                log(event)
+
+        def _cancel_startup_maximize(self):
             self._qubitz_startup_maximize_pending = False
-            timer = getattr(self, "_qubitz_startup_maximize_timer", None)
+            timer = self._qubitz_startup_maximize_timer
             if timer is not None:
-                self.root.after_cancel(timer)
                 self._qubitz_startup_maximize_timer = None
+                self.root.after_cancel(timer)
+
+        def _startup_user_interaction(self, _event=None):
+            if not self._qubitz_startup_input_seen:
+                self._qubitz_startup_input_seen = True
+                self._startup_window_log("gui_window_first_input")
+            self._cancel_startup_maximize()
+
+        def _startup_window_hidden(self, event):
+            if event.widget is self.root:
+                self._cancel_startup_maximize()
 
         def _startup_window_mapped(self, event):
-            if (event.widget is self.root and getattr(self, "_qubitz_startup_maximize_pending", False)
-                    and self._qubitz_startup_maximize_timer is None):
-                self._qubitz_startup_maximize_timer = self.root.after_idle(self._confirm_startup_maximized)
+            if event.widget is self.root:
+                self._startup_window_ready()
 
-        def _confirm_startup_maximized(self):
+        def _startup_window_ready(self):
+            if getattr(self, "_qubitz_startup_map_seen", True):
+                return
+            self._qubitz_startup_map_seen = True
+            self._startup_window_log("gui_window_mapped")
+            if self._qubitz_startup_maximize_pending:
+                in_wsl = getattr(base, "in_wsl", None)
+                if callable(in_wsl) and in_wsl():
+                    self._qubitz_startup_maximize_timer = self.root.after(
+                        _QUBITZ_WSL_STARTUP_MAXIMIZE_DELAY_MS,
+                        self._maximize_startup_window,
+                    )
+                else:
+                    self._qubitz_startup_maximize_timer = self.root.after_idle(self._maximize_startup_window)
+
+        def _maximize_startup_window(self):
             self._qubitz_startup_maximize_timer = None
             if not self._qubitz_startup_maximize_pending:
                 return
-            if self._is_window_maximized():
-                self._qubitz_startup_maximize_pending = False
+            self._qubitz_startup_maximize_pending = False
+            if self.root.winfo_ismapped() and not self._is_window_maximized():
+                self._startup_window_log("gui_window_maximize_requested")
+                self._maximize_window()
+
+        def _present_window(self):
+            if getattr(self, "_qubitz_startup_presented", False):
                 return
-            # X11/WSLg acknowledges WM requests asynchronously, after mapping.
-            if self._qubitz_startup_maximize_attempts >= 8:
-                self._qubitz_startup_maximize_pending = False
-                return
-            self._qubitz_startup_maximize_attempts += 1
-            self._maximize_window()
-            self._qubitz_startup_maximize_timer = self.root.after(250, self._confirm_startup_maximized)
+            self._qubitz_startup_presented = True
+            if self.root.state() == "withdrawn":
+                self.root.deiconify()
+            if self.root.winfo_ismapped():
+                self._startup_window_ready()
+            self.root.after(1500, self._ensure_window_visible)
 
         def _maximize_window(self):
             try:
@@ -161,7 +200,7 @@ def _install_maximized_gui_startup(app):
         def _ensure_window_visible(self):
             self.root.update_idletasks()
             # Native maximized frames can have negative border coordinates.
-            # Never countermand a first-map WM request with state("normal").
+            # Do not restore a window while its first-map action is pending.
             if not getattr(self, "_qubitz_startup_maximize_pending", False) and not self._is_window_maximized():
                 super()._ensure_window_visible()
 

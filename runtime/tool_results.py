@@ -5,6 +5,54 @@ import hashlib
 import json
 
 
+def _catalog_view(data: dict, raw: str, is_error, limit: int) -> str | None:
+    catalog = data.get('result', data)
+    if not isinstance(catalog, dict):
+        return None
+    matches = catalog.get('matches')
+    if not isinstance(matches, list) or not matches or not all(
+        isinstance(item, dict) and isinstance(item.get('name'), str)
+        and isinstance(item.get('input_schema'), dict) for item in matches
+    ):
+        return None
+
+    def encode(value):
+        return json.dumps(value, ensure_ascii=True, separators=(',', ':'), default=str)
+
+    result = {
+        'schema': 'qubitz_tool_catalog_view_v1', 'is_error': is_error,
+        'full_result_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+        'full_result_characters': len(raw), 'truncated': True, 'matches': [],
+        'omitted_count': len(matches),
+        'usage': 'Only complete input schemas appear in matches. Omitted schemas are not delivered evidence.',
+    }
+    for key in ('offset', 'next_offset'):
+        value = catalog.get(key)
+        if type(value) is int and 0 <= value <= 10000:
+            result[key] = value
+    for item in matches:
+        entry = {'name': item['name'], 'input_schema': item['input_schema']}
+        description = str(item.get('description') or '')
+        if description:
+            entry['description'] = description[:160]
+            if len(description) > 160:
+                entry['description_truncated'] = True
+        result['matches'].append(entry)
+        result['omitted_count'] -= 1
+        if len(encode(result)) > limit:
+            result['matches'].pop()
+            result['omitted_count'] += 1
+    selected = {entry['name'] for entry in result['matches']}
+    for name in (item['name'] for item in matches if item['name'] not in selected):
+        result.setdefault('omitted_names', []).append(name)
+        if len(encode(result)) > limit:
+            result['omitted_names'].pop()
+            if not result['omitted_names']:
+                del result['omitted_names']
+            break
+    return encode(result)
+
+
 def model_tool_result(payload: dict, limit: int = 6000) -> str:
     if type(limit) is not int or limit < 512:
         raise ValueError('Tool evidence requires at least 512 characters')
@@ -15,6 +63,9 @@ def model_tool_result(payload: dict, limit: int = 6000) -> str:
         return raw
     data = payload.get('structured_content')
     data = data if isinstance(data, dict) else {}
+    catalog = _catalog_view(data, raw, payload.get('is_error'), limit)
+    if catalog is not None:
+        return catalog
     receipt = data.get('execution_receipt')
     receipt = receipt if isinstance(receipt, dict) else {}
     result = {'schema': 'qubitz_tool_summary_v1', 'is_error': payload.get('is_error'),

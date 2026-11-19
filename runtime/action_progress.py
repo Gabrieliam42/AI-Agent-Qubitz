@@ -5,7 +5,19 @@ import hashlib
 import json
 import re
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
+
+
+def repetitive_reasoning(text: str, prose_guard: Callable[[str], bool]) -> bool:
+    """Inspect planning around code, while leaving a single code block alone."""
+    parts = text.split('```')
+    blocks = [part for index, part in enumerate(parts) if index % 2 and index < len(parts) - 1]
+    prose = '\n'.join(parts[::2])
+    if prose_guard(prose):
+        return True
+    drafts = [block.strip() for block in blocks if len(block.strip()) >= 256]
+    return any(count >= 3 for count in Counter(drafts).values())
 
 
 class ActionProgress:
@@ -16,6 +28,8 @@ class ActionProgress:
         self.hashes: dict[str, set[str]] = {}
         self.executions: Counter[str] = Counter()
         self.recoveries: set[str] = set()
+        self._catalog_checkpoint: str | None = None
+        self._ready_catalog_calls = 0
         unquoted = re.sub(r"```.*?```|`[^`]*`|\"[^\"]*\"|'[^']*'", "", prompt, flags=re.DOTALL)
         self.explicit_revisit = False
         for clause in re.split(r"[;\n]+|[.!?](?=\s)|\bthen\b", unquoted, flags=re.IGNORECASE):
@@ -61,6 +75,14 @@ class ActionProgress:
             return False
         self.recoveries.add(phase)
         return True
+
+    def catalog_stalled(self, checkpoint: str) -> bool:
+        """Two catalog calls after the authorized edit is ready warrant one handoff."""
+        if checkpoint != self._catalog_checkpoint:
+            self._catalog_checkpoint = checkpoint
+            self._ready_catalog_calls = 0
+        self._ready_catalog_calls += 1
+        return self._ready_catalog_calls >= 2
 
     def evidence(self) -> dict:
         return {"recovery_phases_used": sorted(self.recoveries),
