@@ -98,9 +98,31 @@ Keep the shipped runtime package together with the encrypted policy bundle.
 
 Documentation is stored in this directory. Commands and code paths in these documents are relative to the project root, not the documentation directory. See the [variant catalog](qubitz_variants_list.md) and [context values](num_ctx_values.md).
 
+## Review Changes and Progress
+
+When Qubitz asks whether to replace an existing named file, a standalone `yes`
+confirms only that pending file. Qubitz rechecks the file before continuing and
+uses a snapshot-based patch instead of searching the repository. If the file or
+workspace changed, ask for the replacement again.
+
+Saving a file and testing its behavior are different. Read both the completion
+and behavior status before relying on generated code. A draft, reasoning text,
+or an unavailable diagnostic does not count as a passed test. Steering takes
+effect at a generation boundary, not the instant you send it.
+
+The `tok/s` display measures model decoding, not total task speed. `-- tok/s`
+means a rate is not available yet. The final summary reports the average and,
+when there is enough timing data, a typical rate based on a token-weighted
+median. These rates exclude model startup, prompt processing, retrieval, and tools.
+
 ## Conversations
 
 The application stores conversation history locally. It may contain prompts,
 reasoning, code, and tool output; review it before sharing. The reasoning view
 is informational and does not by itself indicate that code was executed or
 verified.
+
+New text transcripts use local-time `[HH:MM] Role:` headers and retain the full
+emitted reasoning even when the live view shows only a 12,000-character tail.
+The adjacent `.events.jsonl` preserves precise timestamps and event order.
+Existing transcripts are not rewritten.

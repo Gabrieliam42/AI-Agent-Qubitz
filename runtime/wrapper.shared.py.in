@@ -601,6 +601,18 @@ class _CommandResult(dict[str, Any]):
         if boundary_errors:
             return False, {"status": "invalid_arguments", "tool": normalized,
                            "errors": boundary_errors[:12], "file_unchanged": True}
+        overwrite = self.confirmed_overwrite
+        if overwrite is not None:
+            target = self._resolved_argument_path(arguments, "path")
+            if (self.access_mode != ACCESS_MODE_FULL or self.workspace.resolve() != overwrite.workspace
+                    or normalized not in {"read_file_snapshot", overwrite.patch_tool} or target != overwrite.target):
+                return False, {"status": "scope_denied", "tool": normalized,
+                               "reason": "Overwrite confirmation permits only a snapshot and patch of the confirmed file.",
+                               "files_unchanged": True}
+            if str(target) not in self.transaction_changed_hashes and not overwrite.matches(self.workspace):
+                return False, {"status": "stale_overwrite_confirmation", "tool": normalized,
+                               "reason": "The file changed after Qubitz requested confirmation; ask again before replacing it.",
+                               "retryable": False, "files_unchanged": True}
         if normalized in self.unavailable_tool_names:
             return False, {"status": "capability_unavailable", "tool": normalized,
                            "reason": "This tool reported unavailable earlier in the current turn; report that limitation, without repeating it or seeking an unauthorized execution route."}
@@ -8059,7 +8071,10 @@ _HARNESS_BLOCK_MARKER = "### BLOCK:"
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:2ce5222ccbfa4bcd> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:set_access_mode:0
         def set_access_mode(self, value: Any) -> None:
-            self.access_mode = _normalize_access_mode(value)
+            mode = _normalize_access_mode(value)
+            if mode != getattr(self, "access_mode", None):
+                self._pending_overwrite = None
+            self.access_mode = mode
             self.config.access_mode = self.access_mode
             os.environ[ACCESS_MODE_ENV_NAME] = self.access_mode
             broker = getattr(self, "_tool_permission_broker", None)
@@ -8949,6 +8964,7 @@ def _named_text_creation_request(
         "exists": bool(target and os.path.lexists(target)),
         "existing_targets": [path for path in targets if os.path.lexists(path)],
         "overwrite_requested": overwrite_requested,
+        "overwrite_forbidden": overwrite_forbidden,
     }
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:339758512bfb71d7> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_agent_runner_class:0/ClassDef:EnhancedAgentRunner:0/FunctionDef:_prioritize_tools_for_prompt:0/Assign:Name(id='interop_unavailable', ctx=Store()):0
@@ -11921,6 +11937,15 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
         def _select_task_guidance(self, prompt: str) -> str:
             from runtime.workflow import fresh_named_creation
 
+            overwrite = self._tool_permission_broker.confirmed_overwrite
+            if overwrite is not None:
+                path = overwrite.target.relative_to(overwrite.workspace).as_posix()
+                return (
+                    f"- The user confirmed replacing the contents of exactly {json.dumps(path)}.\n"
+                    f"- Read the current snapshot of that file, then use {overwrite.patch_tool} to apply the original request. "
+                    "Do not rediscover tools, inspect other files, or write to another path. "
+                    "Do not claim completion without a verified patch."
+                )
             selected_route = self._selected_route_name(prompt)
             if selected_route == "named_file_operation":
                 request = _named_file_operation_request(
@@ -14033,6 +14058,7 @@ class LocalPluginRegistry:
             super().__init__(config)
             self._cancel_source = ""
             self._wrapper_interrupt_event = threading.Event()
+            self._pending_overwrite = None
             self._last_referenced_artifacts: tuple[str, ...] = ()
             self._last_verified_edit_receipt: dict[str, Any] = {}
             self._last_referenced_request_index = 0
@@ -19752,6 +19778,9 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
             from runtime.workflow import creation_only, fresh_named_creation
 
             broker = self._tool_permission_broker
+            if broker.confirmed_overwrite is not None:
+                allowed = {"read_file_snapshot", broker.confirmed_overwrite.patch_tool}
+                return [tool for tool in tools if self._tool_name(tool) in allowed]
             if (creation_only(broker) and broker.creation_targets and not saved_correction
                     and self._selected_route_name(prompt) != "named_file_operation"
                     and not explicit_tool_selection):
@@ -20643,6 +20672,11 @@ def _install_model_storage_preflight(base: Any) -> None:
             prompt: str,
             callback: Callable[[str, str], None] | None,
         ) -> str | None:
+            overwrite = self._tool_permission_broker.confirmed_overwrite
+            if overwrite is not None:
+                if not overwrite.matches(self.workspace):
+                    return "The overwrite target changed. Request the replacement again. No file was changed."
+                return None
             request = _named_file_operation_request(
                 base,
                 self.workspace,
@@ -22941,17 +22975,50 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:a8d7d69c688f0e11> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/AsyncFunctionDef:_run_async:0
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
+            from runtime.overwrite_confirmation import PendingOverwrite, looks_like_overwrite_reply, overwrite_reply
+
             _install_model_storage_preflight(base)
             self._last_verification_receipts = []
             self._last_recovery_receipts = []
             self._last_structured_proposal_receipts = []
             observed_prompt = prompt
+
+            def early_answer(answer: str) -> str:
+                with suppress(Exception):
+                    self.history.extend([{"role": "user", "content": observed_prompt},
+                                         {"role": "assistant", "content": answer}])
+                    self._compact_history()
+                return answer
+
             self._qubitz_applied_side_notes: list[str] = []
             self._alias_request_index += 1
             self._active_task_intent = None
             self._active_aliases = frozenset()
             self._active_qfile_path = ""
             self._active_qfiles_paths = ()
+            pending, self._pending_overwrite = self._pending_overwrite, None
+            confirmed_overwrite = None
+            if pending is not None:
+                reply = overwrite_reply(prompt)
+                if reply is None and looks_like_overwrite_reply(prompt):
+                    return early_answer(
+                        "Overwrite not confirmed. Restate the exact file operation if you want to change it. No file was changed."
+                    )
+                if reply is not None:
+                    if not reply:
+                        return early_answer("Overwrite declined. No file was changed.")
+                    rechecked = _named_text_creation_request(
+                        base, self.workspace, getattr(self, "access_mode", DEFAULT_ACCESS_MODE), pending.original_prompt,
+                    )
+                    if (not rechecked or rechecked["target"] != str(pending.target)
+                            or rechecked["overwrite_forbidden"] or not pending.matches(self.workspace)):
+                        return early_answer(
+                            "The overwrite confirmation no longer matches the active file or workspace. No file was changed."
+                        )
+                    confirmed_overwrite = pending
+                    prompt = pending.original_prompt
+                    if callback is not None:
+                        callback("status", "Wrapper overwrite confirmation: rechecked the exact file; use a snapshot-bound edit.")
             recent_paths = (
                 self._last_referenced_artifacts
                 if self._last_referenced_request_index == self._alias_request_index - 1
@@ -22977,7 +23044,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
             self._active_aliases = aliases
             self._active_qfile_path = qfile_path
             self._active_qfiles_paths = tuple(recent_paths) if "qfiles" in aliases else ()
-            previous_task = getattr(self, "_last_actionable_task", {})
+            previous_task = {} if confirmed_overwrite is not None else getattr(self, "_last_actionable_task", {})
             self._exact_target_context_ready = False
             correction = None
             if previous_task.get("workspace") == str(self.workspace.resolve()):
@@ -23015,6 +23082,8 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 getattr(self, "history", []),
                 relation_summary,
             )
+            if confirmed_overwrite is not None:
+                self._turn_relation = TurnRelation("new_request", "Resume the exact operation the user confirmed.")
             prior_paths = tuple(previous_task.get("paths", ())) if previous_task.get(
                 "workspace"
             ) == str(self.workspace.resolve()) else ()
@@ -23095,12 +23164,6 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
             prior_edit_receipt = dict(self._last_verified_edit_receipt)
             if semantic.requests("create", "edit", "copy", "move", "delete"):
                 self._last_verified_edit_receipt = {}
-            def early_answer(answer: str) -> str:
-                with suppress(Exception):
-                    self.history.extend([{"role": "user", "content": observed_prompt},
-                                         {"role": "assistant", "content": answer}])
-                    self._compact_history()
-                return answer
 
             current_mode = _normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE))
             blocked_actions = semantic.requested_actions & (_SEMANTIC_SIDE_EFFECT_ACTIONS - {"mcp_call"})
@@ -23159,7 +23222,8 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 prompt,
             )
             if (
-                named_creation is not None
+                confirmed_overwrite is None
+                and named_creation is not None
                 and named_creation["exists"]
                 and not named_creation["overwrite_requested"]
             ):
@@ -23168,7 +23232,13 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     display_target = target.relative_to(self.workspace.resolve()).as_posix()
                 except ValueError:
                     display_target = str(target)
-                answer = f"`{display_target}` already exists. Do you want me to overwrite it?"
+                if not named_creation["overwrite_forbidden"]:
+                    self._pending_overwrite = PendingOverwrite.capture(self.workspace, target, prompt)
+                answer = (
+                    f"`{display_target}` already exists. Do you want me to overwrite it?"
+                    if self._pending_overwrite is not None
+                    else f"`{display_target}` already exists and was not opened for replacement. No file was changed."
+                )
                 if callback is not None:
                     callback(
                         "status",
@@ -23254,7 +23324,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
             self._qubitz_pending_tool_batch = []
             self._focused_missing_postconditions = frozenset()
             self._active_discovery_context = ""
-            self._tool_permission_broker.begin_turn(prompt, callback)
+            self._tool_permission_broker.begin_turn(prompt, callback, confirmed_overwrite=confirmed_overwrite)
             self._tool_permission_broker.prior_behavior_sources = (
                 previous_task.get("behavior_evidence", {}).get("sources", {})
                 if self._turn_relation.depends_on_prior and previous_task.get("workspace") == str(self.workspace.resolve()) else {}
@@ -25231,7 +25301,7 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
         wrapper_script = self.wrapper_script
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:ae11ab780d1bd37f> module/ClassDef:_ToolPermissionBroker:0/FunctionDef:begin_turn:0
-    def begin_turn(self, prompt: str, callback: Callable[[str, str], None] | None) -> None:
+    def begin_turn(self, prompt: str, callback: Callable[[str, str], None] | None, *, confirmed_overwrite=None) -> None:
         from runtime.action_progress import ActionProgress
 
         self.action_progress = ActionProgress(prompt, self.workspace)
@@ -25260,6 +25330,7 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
         self.follow_up_repair_prompt = ""
         self.follow_up_outcome_feedback = False
         self.current_prompt = prompt
+        self.confirmed_overwrite = confirmed_overwrite
         self._follow_up_retry_request = None
         self.current_mcp_bindings = {}
         self._wrapper_mcp_invocations: set[str] = set()
@@ -25269,6 +25340,10 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
         self.follow_up_mcp_result = None
         self.task_intent = _build_task_intent(prompt, "")
         self.named_operation_contract = _named_file_operation_request(self.base, self.workspace, self.access_mode, prompt)
+        if confirmed_overwrite is not None:
+            self.named_operation_contract = {
+                "operation": "edit", "target": str(confirmed_overwrite.target), "exists": True,
+            }
         self.dependency_manifest = _dependency_install_manifest(prompt)
         if re.search(
             r"\b(?:npm|pnpm|yarn|bun)(?:\.cmd)?[\"']?\s+(?:-[^\n;&|]{0,120}?\s)?"
@@ -25286,6 +25361,9 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
         self.schema_repairs.clear()
         self.approval_context_prompt = ""
         self.required_postconditions = self._completion_requirements(prompt, self.task_intent)
+        if confirmed_overwrite is not None:
+            self.required_postconditions.discard("created_outputs")
+            self.required_postconditions.add("changed_files")
         self._steering_required_postconditions: set[str] = set()
         self._saved_file_contract_issues: list[str] = []
         self.focused_missing_postconditions.clear()
@@ -25343,6 +25421,9 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
                 ).resolve()
                 if target.is_file():
                     self.transaction_explicit_file_targets.add(str(target))
+        if confirmed_overwrite is not None:
+            self.creation_targets.clear()
+            self.transaction_explicit_file_targets = {str(confirmed_overwrite.target)}
         self.transaction_recovery_interrupt_requested = False
         self.mcp_recovery_interrupt_requested = False
         self.mcp_purpose_start_failures.clear()
@@ -28176,11 +28257,11 @@ def _semantic_action_matches(clause: str) -> list[Any]:
                     ),
                     fallback_routes=["ask_user_missing_info"],
                 )
-            named_operation = _named_file_operation_request(
-                base,
-                self.workspace,
-                getattr(self, "access_mode", DEFAULT_ACCESS_MODE),
-                prompt,
+            broker = self._tool_permission_broker
+            confirmed_overwrite = broker.confirmed_overwrite if getattr(self, "_qubitz_wrapper_turn_active", False) else None
+            named_operation = (
+                broker.named_operation_contract if confirmed_overwrite is not None else
+                _named_file_operation_request(base, self.workspace, mode, prompt)
             )
             if named_operation is not None and not (
                 isinstance(relation, TurnRelation) and relation.depends_on_prior
@@ -28192,7 +28273,8 @@ def _semantic_action_matches(clause: str) -> list[Any]:
                         f"The request contains one unambiguous named-file {named_operation['operation']} operation; "
                         "the wrapper can bind exact paths, skip unrelated discovery, and enforce operation-specific verification."
                     ),
-                    fallback_routes=["tool_loop", "retrieval_plus_model", "ask_user_missing_info"],
+                    fallback_routes=(["ask_user_missing_info"] if confirmed_overwrite is not None
+                                     else ["tool_loop", "retrieval_plus_model", "ask_user_missing_info"]),
                 )
             semantic = self._task_intent_for_prompt(prompt, decision.selected_route).semantic
             managed_service = bool(
@@ -32213,6 +32295,7 @@ def _score_implicit_existing_entrypoint_candidate(
         self.mcp_tool_traits: dict[str, dict[str, Any]] = {}
         self.last_mcp_result: dict[str, Any] | None = None
         self.named_operation_contract: dict[str, Any] | None = None
+        self.confirmed_overwrite = None
         self.stop_callback: Callable[[str], None] | None = None
         self.transaction_originals: dict[str, dict[str, Any]] = {}
         self.transaction_backed_up: set[str] = set()
@@ -33455,6 +33538,9 @@ class LocalSandboxManager:
             self.task_intent if not self.approval_context_prompt else None,
         )
         required.update(self.required_postconditions)
+        if self.confirmed_overwrite is not None:
+            required.discard("created_outputs")
+            required.add("changed_files")
         evidence_items = self._current_turn_evidence()
         verified = {
             category

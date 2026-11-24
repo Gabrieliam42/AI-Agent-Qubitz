@@ -1,45 +1,16 @@
 # AI Agent Qubitz
 
-Qubitz is a local WSL2 AI coding agent with a Tk GUI, CLI, MCP tools, retrieval,
-and a [catalog of GGUF model launchers](documentation/qubitz_variants_list.md).
-Inference runs locally; a hosted AI API or
-subscription is not required. Optional online research and configured MCP
-providers can use the network when enabled.
+Qubitz helps you work on code with an AI model running on your own computer.
+Open a workspace, ask it to explain or change code, and review what it changed
+and which checks actually ran. Use the desktop app or the command line, and
+choose a [GGUF model](documentation/qubitz_variants_list.md) that fits your hardware.
 
-## Current Runtime Notes
+Qubitz runs inference locally through llama.cpp on Windows with WSL2. You don't
+need a hosted AI account, API key, or subscription. Model downloads, optional
+web research, and enabled MCP integrations can use the network.
 
-The shared GUI shows backend-counted live `tok/s` beside `Show Reasoning`.
-`-- tok/s` means a rate is not yet available, including prompt processing; the
-completed-turn summary distinguishes the actual aggregate decode average from
-an optional token-weighted median (typical rate) of backend-timed intervals.
-Missing interval coverage falls back to the average. Neither includes startup,
-retrieval, tools or prompt processing, nor measures end-to-end task throughput.
-
-New conversations use readable `[HH:MM] Role:` headers in local time and retain
-the full emitted reasoning, independently of the GUI's 12,000-character live
-tail. An adjacent `.events.jsonl` preserves precise timestamps and event order.
-Both are private local files; historical transcripts are not converted.
-
-File creation and behavioral verification are separate. A saved file can have
-`Completion status: verified` together with `Behavior status: unverified`.
-Follow-up edits prefer localized patches. Post-edit test discovery is bounded,
-and eligible Python/Tk startup repairs can be rechecked on the exact edited
-revision without running an unrelated suite. Unavailable diagnostics are not passing tests,
-and rejected edits do not establish program correctness. Review the final
-verification status before relying on generated code.
-
-Steering is queued until a generation boundary, not applied immediately.
-Repeated reasoning can consume a generation budget without writing a file;
-reasoning and elapsed time alone do not establish task progress or completion.
-
-The [GLM-5.3-Flash IQ4 variant](documentation/AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.md)
-targets the 72 GB VRAM+ tier and retains its memory guards.
-Qwen3.8-Flash-Next is available as [UD-IQ4_XS](documentation/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.md)
-and [UD-Q4_K_XL](documentation/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-Q4_K_XL.md).
-Weights and native runtimes are not shipped in Git. Online startup can prepare
-the pinned compatible native backend and missing essential dependencies in
-project-local caches; an unsupported or mixed CUDA/PyTorch stack fails closed.
-Existing packages are not silently upgraded to make an incompatible stack fit.
+See the [user guide](documentation/README.md) for setup, tool use, conversation
+logs, and how to interpret verification and token-speed results.
 
 ## Requirements
 
@@ -78,36 +49,14 @@ four seconds. Interacting with the window or minimizing it cancels the request.
 Set `QUBITZ_START_MAXIMIZED=0` for a normal-sized launch. If input becomes
 unresponsive, note whether it happened before or after the window maximized.
 
-## Runtime Layout
+## Models and Files
 
-- `variants/` contains the schema-2 launchers listed in the model catalog.
-  Developer-only launchers and local comparison profiles are not shipped.
-- `runtime/` contains the loader, shared source templates and symbol
-  registries, and runtime modules. Keep the whole package for a normal launch;
-  schema 1 and the former `qubitz_runtime/v2/` layout are not supported. The
-  developer browser interface and maintenance/export modules are excluded.
-- `HARNESS.enc` is loaded by the matching native policy bundle in `runtime/`.
-  CPython 3.12 x86-64 binaries are included for Linux/WSL and Windows; keep
-  `policy_loader.py`, `policy_bundle.json`, and both `_policy_runtime` binaries.
-  Users do not need a key file, Cython, or a compiler. Plaintext harness and
-  private build sources are not shipped. This is obfuscation, not a guarantee
-  of confidentiality on a user-controlled computer.
-- `documentation/` contains the [user guide](documentation/README.md),
-  [variant catalog](documentation/qubitz_variants_list.md), and
-  [context values](documentation/num_ctx_values.md).
+Use the [variant catalog](documentation/qubitz_variants_list.md) to choose a
+model and see its memory requirements. For long prompts, check the
+[configured context limits](documentation/num_ctx_values.md); a configured
+limit does not guarantee the model will fit at that size on your hardware.
 
-For a minimal Tk/CLI installation, retain the root launcher (unless launching
-one selected variant directly), that public launcher, the complete runtime
-package including its native policy bundle, the encrypted harness, and the required Python
-environment. Developer maintenance commands and evaluation fixtures are not
-needed for normal use. The optional browser frontend, evaluation results, and
-locally generated caches are not shipped with this release.
-
-## Public Package Scope
-
-The normal-user package contains the runtime, public launchers and user
-guides. It excludes developer evaluation suites, test fixtures, build/export
-tools, private run reports, transcripts, credentials and generated task files.
-Model weights and downloaded backend/toolchain artifacts are acquired separately.
-Source checks and small live workflows do not establish full-matrix acceptance,
-model rankings, full-context fit or correctness of untested generated programs.
+Keep the launcher, `variants/`, `runtime/`, and `HARNESS.enc` from the same
+release together. You do not need a harness key or developer tools. This
+repository ships the app and user guides, not model weights, downloaded
+backends, evaluation files, or conversation history.
