@@ -101,15 +101,7 @@ changelog.txt
 /variants/*.WX*.py
 
 # Private instructions, full local stack snapshots and generated user tasks
-/HARNESS.txt
-/QUBITZ_HARNESS_KEY.local.txt
-/RULES.md
-/AGENTS.md
-/CLAUDE.[mM][dD]
 /requirements-before-*.txt
 /requirements-new.txt
 /decision_model/
-/calc.py
-/calculatorr.py
-/calculator.py
 /documentation/PROJECT.md
