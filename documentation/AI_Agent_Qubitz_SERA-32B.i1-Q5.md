@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_SERA-32B.i1-Q5.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_SERA-32B.i1-Q5.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_SERA-32B.i1-Q5.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_SERA-32B.i1-Q5.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime layout](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for Ai2 SERA-32B i1 Q5_K_S.
 
@@ -30,6 +30,11 @@ Local-inference Qubitz variant for Ai2 SERA-32B i1 Q5_K_S.
 - Repository and coding tasks use local retrieval, bounded tools, transactional edit guards, and verified completion evidence.
 - Runtime loads `HARNESS.enc`; development-time synchronization is not a runtime dependency.
 
-## Behavioral Compatibility Evidence
+## Current Source-Verified Profile
 
-The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
+- Model alias and GGUF repository: `mradermacher/SERA-32B-i1-GGUF`.
+- GGUF file and label: `SERA-32B.i1-Q5_K_S.gguf` / `SERA-32B.i1-Q5_K_S`.
+- Requested context ceiling: `40960` tokens; default maximum output: `16384` tokens.
+- Uses the shared llama.cpp runtime and remains independently runnable.
+- Documentation refreshed 2026-09-19 against the then-current standalone script and declarative profile.
+- Smoke on 2026-09-12 passed: question `3.05 s`, task `2.06 s`, with no timeout, thermal abort, or behavior issue.

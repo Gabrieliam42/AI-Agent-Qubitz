@@ -2,9 +2,12 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` or run the variant directly.
 
 Local-inference Qubitz variant for Qwen3.8-Flash-Next 125B A6B UD-IQ4_XS.
+
+The [Q4_K_XL profile](AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-Q4_K_XL.md)
+is also available in the 72 GB VRAM+ tier.
 
 ## Model
 
@@ -28,41 +31,17 @@ Local-inference Qubitz variant for Qwen3.8-Flash-Next 125B A6B UD-IQ4_XS.
 - Keeps as much of the model as safely fits in aggregate VRAM and leaves unavoidable overflow in system RAM.
 - Uses isolated llama.cpp `b10809`, the binary release associated with v0.4.0 and required for Qwen3.8 Flash Next support.
 
-### Performance Experiments
+### Optional MTP
 
-Production defaults stay unchanged unless one of these Qwen3.8-specific environment variables is set:
+MTP is off by default. In the GUI, enable it and select `Shared Q4` or
+`Shared Q8` to choose the matching draft-head file. The selected head and its
+compatible runtime must already be present locally; missing MTP components are
+not downloaded automatically. Switching requires the current task to be idle
+and the owned backend to be stopped cleanly.
 
-- `QUBITZ_QWEN38_FLASH_NEXT_THREADS`: generation CPU threads, from 1 through the detected logical CPU count.
-- `QUBITZ_QWEN38_FLASH_NEXT_THREADS_BATCH`: prompt-processing CPU threads, with the same bounds.
-- `QUBITZ_QWEN38_FLASH_NEXT_CACHE_REUSE`: prompt-cache reuse threshold from 0 through 262144 tokens.
-- `QUBITZ_QWEN38_FLASH_NEXT_N_CPU_MOE`: number of initial MoE layers whose expert weights remain on CPU, from 0 through 48.
-- `QUBITZ_QWEN38_FLASH_NEXT_KV_CACHE_TYPE`: `q4_0` or `q8_0`; the default remains `q4_0`.
-- `QUBITZ_QWEN38_FLASH_NEXT_BATCH_SIZE`: logical batch size from 128 through 4096.
-- `QUBITZ_QWEN38_FLASH_NEXT_UBATCH_SIZE`: physical microbatch size from 32 through 2048 and no greater than the effective batch size.
+`Shared Q4` uses `mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf` and `Shared Q8`
+uses `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`.
 
-Invalid values or options unsupported by the selected llama.cpp runtime stop before model launch. The effective launch command is recorded in `.cache/llama.cpp/llama-server.log`, and the calculated GPU/CPU placement plan retains the selected tuning values for diagnostics.
-
-### Optional MTP Experiments
-
-The default remains b10809 with MTP off. These controls affect only this variant:
-
-The normal Tk GUI also shows an MTP Off/On control beside Temperature. Off retains b10809;
-On shows a head selector: `Shared Q4` uses `mtp-Qwen3.8-Flash-Next-shared-Q4_K_M.gguf`,
-and `Shared Q8` uses `mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf`. Shared Q4 remains the
-initial GUI choice. Both use the pinned `6fcaa16f` fork. Switching is available
-only after the current task is idle and owned backend cleanup is verified; the next task
-starts a fresh backend. A missing head or runtime fails closed without downloading it.
-Changing Q4/Q8 requires the same verified owned-backend cleanup as toggling MTP.
-The choice survives workspace changes and Off/On toggles; unavailable heads fail
-without changing the current selection or downloading files. The standard-Q4 head
-remains an environment-only experiment, not a GUI choice.
-
-- `QUBITZ_QWEN38_FLASH_NEXT_MTP=off|standard|shared-q8|shared-q4`: `standard` selects the pinned standard Q4_K_M head and b11887; shared modes select the pinned Unsloth fork `6fcaa16f` and the corresponding local shared head. `shared` aliases `shared-q8`.
-- `QUBITZ_QWEN38_FLASH_NEXT_RUNTIME_TAG=b10809|b11887|unsloth-mtp-6fcaa16f` explicitly selects an isolated runtime, including for an MTP-off control arm.
-- `QUBITZ_QWEN38_FLASH_NEXT_MTP_DRAFT_TOKENS=1..5`: defaults to 3 for the standard head and 2 for shared heads.
-- `QUBITZ_QWEN38_FLASH_NEXT_MTP_RESERVE_MIB=0..8192` adds fit headroom per GPU. Shared heads require at least 4096 MiB because this fork cannot account for them in its automatic extra-model fit. Use the same reserve for both arms of a controlled comparison.
-
-Heads must already exist under `.cache/models/unsloth/Qwen3.8-Flash-Next-GGUF/MTP/`. Launch verifies pinned head bytes, base metadata identity, complete base shard sizes, and runtime version. Shared modes additionally verify the locally built runtime against `qubitz-build.json`; missing files never trigger an automatic fork/head download. The main model quantization, sampling, context ceiling, and harness remain unchanged.
 
 ## Qubitz Behavior
 
@@ -73,7 +52,3 @@ Heads must already exist under `.cache/models/unsloth/Qwen3.8-Flash-Next-GGUF/MT
   prompt-processing counters are not reported as decoding speed. Final token
   speed distinguishes actual aggregate average from the optional token-weighted
   interval-median typical rate; both exclude startup, retrieval, prefill and tools.
-
-## Behavioral Compatibility Evidence
-
-The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.

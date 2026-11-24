@@ -1,7 +1,8 @@
 # AI Agent Qubitz
 
 Qubitz is a local WSL2 AI coding agent with a Tk GUI, CLI, MCP tools, retrieval,
-and 41 public GGUF model launchers. Inference runs locally; a hosted AI API or
+and a [catalog of GGUF model launchers](documentation/qubitz_variants_list.md).
+Inference runs locally; a hosted AI API or
 subscription is not required. Optional online research and configured MCP
 providers can use the network when enabled.
 
@@ -21,8 +22,9 @@ Both are private local files; historical transcripts are not converted.
 
 File creation and behavioral verification are separate. A saved file can have
 `Completion status: verified` together with `Behavior status: unverified`.
-Follow-up edits prefer localized patches and use bounded recovery when no
-verified progress is made. Unavailable diagnostics are not passing tests,
+Follow-up edits prefer localized patches. Post-edit test discovery is bounded,
+and eligible Python/Tk startup repairs can be rechecked on the exact edited
+revision without running an unrelated suite. Unavailable diagnostics are not passing tests,
 and rejected edits do not establish program correctness. Review the final
 verification status before relying on generated code.
 
@@ -32,6 +34,8 @@ reasoning and elapsed time alone do not establish task progress or completion.
 
 The [GLM-5.3-Flash IQ4 variant](documentation/AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.md)
 targets the 72 GB VRAM+ tier and retains its memory guards.
+Qwen3.8-Flash-Next is available as [UD-IQ4_XS](documentation/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.md)
+and [UD-Q4_K_XL](documentation/AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-Q4_K_XL.md).
 Weights and native runtimes are not shipped in Git. Online startup can prepare
 the pinned compatible native backend and missing essential dependencies in
 project-local caches; an unsupported or mixed CUDA/PyTorch stack fails closed.
@@ -76,8 +80,8 @@ unresponsive, note whether it happened before or after the window maximized.
 
 ## Runtime Layout
 
-- `variants/` contains 41 public schema-2 launchers. Private local variants
-  are not included.
+- `variants/` contains the schema-2 launchers listed in the model catalog.
+  Developer-only launchers and local comparison profiles are not shipped.
 - `runtime/` contains the loader, shared source templates and symbol
   registries, and runtime modules. Keep the whole package for a normal launch;
   schema 1 and the former `qubitz_runtime/v2/` layout are not supported. The
@@ -92,9 +96,6 @@ unresponsive, note whether it happened before or after the window maximized.
   [variant catalog](documentation/qubitz_variants_list.md), and
   [context values](documentation/num_ctx_values.md).
 
-The [user guide's recovery notes](documentation/README.md#proposal-validation-and-recovery)
-describe bounded structured-proposal handling and its verification limits.
-
 For a minimal Tk/CLI installation, retain the root launcher (unless launching
 one selected variant directly), that public launcher, the complete runtime
 package including its native policy bundle, the encrypted harness, and the required Python
@@ -102,14 +103,9 @@ environment. Developer maintenance commands and evaluation fixtures are not
 needed for normal use. The optional browser frontend, evaluation results, and
 locally generated caches are not shipped with this release.
 
-Shared source is composed into each launcher's private namespace, preserving
-its entrypoint identity and isolated mutable state. This is not proof that all
-models have the same behavior or performance. See the
-[runtime layout notes](runtime/README.md) for required components.
-
 ## Public Package Scope
 
-This repository contains the normal-user runtime, 41 public launchers and user
+The normal-user package contains the runtime, public launchers and user
 guides. It excludes developer evaluation suites, test fixtures, build/export
 tools, private run reports, transcripts, credentials and generated task files.
 Model weights and downloaded backend/toolchain artifacts are acquired separately.

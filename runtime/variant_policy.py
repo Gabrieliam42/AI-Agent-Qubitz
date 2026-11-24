@@ -4,6 +4,8 @@ from collections.abc import Iterable as _VisibilityIterable
 DEVELOPER_ONLY_VARIANTS = frozenset({
     "AI_Agent_Qubitz_GLM-4.6-WX-v3-357B-A32B-IQ3.py",
     "AI_Agent_Qubitz_GLM_4.7_Flash_WX-30B-A3B-Q4.py",
+    "AI_Agent_Qubitz_GLM-5.3-Flash-WX-UD-IQ4_XS.py",
+    "AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-WX_A6B-IQ4.py",
     "AI_Agent_Qubitz_Xorton.WX-Computing.LARGE.2026.3-Q4.py",
 })
 _DEVELOPER_ONLY_NAMES = frozenset(name.casefold() for name in DEVELOPER_ONLY_VARIANTS)

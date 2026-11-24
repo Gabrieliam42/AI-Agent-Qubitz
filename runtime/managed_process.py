@@ -474,6 +474,15 @@ def _supervise(config_path: Path) -> int:
     command = [sys.executable, "-u", "-B", str(Path(__file__).resolve()), "--child", str(config_path)]
     environment = os.environ.copy()
     environment.update(config["environment"])
+    if config.get("kind") == "command":
+        if __package__:
+            from .tk_environment import external_child_environment
+        else:
+            # This supervisor can also be started by filename or via runpy.
+            external_child_environment = runpy.run_path(
+                str(Path(__file__).with_name("tk_environment.py")),
+            )["external_child_environment"]
+        environment = external_child_environment(environment)
     process = None
     job = None
     tree = None

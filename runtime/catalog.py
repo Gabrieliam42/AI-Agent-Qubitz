@@ -10,6 +10,37 @@ from pathlib import Path, PurePosixPath
 
 from .source import launcher_spec
 
+VARIANT_TIERS = ("12 GB VRAM", "24 GB VRAM", "48 GB VRAM+", "72 GB VRAM+")
+_VARIANT_TIER_OVERRIDES = {
+    "AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Hermes-4-70B-UD-Q4_K_XL.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Hermes-4.3-36B-Q8_0.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-UD-Q4_K_XL.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-Q8_0.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q4_K_M.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q5_K_M.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q6_K.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Ripple-65B-Preview-BF16.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_Ripple-65B-Preview-Q8_0.py": "72 GB VRAM+",
+    "AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_GPT-OSS-120B_F16.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py": "48 GB VRAM+",
+    "AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-Q4_K_XL.py": "72 GB VRAM+",
+}
+
+
+def variant_tier(filename: str) -> str:
+    """Return a nominal selector tier, independent of runtime fit and device count."""
+    fallback = "12 GB VRAM" if Path(filename).stem.casefold().endswith("_12g") else "24 GB VRAM"
+    return _VARIANT_TIER_OVERRIDES.get(filename, fallback)
+
 
 @dataclass(frozen=True)
 class ModelFiles:

@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_North-Mini-Code-1.0-30B-A3B-Q4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime layout](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for Cohere North Mini Code 1.0 30B-A3B Q4.
 
@@ -26,7 +26,7 @@ Local-inference Qubitz variant for Cohere North Mini Code 1.0 30B-A3B Q4.
 - Uses local llama.cpp GGUF inference only; no required API, cloud, subscription, or paid hosted inference service.
 
 ## Shared Qubitz Behavior
-- Loads `HARNESS.enc` only. `HARNESS.txt` is an editable source that is never read at runtime, so it must be re-encrypted after any edit.
+- Loads the bundled `HARNESS.enc`; users do not need a separate key.
 - Short direct questions bypass retrieval, embeddings, skills, and MCP/tool loading.
 - Binary and structured files are snapshot-hashed instead of being decoded as text; `read_file_snapshot` returns a SHA-256-bound structured notice for formats such as `.docx`, `.xlsx`, `.pptx`, and `.pdf`.
 - For `.docx`, that snapshot also carries the document's readable text as numbered `[Paragraph N]` lines, extracted from `word/document.xml` with the standard library, so the text can be inspected before editing and without installing anything. The SHA-256 still hashes the real file bytes.
@@ -57,6 +57,18 @@ Local-inference Qubitz variant for Cohere North Mini Code 1.0 30B-A3B Q4.
 - Supports direct existing entrypoints such as `.py`, `.ps1`, `.sh`, `.bat`, `.cmd`, `uv run`, package scripts, and make targets.
 - Final GUI and CLI outputs include wrapper-measured elapsed time in `(MM:SS)` format.
 
-## Behavioral Compatibility Evidence
+## Current Source-Verified Profile
 
-The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
+These values describe the configured launcher, not a guarantee of hardware fit or runtime throughput.
+- Model alias: `unsloth/North-Mini-Code-1.0-GGUF`
+- GGUF repository: `unsloth/North-Mini-Code-1.0-GGUF`
+- GGUF file: `North-Mini-Code-1.0-UD-Q4_K_XL.gguf`
+- GGUF label: `North-Mini-Code-1.0-30B-A3B-UD-Q4_K_XL`
+- Requested context ceiling: `262144` tokens; the effective loaded context may be lower when llama.cpp fitting must preserve memory headroom.
+- Default maximum output: `16384` tokens.
+- Embedding model: `BAAI/bge-code-v1`.
+- This variant uses its own isolated llama.cpp runtime selected by the script.
+- North Mini retains its model-specific cohere2moe runtime and must not be synchronized to generic runtime settings.
+- All variants now include the common exact named-file operation route for explicit create, edit, copy, rename/move, and delete requests, with operation-specific verification; the model and hardware-specific sections remain in each launcher.
+- Historical documentation refresh 2026-09-19: the then-standalone wrapper included follow-up-aware routing, narrow fixed-response fast paths, explicit online/offline research gating, loaded-context request budgeting, adaptive reasoning/tool budgets, GUI elapsed-time and generation-speed telemetry, and verified completion evidence.
+- Smoke on 2026-09-12 passed: question `2.78 s`, task `1.47 s`, with no timeout, thermal abort, or behavior issue.

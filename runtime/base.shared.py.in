@@ -284,12 +284,16 @@ class BGECodeEmbedder:
             self._report(message)
             self._last_device_status = message
 
-    @staticmethod
-    def _cuda_memory_snapshot(torch: Any) -> tuple[int | None, int | None]:
+    def _cuda_target(self) -> str:
+        index = getattr(self, "_qubitz_cuda_device_index", None)
+        return "cuda" if index is None else f"cuda:{index}"
+
+    def _cuda_memory_snapshot(self, torch: Any) -> tuple[int | None, int | None]:
         if not torch.cuda.is_available():
             return None, None
         try:
-            return torch.cuda.mem_get_info()
+            index = getattr(self, "_qubitz_cuda_device_index", None)
+            return torch.cuda.mem_get_info() if index is None else torch.cuda.mem_get_info(index)
         except Exception:
             return None, None
 
@@ -389,7 +393,7 @@ class BGECodeEmbedder:
     def _activate_cuda_model(self) -> None:
         assert self._torch is not None
         assert self._model is not None
-        self._model.to("cuda")
+        self._model.to(self._cuda_target())
         self.device = "cuda"
         self._released_from_gpu = False
         self.load_warning = None
@@ -431,6 +435,8 @@ class BGECodeEmbedder:
             "local_files_only": self.local_files_only,
             "cache_dir": str(self.hf_cache_dir),
         }
+        if revision := getattr(self, "_qubitz_retrieval_revision", None):
+            tokenizer_load_kwargs["revision"] = revision
         try:
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, **tokenizer_load_kwargs)
         except Exception as exc:
@@ -445,6 +451,8 @@ class BGECodeEmbedder:
             "low_cpu_mem_usage": True,
             "cache_dir": str(self.hf_cache_dir),
         }
+        if revision:
+            base_load_kwargs["revision"] = revision
         target_device = self._resolve_device(torch)
         cache_mode = "local cache only" if self.local_files_only else "network allowed"
         self._report(f"Loading embedder {self.model_name} on {target_device} ({cache_mode}).")
@@ -524,7 +532,13 @@ class BGECodeEmbedder:
         return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
     def _encode(self, texts: Sequence[str], *, prompt: str | None = None) -> Any:
+        checkpoint = getattr(self, "_qubitz_retrieval_checkpoint", lambda: None)
+        started = time.monotonic()
+        checkpoint()
+        if not self._loaded or self._released_from_gpu:
+            self._report("Preparing the embedding model for repository retrieval.")
         self.load()
+        checkpoint()
         import numpy as np
 
         torch = self._torch
@@ -533,6 +547,9 @@ class BGECodeEmbedder:
         kind = "query" if prompt else "document"
         self._report(f"Encoding {len(texts)} {kind} chunk(s) on {self.device} with batch size {batch_size}.")
         for start in range(0, len(texts), batch_size):
+            checkpoint()
+            if start and start % (batch_size * 16) == 0:
+                self._report(f"Encoded {start}/{len(texts)} {kind} chunk(s).")
             batch = list(texts[start : start + batch_size])
             if prompt:
                 batch = [f"{prompt}{text}" for text in batch]
@@ -546,7 +563,8 @@ class BGECodeEmbedder:
                 tokenize_kwargs["pad_to_multiple_of"] = 8
             batch_dict = self._tokenizer(batch, **tokenize_kwargs)
             batch_dict = {
-                key: value.to(self.device) if hasattr(value, "to") else value
+                key: value.to(self._cuda_target() if self.device == "cuda" else self.device)
+                if hasattr(value, "to") else value
                 for key, value in batch_dict.items()
             }
             with torch.inference_mode():
@@ -554,6 +572,8 @@ class BGECodeEmbedder:
                 embeddings = self._last_token_pool(outputs.last_hidden_state, batch_dict["attention_mask"])
                 embeddings = self._torch_f.normalize(embeddings, p=2, dim=1)
             encoded_batches.append(embeddings.detach().cpu().float().numpy())
+        checkpoint()
+        self._report(f"Encoded {len(texts)} {kind} chunk(s) in {time.monotonic() - started:.1f}s.")
         return np.vstack(encoded_batches) if encoded_batches else np.empty((0, 0), dtype="float32")
 
     def encode_queries(self, texts: Sequence[str]) -> Any:
@@ -1149,8 +1169,8 @@ class RepoRetriever:
         self.progress_callback = progress_callback
         self.cache_dir = self.runtime_workspace / ".cache" / "retrieval" / workspace_cache_key(self.workspace)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_path = self.cache_dir / "manifest.json"
-        self.vectors_path = self.cache_dir / "vectors.npy"
+        self.snapshot_path = self.cache_dir / "snapshot-v2.npz"
+        self.check_cancelled: Callable[[], None] = lambda: None
         self.embedder = BGECodeEmbedder(
             self.runtime_workspace,
             config.embed_model_name,
@@ -1160,6 +1180,7 @@ class RepoRetriever:
             reserve_vram_gib=config.retrieval_gpu_reserve_gib,
             progress_callback=self._report,
         )
+        self.embedder._qubitz_retrieval_checkpoint = self.checkpoint
         self._chunks: list[RepoChunk] = []
         self._vectors: Any = None
         self._backend = "lexical"
@@ -1171,6 +1192,9 @@ class RepoRetriever:
         self._rmm_pool: Any = None
         self._rmm_configured = False
         self._rmm_attempted = False
+
+    def checkpoint(self) -> None:
+        self.check_cancelled()
 
     def _report(self, message: str) -> None:
         if self.progress_callback is not None:
@@ -1252,21 +1276,20 @@ class RepoRetriever:
         self._configure_rmm_pool()
         return faiss.StandardGpuResources()
 
-    def _build_gpu_flat_index(self, faiss: Any) -> tuple[Any, str, Any]:
-        cpu_index = faiss.IndexFlatIP(int(self._vectors.shape[1]))
-        cpu_index.add(self._vectors)
+    def _build_gpu_flat_index(self, faiss: Any, cpu_index: Any) -> tuple[Any, str, Any]:
         co = faiss.GpuClonerOptions()
         backend = "faiss-gpu-flat"
         if hasattr(co, "use_cuvs"):
             co.use_cuvs = True
             backend = "faiss-gpu-flat-cuvs"
-        return faiss.index_cpu_to_gpu(self._faiss_gpu_resources, 0, cpu_index, co), backend, None
+        return faiss.index_cpu_to_gpu(self._faiss_gpu_resources, self._index_device, cpu_index, co), backend, None
 
     def _build_gpu_ivf_flat_index(self, faiss: Any) -> tuple[Any, str, Any]:
         dimension = int(self._vectors.shape[1])
         nlist = self._effective_nlist()
         nprobe = self._effective_nprobe(nlist)
         config = faiss.GpuIndexIVFFlatConfig()
+        config.device = self._index_device
         config.use_cuvs = True
         index = faiss.GpuIndexIVFFlat(
             self._faiss_gpu_resources,
@@ -1288,6 +1311,7 @@ class RepoRetriever:
         pq_m = self._effective_pq_m(dimension)
         pq_bits = max(4, min(16, self.config.retrieval_ivfpq_bits))
         config = faiss.GpuIndexIVFPQConfig()
+        config.device = self._index_device
         config.use_cuvs = True
         index = faiss.GpuIndexIVFPQ(
             self._faiss_gpu_resources,
@@ -1307,6 +1331,7 @@ class RepoRetriever:
     def _build_gpu_cagra_index(self, faiss: Any) -> tuple[Any, str, Any]:
         dimension = int(self._vectors.shape[1])
         config = faiss.GpuIndexCagraConfig()
+        config.device = self._index_device
         config.use_cuvs = True
         config.graph_degree = max(1, self.config.retrieval_cagra_graph_degree)
         config.intermediate_graph_degree = max(
@@ -1330,16 +1355,17 @@ class RepoRetriever:
         )
         return index, backend, params
 
-    def _iter_files(self) -> Iterable[Path]:
-        for path in iter_workspace_files(self.workspace, EXCLUDED_DIRS):
-            if is_excluded_retrieval_file(path):
-                continue
-            if not is_probably_text_file(path):
-                continue
-            yield path
-
     def _chunk_file(self, path: Path) -> list[RepoChunk]:
-        text = path.read_text(encoding="utf-8", errors="ignore")
+        from runtime.retrieval import RetrievalLimit, file_stamp, read_text_prefix
+
+        self.checkpoint()
+        rel = relative_path(path, self.workspace)
+        stamp = self._inventory[rel]
+        if file_stamp(path) != stamp:
+            raise RetrievalLimit("source changed during repository retrieval; retry with a stable workspace")
+        text, truncated = read_text_prefix(path)
+        if truncated or file_stamp(path) != stamp:
+            raise RetrievalLimit("source changed during repository retrieval; retry with a stable workspace")
         lines = text.splitlines()
         if not lines:
             return []
@@ -1347,8 +1373,8 @@ class RepoRetriever:
         chunk_size = 80
         overlap = 20
         start = 0
-        rel = relative_path(path, self.workspace)
         while start < len(lines):
+            self.checkpoint()
             end = min(len(lines), start + chunk_size)
             chunk_lines = lines[start:end]
             chunk_text = "\n".join(chunk_lines).strip()
@@ -1369,36 +1395,40 @@ class RepoRetriever:
         return chunks
 
     def _file_state(self) -> dict[str, dict[str, int]]:
+        from runtime.retrieval import BINARY_SUFFIXES, SKIP_DIRECTORIES, ScanBudget, file_stamp
+
         state: dict[str, dict[str, int]] = {}
-        for path in self._iter_files():
-            stat = path.stat()
-            state[relative_path(path, self.workspace)] = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+        omit = EXCLUDED_DIRS | SKIP_DIRECTORIES
+        budget = ScanBudget(self.checkpoint, self._report)
+        self._report("Retrieval scan started; checking workspace paths before embedding.")
+        for path in iter_workspace_files(self.workspace, omit, checkpoint=budget.check):
+            if (path.suffix.lower() in BINARY_SUFFIXES or is_excluded_retrieval_file(path)
+                    or is_sensitive_path_name(path)):
+                continue
+            try:
+                stamp = file_stamp(path)
+            except FileNotFoundError:
+                continue
+            if stamp is None or not is_probably_text_file(path):
+                continue
+            state[relative_path(path, self.workspace)] = stamp
+            budget.files += 1
+            budget.source_bytes += stamp["size"]
+            budget.check()
+        self._report(f"Retrieval scan complete: {budget.entries} entries, {len(state)} eligible files.")
         return state
 
     def _build_chunks(self) -> list[RepoChunk]:
+        from runtime.retrieval import MAX_CHUNKS, RetrievalLimit
+
         chunks: list[RepoChunk] = []
-        files = sorted(self._iter_files())
-        self._report(f"Scanning {len(files)} workspace file(s) for retrieval chunks.")
-        for path in files:
-            chunks.extend(self._chunk_file(path))
+        self._report(f"Building retrieval chunks for {len(self._inventory)} eligible file(s).")
+        for rel in sorted(self._inventory):
+            chunks.extend(self._chunk_file(self.workspace / rel))
+            if len(chunks) > MAX_CHUNKS:
+                raise RetrievalLimit("repository chunk budget exhausted; narrow the target scope")
         self._report(f"Built {len(chunks)} retrieval chunk(s).")
         return chunks
-
-    def _load_manifest(self) -> dict[str, Any] | None:
-        if not self.manifest_path.exists():
-            return None
-        try:
-            manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return None
-        return manifest if isinstance(manifest, dict) else None
-
-    def _load_vectors_array(self) -> Any:
-        if not self.vectors_path.exists():
-            return None
-        import numpy as np
-
-        return np.load(self.vectors_path, allow_pickle=False)
 
     def _hydrate_cached_manifest(self, manifest: dict[str, Any], vectors: Any | None = None) -> bool:
         chunk_dicts = manifest.get("chunks") or []
@@ -1406,36 +1436,22 @@ class RepoRetriever:
             self._chunks = [RepoChunk(**chunk_dict) for chunk_dict in chunk_dicts]
         except TypeError:
             return False
-        if vectors is None and self.vectors_path.exists():
-            try:
-                vectors = self._load_vectors_array()
-            except Exception:
-                return False
         if vectors is not None:
             if len(vectors) != len(self._chunks):
                 return False
             self._vectors = vectors
-            self._backend = manifest.get("backend", "embedding")
+            self._backend = "embedding-numpy"
             self._report(
-                f"Loaded cached retrieval vectors for {len(self._chunks)} chunk(s) from {relative_path(self.vectors_path, self.workspace)}."
+                f"Loaded cached retrieval vectors for {len(self._chunks)} chunk(s)."
             )
         else:
             self._vectors = None
-            self._backend = str(manifest.get("backend", "lexical"))
+            self._backend = "lexical"
         return True
 
-    def _load_cached(self, state: dict[str, dict[str, int]]) -> bool:
-        manifest = self._load_manifest()
-        if manifest is None:
-            return False
-        if manifest.get("file_state") != state:
-            return False
-        return self._hydrate_cached_manifest(manifest)
+    def _reuse_cached_chunks(self, state: dict, manifest: dict, cached_vectors: Any) -> bool:
+        from runtime.retrieval import MAX_CHUNKS, RetrievalLimit
 
-    def _reuse_cached_chunks(self, state: dict[str, dict[str, int]]) -> bool:
-        manifest = self._load_manifest()
-        if manifest is None:
-            return False
         cached_state = manifest.get("file_state")
         if not isinstance(cached_state, dict) or cached_state == state:
             return False
@@ -1444,12 +1460,6 @@ class RepoRetriever:
             cached_chunks = [RepoChunk(**chunk_dict) for chunk_dict in chunk_dicts]
         except TypeError:
             return False
-        cached_vectors = None
-        if self.vectors_path.exists():
-            try:
-                cached_vectors = self._load_vectors_array()
-            except Exception:
-                cached_vectors = None
         if cached_vectors is not None and len(cached_vectors) != len(cached_chunks):
             cached_vectors = None
 
@@ -1458,7 +1468,6 @@ class RepoRetriever:
             vector = cached_vectors[index] if cached_vectors is not None else None
             cached_by_path.setdefault(chunk.path, []).append((chunk, vector))
 
-        files = sorted(self._iter_files())
         new_chunks: list[RepoChunk] = []
         vector_slots: list[Any | None] = []
         pending_embed_chunks: list[RepoChunk] = []
@@ -1468,8 +1477,9 @@ class RepoRetriever:
         reused_chunks = 0
         regenerated_chunks = 0
 
-        for path in files:
-            rel = relative_path(path, self.workspace)
+        for rel in sorted(state):
+            self.checkpoint()
+            path = self.workspace / rel
             cached_entries = cached_by_path.get(rel, [])
             if cached_state.get(rel) == state.get(rel) and cached_entries:
                 reused_files += 1
@@ -1483,6 +1493,8 @@ class RepoRetriever:
                         pending_embed_chunks.append(chunk)
                         pending_embed_positions.append(len(vector_slots) - 1)
                         regenerated_chunks += 1
+                if len(new_chunks) > MAX_CHUNKS:
+                    raise RetrievalLimit("repository chunk budget exhausted; narrow the target scope")
                 continue
 
             changed_files += 1
@@ -1499,6 +1511,8 @@ class RepoRetriever:
                     pending_embed_positions.append(len(vector_slots) - 1)
                     regenerated_chunks += 1
 
+        if len(new_chunks) > MAX_CHUNKS:
+            raise RetrievalLimit("repository chunk budget exhausted; narrow the target scope")
         if not new_chunks:
             self._chunks = []
             self._vectors = None
@@ -1536,7 +1550,8 @@ class RepoRetriever:
                     self._backend = "embedding-numpy"
                     if self.embedder.load_warning:
                         self._last_error = self.embedder.load_warning
-                    self._ensure_faiss_index()
+            except RunCancelled:
+                raise
             except Exception as exc:  # pragma: no cover - runtime fallback path
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 self._vectors = None
@@ -1550,7 +1565,8 @@ class RepoRetriever:
                 self._backend = "embedding-numpy"
                 if self.embedder.load_warning:
                     self._last_error = self.embedder.load_warning
-                self._ensure_faiss_index()
+            except RunCancelled:
+                raise
             except Exception as exc:  # pragma: no cover - runtime fallback path
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 self._vectors = None
@@ -1560,18 +1576,17 @@ class RepoRetriever:
         return True
 
     def _save_cached(self, state: dict[str, dict[str, int]]) -> None:
+        from runtime.retrieval import save_generation
+
+        if self._vectors is None:
+            return  # An unsuccessful rebuild must not replace a usable generation.
         manifest = {
+            "identity": self._cache_identity,
             "file_state": state,
             "chunks": [asdict(chunk) for chunk in self._chunks],
-            "backend": self._backend,
         }
-        self.manifest_path.write_text(json.dumps(manifest, ensure_ascii=True, indent=2), encoding="utf-8")
-        if self._vectors is not None:
-            import numpy as np
-
-            np.save(self.vectors_path, self._vectors, allow_pickle=False)
-        elif self.vectors_path.exists():
-            self.vectors_path.unlink()
+        if self._cache_identity["revision"]:
+            save_generation(self.snapshot_path, manifest, self._vectors, self.checkpoint)
 
     def _reset_faiss_index(self) -> None:
         self._faiss_index = None
@@ -1583,22 +1598,29 @@ class RepoRetriever:
             return False
         if self._faiss_index is not None:
             return True
+        self.checkpoint()
+        self._report("Preparing FAISS retrieval index.")
         try:
             import faiss
         except Exception as exc:  # pragma: no cover - optional dependency path
             self._last_error = f"{type(exc).__name__}: {exc}"
             return False
         try:
+            self.checkpoint()
             requested_backend = self._normalize_backend_name(self.config.retrieval_backend)
             cpu_index = faiss.IndexFlatIP(int(self._vectors.shape[1]))
             cpu_index.add(self._vectors)
             backend = "faiss-cpu-flat"
-            gpu_count = faiss.get_num_gpus()
-            if gpu_count > 0 and hasattr(faiss, "StandardGpuResources") and hasattr(faiss, "index_cpu_to_gpu"):
+            device = getattr(self.embedder, "_qubitz_cuda_device_index", 0) if self.embedder.device == "cuda" else None
+            gpu_count = getattr(faiss, "get_num_gpus", lambda: 0)() if device is not None else 0
+            self._report(f"Building retrieval index: {requested_backend}, {len(self._chunks)} chunk(s).")
+            if (device is not None and 0 <= device < gpu_count
+                    and hasattr(faiss, "StandardGpuResources") and hasattr(faiss, "index_cpu_to_gpu")):
                 try:
+                    self._index_device = device
                     self._faiss_gpu_resources = self._new_gpu_resources(faiss)
                     if requested_backend in {"auto", "flat"}:
-                        self._faiss_index, backend, self._faiss_search_params = self._build_gpu_flat_index(faiss)
+                        self._faiss_index, backend, self._faiss_search_params = self._build_gpu_flat_index(faiss, cpu_index)
                     elif requested_backend == "ivf_flat":
                         self._faiss_index, backend, self._faiss_search_params = self._build_gpu_ivf_flat_index(faiss)
                     elif requested_backend == "ivf_pq":
@@ -1609,10 +1631,13 @@ class RepoRetriever:
                         self._report(
                             f"Unknown retrieval backend '{self.config.retrieval_backend}', using flat cuVS search instead."
                         )
-                        self._faiss_index, backend, self._faiss_search_params = self._build_gpu_flat_index(faiss)
+                        self._faiss_index, backend, self._faiss_search_params = self._build_gpu_flat_index(faiss, cpu_index)
                 except Exception as exc:
                     self._last_error = f"{type(exc).__name__}: {exc}"
                     self._faiss_gpu_resources = None
+                    restore_rmm = getattr(self, "_qubitz_restore_rmm", None)
+                    if restore_rmm is not None:
+                        restore_rmm()
                     self._faiss_index = cpu_index
                     self._faiss_search_params = None
                     backend = "faiss-cpu-flat"
@@ -1621,51 +1646,53 @@ class RepoRetriever:
                         f"{self._last_error}"
                     )
             else:
-                if requested_backend not in {"auto", "flat"}:
-                    self._report(
-                        f"Retrieval backend '{requested_backend}' requires FAISS GPU support; using CPU flat search."
-                    )
+                reason = "embedding runs on CPU" if device is None else "selected CUDA device is unavailable to FAISS"
+                self._report(f"Using CPU FAISS flat search: {reason}.")
                 self._faiss_index = cpu_index
             self._faiss = faiss
             self._backend = backend
-            self._report(f"Retrieval index ready with backend {backend} over {len(self._chunks)} chunk(s).")
+            placement = f"CUDA:{device}" if backend.startswith("faiss-gpu") else "CPU"
+            self._report(f"Retrieval index ready: {backend} on {placement} over {len(self._chunks)} chunk(s).")
+            self.checkpoint()
             return True
+        except RunCancelled:
+            raise
         except Exception as exc:  # pragma: no cover - runtime fallback path
             self._last_error = f"{type(exc).__name__}: {exc}"
             self._reset_faiss_index()
             return False
 
     def ensure_index(self) -> None:
+        from runtime.retrieval import cached_model_revision, load_generation
+
         state = self._file_state()
-        if self._load_cached(state):
-            if not self._chunks and state:
-                self._report("Cached retrieval chunk metadata is missing. Rebuilding repository index.")
-            else:
-                self._reset_faiss_index()
-                if self._vectors is None and self._chunks:
-                    self._report("Cached retrieval vectors are missing. Rebuilding embeddings from cached repository chunks.")
-                    try:
-                        self._vectors = self.embedder.encode_documents([chunk.text for chunk in self._chunks])
-                        self._backend = "embedding-numpy"
-                        if self.embedder.load_warning:
-                            self._last_error = self.embedder.load_warning
-                        self._ensure_faiss_index()
-                    except Exception as exc:  # pragma: no cover - runtime fallback path
-                        self._last_error = f"{type(exc).__name__}: {exc}"
-                        self._vectors = None
-                        self._backend = "lexical"
-                    self._save_cached(state)
+        self._inventory = state
+        self._last_error = None
+        self._reset_faiss_index()
+        if not self.embedder._loaded:
+            self.embedder._qubitz_retrieval_revision = cached_model_revision(
+                self.embedder.hf_cache_dir, self.embedder.model_name,
+            )
+        revision = getattr(self.embedder, "_qubitz_retrieval_revision", None)
+        self._cache_identity = {
+            "schema": 2, "workspace": str(self.workspace), "model": self.embedder.model_name,
+            "revision": revision, "chunking": "lines-80-overlap-20-v1",
+            "exclusion_policy": "bounded-source-v1",
+        }
+        self._report("Checking retrieval cache for this workspace and embedding revision.")
+        generation = load_generation(self.snapshot_path, self._cache_identity) if revision else None
+        self.checkpoint()
+        if generation is not None:
+            manifest, vectors = generation
+            if manifest.get("file_state") == state:
+                if self._hydrate_cached_manifest(manifest, vectors) and (self._chunks or not state):
                     return
-                self._ensure_faiss_index()
+            elif self._reuse_cached_chunks(state, manifest, vectors):
                 return
-        if self._reuse_cached_chunks(state):
-            return
-        self._report("Retrieval cache is stale or missing. Rebuilding repository index.")
+        self._report("Retrieval cache is stale or missing. Rebuilding repository context.")
         self._chunks = self._build_chunks()
         self._vectors = None
         self._backend = "lexical"
-        self._last_error = None
-        self._reset_faiss_index()
         if self._chunks:
             try:
                 self._report("Generating repository embeddings.")
@@ -1673,7 +1700,8 @@ class RepoRetriever:
                 self._backend = "embedding-numpy"
                 if self.embedder.load_warning:
                     self._last_error = self.embedder.load_warning
-                self._ensure_faiss_index()
+            except RunCancelled:
+                raise
             except Exception as exc:  # pragma: no cover - runtime fallback path
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 self._vectors = None
@@ -1684,6 +1712,7 @@ class RepoRetriever:
         query_tokens = token_set(query)
         scored: list[tuple[float, RepoChunk]] = []
         for chunk in self._chunks:
+            self.checkpoint()
             lowered = chunk.text.lower()
             score = float(sum(lowered.count(token) for token in query_tokens))
             if any(token in chunk.path.lower() for token in query_tokens):
@@ -1696,16 +1725,24 @@ class RepoRetriever:
     def query(self, query: str, limit: int | None = None) -> dict[str, Any]:
         import numpy as np
 
-        self.ensure_index()
+        from runtime.retrieval import RetrievalLimit, file_stamp
+
+        try:
+            self.ensure_index()
+        except RetrievalLimit as exc:
+            self._report(f"Repository retrieval incomplete: {exc}.")
+            raise
         top_k = limit or self.recommended_result_limit()
         results: list[dict[str, Any]] = []
         if not self._chunks:
             return {"backend": "empty", "results": [], "error": self._last_error}
         if self._vectors is not None:
+            query_vector = None
             try:
                 self._report(f"Retrieving repository context for query: {shorten(query, 100)}")
                 query_vector = self.embedder.encode_queries([query])[0]
                 if self._ensure_faiss_index():
+                    self.checkpoint()
                     search_kwargs: dict[str, Any] = {}
                     if self._faiss_search_params is not None:
                         search_kwargs["params"] = self._faiss_search_params
@@ -1714,6 +1751,7 @@ class RepoRetriever:
                         top_k,
                         **search_kwargs,
                     )
+                    self.checkpoint()
                     top_indices = [int(index) for index in indices_array[0] if int(index) >= 0]
                     score_map = {
                         int(index): float(score)
@@ -1721,6 +1759,7 @@ class RepoRetriever:
                         if int(index) >= 0
                     }
                 else:
+                    self._backend = "embedding-numpy"
                     scores = self._vectors @ query_vector
                     top_indices = [int(index) for index in np.argsort(scores)[::-1][:top_k]]
                     score_map = {int(index): float(scores[int(index)]) for index in top_indices}
@@ -1735,10 +1774,13 @@ class RepoRetriever:
                             "text": shorten(chunk.text, 1400),
                         }
                     )
+            except RunCancelled:
+                raise
             except Exception as exc:  # pragma: no cover - runtime fallback path
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 self._reset_faiss_index()
-                if self._vectors is not None:
+                self._backend = "lexical" if query_vector is None else "embedding-numpy"
+                if query_vector is not None and query_vector.shape == (self._vectors.shape[1],):
                     scores = self._vectors @ query_vector
                     top_indices = [int(index) for index in np.argsort(scores)[::-1][:top_k]]
                     self._backend = "embedding-numpy"
@@ -1754,6 +1796,7 @@ class RepoRetriever:
                             }
                         )
         if not results:
+            self._backend = "lexical"
             for score, chunk in self._lexical_scores(query)[:top_k]:
                 results.append(
                     {
@@ -1765,6 +1808,15 @@ class RepoRetriever:
                     }
                 )
         if results:
+            for rel in dict.fromkeys(item["path"] for item in results):
+                self.checkpoint()
+                try:
+                    current = file_stamp(self.workspace / rel)
+                except OSError:
+                    current = None
+                if current is None or current != self._inventory.get(rel):
+                    self._report("Repository retrieval incomplete: a selected source changed during retrieval.")
+                    raise RetrievalLimit("a selected source changed during retrieval; read the current target directly")
             preview = ", ".join(f"{item['path']}:{item['start_line']}-{item['end_line']}" for item in results[:3])
             self._report(f"Repository context ready from {self._backend}: {preview}")
         return {"backend": self._backend, "results": results, "error": self._last_error}
@@ -1948,14 +2000,9 @@ from pathlib import Path
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:3cf2fd91057dde0d> module/FunctionDef:configure_tk_environment:0
 def configure_tk_environment() -> None:
-    if getattr(sys, "frozen", False):
-        base_path = Path(getattr(sys, "_MEIPASS"))
-    else:
-        base_path = Path(sys.prefix or getattr(sys, "base_prefix", sys.executable))
-        if not (base_path / "tcl").exists() and getattr(sys, "base_prefix", None):
-            base_path = Path(sys.base_prefix)
-    os.environ["TCL_LIBRARY"] = str(base_path / "tcl" / "tcl8.6")
-    os.environ["TK_LIBRARY"] = str(base_path / "tcl" / "tk8.6")
+    from runtime.tk_environment import configure_tk_environment as configure
+
+    configure()
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:3dd1817f36e2e8fb> module/FunctionDef:write_encrypted_harness:0
 def write_encrypted_harness(workspace: Path) -> Path:
@@ -2008,7 +2055,8 @@ def is_probably_text_file(path: Path) -> bool:
     if path.suffix.lower() in TEXT_SUFFIXES:
         return True
     try:
-        sample = path.read_bytes()[:2048]
+        with path.open("rb") as stream:
+            sample = stream.read(2048)
     except OSError:
         return False
     return b"\x00" not in sample
@@ -2331,8 +2379,13 @@ class AgentRunner:
                     "named file(s); inspect those files directly with read_file before relying on repo retrieval."
                 )
             else:
-                repo_context = self.retriever.format_context(prompt)
-                self.retriever.release_gpu_resources()
+                prior_checkpoint = self.retriever.check_cancelled
+                self.retriever.check_cancelled = self._raise_if_cancelled
+                try:
+                    repo_context = self.retriever.format_context(prompt)
+                finally:
+                    self.retriever.check_cancelled = prior_checkpoint
+                    self.retriever.release_gpu_resources()
             memory_context = self.memory.build_context(prompt)
             if skip_repo_retrieval:
                 self._emit(callback, "status", "Memory context prepared; repository retrieval was skipped.")
@@ -2400,6 +2453,9 @@ class AgentRunner:
                             f"Using cached Windows llama.cpp runtime at {local_runtime_executable.parent}",
                         )
 
+            from runtime.file_draft import phase
+
+            phase("Loading / checking model")
             self._emit(callback, "status", "Detecting the local llama.cpp GGUF backend and validating the target model.")
             llm = self._get_llm()
             resolved_model_name = llm.ensure_model(self.config.model_name)
@@ -2494,6 +2550,16 @@ class AgentRunner:
                     self._raise_if_cancelled()
                     self._apply_side_notes(messages, callback)
                     active_context_tokens = self._estimate_active_context(messages, tool_definitions)
+                    if step == 1 and getattr(self, "_current_route_for_harness", lambda: "")() == "named_file_operation":
+                        def payload_bytes(value: Any) -> int:
+                            return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+                        self._emit(
+                            callback, "status",
+                            f"Named-file request bytes before backend rendering: system={payload_bytes(messages[0])}, "
+                            f"history={payload_bytes(messages[1:-1])}, task={payload_bytes(messages[-1])}, "
+                            f"tool schemas={payload_bytes(tool_definitions)}.",
+                        )
                     self._emit(
                         callback,
                         "status",
@@ -3953,11 +4019,21 @@ def extract_tar_to_dir(tar_path: Path, destination_dir: Path) -> None:
         archive.extractall(destination_dir)
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:9497a11309f3284a> module/FunctionDef:iter_workspace_files:0
-def iter_workspace_files(workspace: Path, excluded_dirs: set[str]) -> Iterable[Path]:
+def iter_workspace_files(workspace: Path, excluded_dirs: set[str], *, checkpoint: Any = None) -> Iterable[Path]:
     for root, dirnames, filenames in os.walk(workspace, topdown=True):
-        dirnames[:] = [dirname for dirname in dirnames if not is_excluded_dir_name(dirname, excluded_dirs)]
         root_path = Path(root)
+        accepted = []
+        for dirname in dirnames:
+            if checkpoint is not None:
+                checkpoint(entry=True)
+                if root_path == workspace / "evaluation" and dirname.casefold() == "results":
+                    continue
+            if not is_excluded_dir_name(dirname, excluded_dirs):
+                accepted.append(dirname)
+        dirnames[:] = accepted
         for filename in filenames:
+            if checkpoint is not None:
+                checkpoint(entry=True)
             yield root_path / filename
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:954ee7e66b1fb895> module/FunctionDef:resolve_allowed_project_command:0

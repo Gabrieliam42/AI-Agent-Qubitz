@@ -1,4 +1,4 @@
-- Current local public catalog: 41 user-facing launchers in `variants/`, requiring project-root `runtime/`; standalone exports are supported. Start the shared GUI through `AI Agent Qubitz.py` or run a user variant directly by its `variants/` path. Developer-only launchers are not part of this catalog or automated validation.
+- Public catalog: 51 launchers in `variants/`, requiring project-root `runtime/`. Start the shared GUI through `AI Agent Qubitz.py` or run a variant directly by its `variants/` path. Developer-only launchers are not part of this catalog.
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 Dense
 - `AI_Agent_Qubitz_Gemma-4-12B-IT-Q4_12G.py` - 12GB VRAM GPU profile, `Google DeepMind's` dense Gemma 4 12B Unified Q4_K_M; text/tool only, loaded context fitted to available memory.
@@ -38,11 +38,17 @@
 - `AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py` - 48 GB VRAM+ tier, `NVIDIA's` Llama-3.3-Nemotron-Super-49B-v1.5 UD-Q6_K_XL
 - `AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py` - 48 GB VRAM+ tier with fitting/CPU overflow, `Qwen Team's` Qwen3-Coder-Next 80B A3B hybrid-attention MoE UD-Q4_K_S
 - `AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py` - 48 GB VRAM+ tier plus RAM overflow, `Qwen Team's` Qwen3.8-Flash-Next 125B A6B MoE UD-IQ4_XS
+- `AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-Q4_K_XL.py` - 72 GB VRAM+ tier plus RAM overflow, `Qwen Team's` Qwen3.8-Flash-Next 125B A6B MoE UD-Q4_K_XL
 - `AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py` - 48 GB VRAM+ tier plus RAM, `Ornith AI's` Qwen3.5-family Ornith-1.5-122B MoE UD-Q5_K_XL; text/tool only
 - `AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py` - 48 GB VRAM+ tier plus RAM, `NVIDIA's` Nemotron-H Mamba/attention hybrid MoE UD-Q6_K_XL; text/tool only, vision projector not enabled
 - `AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` - 48 GB VRAM+ tier plus RAM overflow, `DeepSeek AI's` DeepSeek-V4-Flash-0731 MoE UD-IQ4_XS
-- `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py` - five-shard IQ4_XS variant in the 72 GB VRAM+ tier plus RAM overflow; missing pinned backend is prepared online; long-task stability remains unqualified.
 - `AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` - 48 GB VRAM+ tier plus RAM overflow, `InclusionAI's` Ling-3.0-flash 124B A5.1B hybrid-linear MoE AD-Q5_K_M
+*****
+- `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py` - five-shard IQ4_XS variant in the 72 GB VRAM+ tier plus RAM overflow; missing pinned backend is prepared online; long-task stability remains unqualified.
+- Dense Hermes 4 70B: [UD-Q4_K_XL](AI_Agent_Qubitz_Hermes-4-70B-UD-Q4_K_XL.md), 72 GB VRAM+ with RAM overflow.
+- `AI_Agent_Qubitz_Hermes-4.3-36B-Q8_0.py`: [Hermes 4.3 36B Q8_0](hermes_ripple_variants.md), 72 GB VRAM+.
+- Dense Ripple 65B Preview: `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q4_K_M.py` and `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q5_K_M.py` are [single-file choices](hermes_ripple_variants.md) alongside [AD-Q6_K](AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q6_K.md), [Q8_0](AI_Agent_Qubitz_Ripple-65B-Preview-Q8_0.md), and [BF16](AI_Agent_Qubitz_Ripple-65B-Preview-BF16.md). All are in the 72 GB VRAM+ tier.
+- MoE Laguna S 2.1 118B-A8B: [UD-Q4_K_XL](AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-UD-Q4_K_XL.md) and [Q8_0](AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-Q8_0.md), 72 GB VRAM+ with RAM overflow.
 
 The 24 GB, 48 GB VRAM+ and 72 GB VRAM+ tiers use all visible compatible GPUs,
 not fixed one/two/three-card counts. Capacity, headroom and runtime support still

@@ -14,4 +14,8 @@ flag-only `--fit` with `--fit-margin`. It retains 202752 default context and
 Windows/WSL memory guards. Online startup prepares its missing pinned backend;
 historical short-test passes did not establish long-run stability.
 
+The Qwen3.8 Flash Next [UD-Q4_K_XL](AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-Q4_K_XL.md)
+profile also uses the 72 GB VRAM+ label. The [variant catalog](qubitz_variants_list.md)
+lists the other available large-model profiles.
+
 Automatic-fit launchers strip inherited GPU-layer and tensor-split overrides so the selected runtime can place weights using its own fitting policy. Variants with explicit layer placement keep that model-specific policy. Runtime versions and supported flags are pinned per launcher; for example, [Ornith-1.5-122B](AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.md) and [Nemotron-3.5-Super-VL](AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.md) use isolated runtime releases. Consult each model guide for its runtime details rather than assuming one backend revision applies to the whole tier.

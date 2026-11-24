@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime layout](../runtime/README.md). Model settings are unchanged.
 
 - Script: `AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py`
 - Model repository: `AtomicChat/Ling-3.0-flash-GGUF`
@@ -20,6 +20,11 @@ The normal launcher is `variants/AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py
 - The native installer validates archive size and the release SHA256 when supplied. `QUBITZ_OFFLINE=1` prevents missing-runtime downloads.
 - Using the TurboQuant fork does not enable TurboQuant KV compression: this variant retains `q4_0` K/V cache and CUDA FlashAttention.
 
-## Behavioral Compatibility Evidence
+## Current Source-Verified Profile
 
-The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
+- Model alias and GGUF repository: `AtomicChat/Ling-3.0-flash-GGUF`.
+- Launch shard: `Ling-3.0-flash-AD-Q5_K_M-00001-of-00002.gguf`; both shards are required. Profile label: `Ling-3.0-flash-124B-A5.1B-AD-Q5_K_M`.
+- Requested context ceiling: `262144` tokens; default maximum output: `16384` tokens.
+- Embedding model: `BAAI/bge-code-v1`.
+- Uses isolated `AtomicBot-ai/atomic-llama-cpp-turboquant` `b10269-1.6.0`, automatic multi-GPU layer fitting, a `131072` fit minimum, and `q4_0` K/V cache; profile records no MTP draft or background prewarm. The earlier two-GPU observation above remains historical evidence, not a fixed device-count requirement.
+- This profile block reflects source metadata. The live observation above establishes Windows startup and effective context, not task correctness or performance baselines.

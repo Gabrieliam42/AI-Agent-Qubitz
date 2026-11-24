@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from .loader import DEVELOPER_WEB_NAMESPACE_FLAG
 from .paths import DEFAULT_VARIANT, PROJECT_ROOT, variant_path, variant_paths
 from .source import compose_variant, launcher_spec
-from .variant_policy import require_user_variants_allowed
+from .variant_policy import user_variant_allowed
 
 
 def main(argv: Sequence[str] | None = None, *, developer_web: bool = False) -> int:
@@ -30,8 +30,8 @@ def main(argv: Sequence[str] | None = None, *, developer_web: bool = False) -> i
                 parser.error("No variants were found in variants/.")
             print("\n".join(path.name for path in paths))
             return 0
-        if developer_web:
-            require_user_variants_allowed([args.variant])
+        if not user_variant_allowed(args.variant):
+            raise ValueError("Developer-only variants cannot be opened through this launcher.")
         target = variant_path(args.variant, PROJECT_ROOT)
         if not target.is_file():
             parser.error(f"Variant is unavailable: {args.variant}")

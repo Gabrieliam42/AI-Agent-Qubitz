@@ -10,10 +10,16 @@ from typing import Any
 from .source import compose_variant
 
 DEVELOPER_WEB_NAMESPACE_FLAG = "_QUBITZ_DEVELOPER_WEB_UI"
+VARIANT_UI_INITIALIZER = "_QUBITZ_VARIANT_UI_INITIALIZER"
 
 
 def initialize_variant(namespace: dict[str, Any], spec: dict[str, Any]) -> None:
     developer_web = namespace.pop(DEVELOPER_WEB_NAMESPACE_FLAG, False) is True
+    ui_initializer = namespace.pop(VARIANT_UI_INITIALIZER, None)
+    if ui_initializer is not None and not callable(ui_initializer):
+        raise TypeError("The variant UI initializer must be a trusted callable")
+    if developer_web and ui_initializer is not None:
+        raise ValueError("A custom Tk selector cannot be combined with the browser interface")
     path = Path(namespace["__file__"]).resolve()
     source = compose_variant(spec, path.name)
     tree = ast.parse(source, filename=str(path))
@@ -46,6 +52,8 @@ def initialize_variant(namespace: dict[str, Any], spec: dict[str, Any]) -> None:
     from .workflow import install_workflow_records
 
     install_workflow_records(namespace["_APP"].base)
+    if ui_initializer is not None:
+        ui_initializer(namespace)
     if developer_web:
         from .browser_entrypoint import install_browser_entrypoint
 

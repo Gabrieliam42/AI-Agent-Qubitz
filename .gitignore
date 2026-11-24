@@ -39,8 +39,9 @@ changelog.txt
 *.log
 .env
 
-# Root-level helper executables are local utilities, not project source
+# Root-level launch helpers are local utilities, not release inputs
 /*.exe
+/Run_*Python_Script*.py
 
 # Local agent/runtime state
 /.skills/
@@ -88,8 +89,13 @@ changelog.txt
 /runtime/browser_entrypoint.py
 /runtime/web_api.py
 /runtime/web_controller.py
+/runtime/python_launcher.py
+/runtime/pyinstaller_capture_tk_env.py
 /documentation/verification_*.md
 /documentation/developer/
+/documentation/windows_script_launchers.md
+/documentation/*Qwen3.8-Flash-Next-125B-A6B-Q[568].md
+/variants/*Qwen3.8-Flash-Next-125B-A6B-Q[568].py
 /variants/*-WX*.py
 /variants/*_WX*.py
 /variants/*.WX*.py

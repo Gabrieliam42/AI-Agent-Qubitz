@@ -2,7 +2,7 @@
 
 ## Shared Runtime
 
-The normal launcher is `variants/AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime components](../runtime/README.md). Model settings are unchanged.
+The normal launcher is `variants/AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` and requires project-root `runtime/`. Use `AI Agent Qubitz.py --variant AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py` or run the variant directly. Universal source is shared; specific source and mutable runtime state remain isolated. See [runtime layout](../runtime/README.md). Model settings are unchanged.
 
 Local-inference Qubitz variant for DeepSeek-V4-Flash-0731 UD-IQ4_XS.
 
@@ -29,6 +29,11 @@ Local-inference Qubitz variant for DeepSeek-V4-Flash-0731 UD-IQ4_XS.
 - Remains independently runnable with its own GUI, CLI, retrieval, MCP/tool, transaction, completion-verification, routing, and thermal behavior.
 - Uses local GGUF inference only and requires no paid service.
 
-## Behavioral Compatibility Evidence
+## Current Source-Verified Profile
 
-The shared wrapper distinguishes API/signature compatibility from behavioral compatibility. Claims about prior numeric types, precision, overflow, exception behavior, or omitted-argument defaults must be limited to behavior verified by same-input comparisons or tests; otherwise state what remains unverified. Passing a narrow fixture or run does not establish untested edge cases.
+- Model alias and GGUF repository: `unsloth/DeepSeek-V4-Flash-0731-GGUF`.
+- Launch shard: `DeepSeek-V4-Flash-0731-UD-IQ4_XS-00001-of-00004.gguf`; all four shards are required.
+- Requested context ceiling: `262144` tokens; default maximum output: `16384` tokens.
+- Embedding model: `BAAI/bge-code-v1`.
+- Uses isolated llama.cpp `b10982`, automatic multi-GPU layer fitting, a `131072` fit minimum, and `f16` K/V cache; profile records no MTP draft or background prewarm.
+- This profile block reflects current source metadata; live download, load, effective context, and quality still require runtime verification.

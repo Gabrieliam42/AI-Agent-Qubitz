@@ -1660,22 +1660,30 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
             _answer: str,
             callback: Callable[[str, str], None] | None,
         ) -> str | None:
+            from runtime.creation_verifier import saved_creation_failure_for
             from runtime.structured_response import StructuredBackendError, StructuredResponseError, record_failure, record_proposal
 
             broker = self._tool_permission_broker
+            saved_creation_failure = saved_creation_failure_for(broker)
             task_intent = broker.task_intent or self._task_intent_for_prompt(prompt)
             from runtime.workflow import current_creations
 
             correcting_tests = bool(broker._test_correction_targets and broker.transaction_verification_failures)
             created_hashes = current_creations(broker)
+            correcting_saved_code = bool(saved_creation_failure and correcting_tests
+                                        and len(broker._test_correction_targets) == 1
+                                        and broker.transaction_verification_failures == 1
+                                        and broker._test_correction_targets == created_hashes)
+            if saved_creation_failure and not correcting_saved_code:
+                return None
             correcting_creation = bool(
                 correcting_tests and task_intent.semantic.requests("create")
-                and task_intent.semantic.requests("edit") and _requests_test_execution(prompt)
+                and (correcting_saved_code or task_intent.semantic.requests("edit") and _requests_test_execution(prompt))
                 and all(created_hashes.get(path) == digest
                         for path, digest in broker._test_correction_targets.items())
             )
             if (
-                task_intent.task_kind not in {"coding_repair_task", "edit_or_refactor_task"}
+                (not correcting_saved_code and task_intent.task_kind not in {"coding_repair_task", "edit_or_refactor_task"})
                 or task_intent.semantic.requests("copy")
                 or task_intent.semantic.requests("create") and not correcting_creation
                 or broker.no_progress_recovery_exhausted
@@ -1722,7 +1730,7 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                     return None
                 if requested_targets != explicit_targets:
                     return None
-            exact_edit = named_edit or exact_batch
+            exact_edit = named_edit or exact_batch or correcting_saved_code
             proposal_turn, proposal_generation = broker.turn_id, broker.workspace_generation
             proposal_targets = set(broker.transaction_explicit_file_targets)
             proposal_reference_hashes: dict[str, str] = {}
@@ -1752,7 +1760,7 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                 ):
                     return None
                 progress = getattr(broker, "action_progress", None)
-                if progress is not None and not progress.reserve_recovery("proposal"):
+                if not correcting_saved_code and progress is not None and not progress.reserve_recovery("proposal"):
                     broker.no_progress_recovery_exhausted = True
                     return None
                 broker._named_edit_proposal_used = True
@@ -1858,7 +1866,13 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                     ]
                 )
 
-            test_path, test_files = self._wrapper_existing_test_target(prompt) if "tests" in required else ("", [])
+            from runtime.verification_discovery import VerificationDiscoveryUnavailable
+
+            try:
+                test_path, test_files = (await self._wrapper_existing_test_target(prompt)
+                                         if "tests" in required and not correcting_saved_code else ("", []))
+            except VerificationDiscoveryUnavailable:
+                test_path, test_files = "", []
             focused_context = "" if exact_edit else (
                 self._build_focused_file_context(prompt)
                 or self._build_metadata_or_lexical_context(prompt)
@@ -2231,8 +2245,8 @@ THINKING_EFFORT_DISPLAY_OPTIONS = THINKING_EFFORT_OPTIONS
                             )
                 return None
 
-            correction_context = ""
-            if broker.transaction_verification_failures and test_path:
+            correction_context = _fence_untrusted_workspace_content(saved_creation_failure) if correcting_saved_code else ""
+            if not correcting_saved_code and broker.transaction_verification_failures and test_path:
                 test_target = (self.workspace / test_path).resolve()
                 correction_context = broker.failed_test_outputs.get(str(test_target), "")[-4000:]
                 if not correction_context:
@@ -3072,7 +3086,11 @@ NETWORK_MODE_ONLINE = "online"
                 failure_fingerprint = broker._result_fingerprint(name.lower(), arguments)
                 blocked_failure_key = ""
                 blocked_failure_reason = ""
-                if broker.failed_result_counts.get(failure_fingerprint, 0) >= 2:
+                content_rejection = broker.failed_file_content.get(failure_fingerprint)
+                if content_rejection is not None:
+                    blocked_failure_key = failure_fingerprint
+                    blocked_failure_reason = "This exact content already failed validation before dispatch."
+                elif broker.failed_result_counts.get(failure_fingerprint, 0) >= 2:
                     blocked_failure_key = failure_fingerprint
                     blocked_failure_reason = (
                         "This exact valid tool call already failed twice without verified progress."
@@ -3099,19 +3117,29 @@ NETWORK_MODE_ONLINE = "online"
                 if blocked_failure_key:
                     block_count = broker.failed_result_block_counts.get(blocked_failure_key, 0) + 1
                     broker.failed_result_block_counts[blocked_failure_key] = block_count
-                    broker._emit(
-                        f"Blocked repeated no-progress {name} call; use a materially different "
-                        "tool route or report the exact blocker."
-                    )
+                    if content_rejection is not None:
+                        broker._emit(
+                            f"Blocked unchanged {name} content after pre-write validation; "
+                            "correct it for the same authorized target or report the blocker."
+                        )
+                    else:
+                        broker._emit(
+                            f"Blocked repeated no-progress {name} call; use a materially different "
+                            "tool route or report the exact blocker."
+                        )
                     blocked_result = self._error_result(
                         {
                             "status": "repeated_failed_result",
                             "tool": name,
                             "reason": blocked_failure_reason,
                             "instruction": (
+                                "Correct the rejected content for the same authorized target or report the blocker."
+                                if content_rejection is not None else
                                 "Do not repeat this call or an equivalent request to the same failed route. "
                                 "Use a different authoritative route or report the unresolved postcondition."
                             ),
+                            **({"previous_validation": content_rejection, "files_unchanged": True}
+                               if content_rejection is not None else {}),
                             "dispatch_attempted": False,
                             "mutation_dispatched": False,
                         }
@@ -3169,6 +3197,9 @@ NETWORK_MODE_ONLINE = "online"
                                     raise
                                 ast.parse(content.replace("\\r\\n", "\n").replace("\\n", "\n"), filename=str(target))
                         except SyntaxError as exc:
+                            broker._emit(
+                                f"Python write rejected before dispatch: {target.name}:{exc.lineno}:{exc.offset}: {exc.msg}"
+                            )
                             rejected = self._error_result({
                                 "status": "invalid_file_content", "tool": name, "path": str(target),
                                 "reason": exc.msg, "line": exc.lineno, "offset": exc.offset,
@@ -3314,6 +3345,11 @@ NETWORK_MODE_ONLINE = "online"
                     })
                     broker.record_result(name, arguments, blocked_result, wrapper_rejected=True)
                     return blocked_result
+            if broker is not None:
+                from runtime.file_draft import tool_preview
+
+                with suppress(Exception):
+                    tool_preview(broker, name, arguments, state="Not saved (proposal)")
             dispatch_lineage = dispatched_receipt(
                 name, original_arguments, arguments, turn_id=getattr(broker, "turn_id", None),
                 generation=getattr(broker, "workspace_generation", None),
@@ -5471,46 +5507,9 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
     original_ensure_faiss_index = retriever_cls._ensure_faiss_index
     original_release_gpu_resources = retriever_cls.release_gpu_resources
 
-    def _system_gpu_inventory() -> list[dict[str, Any]]:
-        try:
-            probe = subprocess.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=index,name,memory.free,memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return []
-        if probe.returncode != 0:
-            return []
-        inventory: list[dict[str, Any]] = []
-        for line in probe.stdout.splitlines():
-            parts = [part.strip() for part in line.split(",", 3)]
-            if len(parts) != 4:
-                continue
-            try:
-                index = int(parts[0])
-                free_mib = int(parts[2])
-                total_mib = int(parts[3])
-            except ValueError:
-                continue
-            inventory.append(
-                {
-                    "index": index,
-                    "name": parts[1],
-                    "free_mib": free_mib,
-                    "total_mib": total_mib,
-                }
-            )
-        return inventory
-
     def _resolve_embedder_device(self: Any, torch: Any) -> str:
         requested = str(getattr(self, "requested_device", "auto") or "auto").strip().lower()
+        self._device_selection_reason = ""
         if requested == "cpu" or not torch.cuda.is_available():
             self._device_selection_reason = "CPU explicitly configured" if requested == "cpu" else "CUDA unavailable"
             return "cpu"
@@ -5518,10 +5517,19 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
         if device_count < 1:
             self._device_selection_reason = "CUDA unavailable"
             return "cpu"
-        inventory = [item for item in _system_gpu_inventory() if 0 <= int(item["index"]) < device_count]
+        def free_memory(index: int) -> int | None:
+            try:
+                return int(torch.cuda.mem_get_info(index)[0])
+            except (RuntimeError, ValueError, TypeError, OSError):
+                return None
+
         if requested == "auto":
-            selected = max(inventory, key=lambda item: int(item["free_mib"]), default=None)
-            selected_index = int(selected["index"]) if selected is not None else 0
+            existing = getattr(self, "_qubitz_cuda_device_index", None)
+            if self._loaded and existing is not None and 0 <= existing < device_count:
+                selected_index, free_bytes = existing, free_memory(existing)
+            else:
+                inventory = [(index, free_memory(index)) for index in range(device_count)]
+                selected_index, free_bytes = max(inventory, key=lambda item: -1 if item[1] is None else item[1])
         else:
             match = re.fullmatch(r"cuda(?::(\d+))?", requested)
             if match is None:
@@ -5532,21 +5540,19 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
                 raise RuntimeError(
                     f"Requested CUDA embedder device {selected_index} is unavailable; detected {device_count} CUDA device(s)."
                 )
-            selected = next(
-                (item for item in inventory if int(item["index"]) == selected_index),
-                None,
-            )
-        free_bytes = int(selected["free_mib"]) * 1024**2 if selected is not None else None
-        if self.min_free_vram_bytes > 0 and free_bytes is not None and free_bytes < self.min_free_vram_bytes:
+            free_bytes = free_memory(selected_index)
+        required = max(self.min_free_vram_bytes, self.reserve_vram_bytes)
+        if free_bytes is not None and free_bytes < required:
             self.load_warning = (
                 f"System-wide free VRAM on CUDA device {selected_index} is {base.format_bytes(free_bytes)}, below "
-                f"the embedder threshold {base.format_bytes(self.min_free_vram_bytes)}; using CPU fallback."
+                f"the embedder threshold {base.format_bytes(required)}; using CPU fallback."
             )
             self._device_selection_reason = "insufficient free CUDA memory"
             return "cpu"
-        torch.cuda.set_device(selected_index)
+        if free_bytes is None and required:
+            self._device_selection_reason = "CUDA headroom unavailable"
+            return "cpu"
         self._qubitz_cuda_device_index = selected_index
-        self._qubitz_gpu_inventory = inventory
         self._device_selection_reason = ""
         return "cuda"
 
@@ -5556,33 +5562,11 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
     embedder_cls._resolve_device = _resolve_embedder_device
     embedder_cls._report_cuda_device = _report_embedder_cuda_device
 
-    def _get_rmm_resource(rmm: Any) -> Any:
-        getter = getattr(rmm.mr, "get_per_device_resource", None)
-        if getter is not None:
-            return getter(0)
-        getter = getattr(rmm.mr, "get_current_device_resource", None)
-        if getter is not None:
-            return getter()
-        raise RuntimeError("The installed RMM package cannot report the active memory resource.")
-
-    def _set_rmm_resource(rmm: Any, resource: Any) -> None:
-        setter = getattr(rmm.mr, "set_per_device_resource", None)
-        if setter is not None:
-            try:
-                setter(0, resource)
-                return
-            except TypeError:
-                pass
-        setter = getattr(rmm.mr, "set_current_device_resource", None)
-        if setter is not None:
-            setter(resource)
-            return
-        raise RuntimeError("The installed RMM package cannot set the active memory resource.")
-
     def _init(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
         self._qubitz_rmm_module = None
         self._qubitz_rmm_previous_resource = None
+        self._qubitz_rmm_device = None
         self._qubitz_retrieval_health_reported = False
 
     def _configure_rmm_pool(self: Any) -> None:
@@ -5602,17 +5586,20 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
         if pool_bytes <= 0:
             return
         previous_resource = None
+        device = self._index_device
         try:
-            previous_resource = _get_rmm_resource(rmm)
-            pool = rmm.mr.PoolMemoryResource(
-                previous_resource,
-                initial_pool_size=pool_bytes,
-            )
-            _set_rmm_resource(rmm, pool)
+            if pool_bytes + self.embedder.reserve_vram_bytes > self.embedder._torch.cuda.mem_get_info(device)[0]:
+                self._report(f"RMM pool skipped: insufficient headroom on CUDA:{device}.")
+                return
+            with self.embedder._torch.cuda.device(device):
+                previous_resource = rmm.mr.get_per_device_resource(device)
+                pool = rmm.mr.PoolMemoryResource(previous_resource, initial_pool_size=pool_bytes)
+                rmm.mr.set_per_device_resource(device, pool)
         except Exception as exc:  # pragma: no cover - optional dependency path
             if previous_resource is not None:
                 try:
-                    _set_rmm_resource(rmm, previous_resource)
+                    with self.embedder._torch.cuda.device(device):
+                        rmm.mr.set_per_device_resource(device, previous_resource)
                 except Exception:
                     pass
             self._report(
@@ -5622,11 +5609,12 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
             return
         self._qubitz_rmm_module = rmm
         self._qubitz_rmm_previous_resource = previous_resource
+        self._qubitz_rmm_device = device
         self._rmm_pool = pool
         self._rmm_configured = True
         self._report(
             "Enabled RMM pooling for cuVS-backed retrieval with initial pool size "
-            f"{base.format_bytes(pool_bytes)}."
+            f"{base.format_bytes(pool_bytes)} on CUDA:{device}."
         )
 
     def _report_retrieval_stack_health(self: Any) -> None:
@@ -5644,15 +5632,15 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
             torch_version = str(getattr(torch, "__version__", "unknown"))
             runtime_cuda = str(getattr(getattr(torch, "version", None), "cuda", None) or "none")
             cuda_available = bool(torch.cuda.is_available())
-            device_text = "unavailable"
-            if cuda_available:
+            device_text = "CPU"
+            if cuda_available and self.embedder.device == "cuda":
                 try:
                     device_index = int(getattr(self.embedder, "_qubitz_cuda_device_index", 0))
                     major, minor = torch.cuda.get_device_capability(device_index)
                     device_text = f"CUDA{device_index} {torch.cuda.get_device_name(device_index)} sm_{major}{minor}"
                 except Exception:
                     device_text = "selected CUDA device"
-            if not cuda_available or not runtime_cuda.startswith("13."):
+            if self.embedder.device != "cuda" or not cuda_available or not runtime_cuda.startswith("13."):
                 healthy = False
             parts.append(
                 f"torch={torch_version} runtime_cuda={runtime_cuda} device={device_text}"
@@ -5716,22 +5704,25 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
             return False
         rmm = getattr(self, "_qubitz_rmm_module", None)
         previous_resource = getattr(self, "_qubitz_rmm_previous_resource", None)
-        if rmm is None or previous_resource is None:
+        device = self._qubitz_rmm_device
+        if rmm is None or previous_resource is None or device is None:
             self._report("RMM resource restoration was skipped because prior allocator state is unavailable.")
             return False
         try:
-            _set_rmm_resource(rmm, previous_resource)
+            with self.embedder._torch.cuda.device(device):
+                rmm.mr.set_per_device_resource(device, previous_resource)
+                self._rmm_pool = None
         except Exception as exc:  # pragma: no cover - optional dependency path
             self._report(
                 "RMM resource restoration failed; the retrieval pool may remain active: "
                 f"{type(exc).__name__}: {exc}"
             )
             return False
-        self._rmm_pool = None
         self._rmm_configured = False
         self._rmm_attempted = False
         self._qubitz_rmm_module = None
         self._qubitz_rmm_previous_resource = None
+        self._qubitz_rmm_device = None
         return True
 
     def _release_gpu_resources(self: Any) -> None:
@@ -5743,6 +5734,7 @@ def _patch_cuda_retrieval_runtime(base: Any) -> None:
 
     retriever_cls.__init__ = _init
     retriever_cls._configure_rmm_pool = _configure_rmm_pool
+    retriever_cls._qubitz_restore_rmm = _restore_rmm_resource
     retriever_cls._ensure_faiss_index = _ensure_faiss_index
     retriever_cls.release_gpu_resources = _release_gpu_resources
     retriever_cls._qubitz_cuda_stack_patched = True
@@ -6467,6 +6459,9 @@ def _patch_streaming_chat(base: Any) -> None:
         _apply_file_creation_schema(self, payload, kwargs)
         _apply_recovery_template_prefill(self, payload)
         _apply_template_reasoning(self, payload)
+        from runtime.file_draft import phase
+
+        phase("Awaiting model")
         raw = self._call_with_fallback("post_json", "/v1/chat/completions", payload)
         _check_user_cancellation()
         return _normalize_chat_response(self, raw, payload)
@@ -6531,10 +6526,17 @@ def _patch_streaming_chat(base: Any) -> None:
         from uuid import uuid4
 
         request_id = uuid4().hex
-        from runtime.generation_telemetry import LiveTokenMeter
+        from runtime.file_draft import StreamDraft, phase
+        from runtime.generation_telemetry import LiveTokenMeter, prompt_progress
 
         progress_context = globals().get("_TOOL_CALL_CONTEXT")
         progress_broker = progress_context.get() if progress_context is not None else None
+        draft = StreamDraft(progress_broker)
+        generated = False
+        last_prefill = (-1, 0)
+        if getattr(self, "_qubitz_backend_identity", {}).get("supports_prompt_progress") is True:
+            payload["return_progress"] = True
+        phase("Awaiting model")
         progress = LiveTokenMeter(request_id, getattr(progress_broker, "callback", None))
         self._qubitz_pending_decode_speed = None
         progress.update(phase="prefill")
@@ -6615,7 +6617,12 @@ def _patch_streaming_chat(base: Any) -> None:
                             )
                         if isinstance(event.get("usage"), dict):
                             usage = event["usage"]
-                        if isinstance(event.get("timings"), dict):
+                        prefill = prompt_progress(event) if not generated else None
+                        if prefill is not None and prefill[0] > last_prefill[0]:
+                            last_prefill = prefill
+                            processed, total = prefill
+                            phase(f"Prefill {processed:,}/{total:,}")
+                        if isinstance(event.get("timings"), dict) and prefill is None:
                             timings = event["timings"]
                             progress.update(timings)
                         choices = event.get("choices") or []
@@ -6624,6 +6631,9 @@ def _patch_streaming_chat(base: Any) -> None:
                         choice = choices[0]
                         finish_reason = choice.get("finish_reason") or finish_reason
                         delta = choice.get("delta") or {}
+                        if not generated and any(delta.get(key) for key in ("reasoning_content", "content", "tool_calls")):
+                            generated = True
+                            phase("Generating")
                         reasoning = delta.get("reasoning_content")
                         if isinstance(reasoning, str) and reasoning:
                             reasoning_received = reasoning_received or bool(reasoning.strip())
@@ -6724,6 +6734,8 @@ def _patch_streaming_chat(base: Any) -> None:
                                 current["function"]["name"] += str(function["name"])
                             if function.get("arguments"):
                                 current["function"]["arguments"] += str(function["arguments"])
+                                with suppress(Exception):
+                                    draft.update(index, current["function"])
                         # A terminal frame completes generation; waiting for another
                         # chunk can turn a finished response into a silence timeout.
                         if finish_reason:
@@ -10089,7 +10101,7 @@ def _sampling_profile_for_route(
         profiles["mcp_tool"] = profiles["simple_question"]
         profiles["coding_edit"] = profiles["simple_question"]
     elif "laguna" in resolved_model:
-        family_name = "laguna_xs_2_1"
+        family_name = "laguna_s_2_1" if "laguna-s-2.1" in resolved_model else "laguna_xs_2_1"
         profiles = _uniform((0.70, 1.00, 20, 0.0, 1.0, 0.0))
     elif "hypernova" in resolved_model:
         family_name = "hypernova"
@@ -11725,16 +11737,22 @@ def _patch_harness_loader(base: Any) -> None:
             or (path / "bin" / "python").is_file()
         )
 
-    def _iter_workspace_files(workspace: Path, configured: set[str]) -> Any:
+    def _iter_workspace_files(workspace: Path, configured: set[str], *, checkpoint: Any = None) -> Any:
         for root, dirnames, filenames in os.walk(workspace, topdown=True):
             root_path = Path(root)
-            dirnames[:] = [
-                dirname
-                for dirname in dirnames
-                if not _is_excluded_dir_name(dirname, configured)
-                and not _is_python_environment_root(root_path / dirname)
-            ]
+            accepted = []
+            for dirname in dirnames:
+                if checkpoint is not None:
+                    checkpoint(entry=True)
+                    if root_path == workspace / "evaluation" and dirname.casefold() == "results":
+                        continue
+                if (not _is_excluded_dir_name(dirname, configured)
+                        and not _is_python_environment_root(root_path / dirname)):
+                    accepted.append(dirname)
+            dirnames[:] = accepted
             for filename in filenames:
+                if checkpoint is not None:
+                    checkpoint(entry=True)
                 yield root_path / filename
 
     base.is_excluded_dir_name = _is_excluded_dir_name
@@ -11814,6 +11832,7 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
 # <QUBITZ_SHARED_SYMBOL:wrapper:4dd6f19ca85d10e4> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:_system_prompt:0
         def _system_prompt(self, memory_context: str, *args: Any, **kwargs: Any) -> str:
             from runtime.memory_context import bounded_memory_context
+            from runtime.workflow import CODE_SUFFIXES, fresh_named_creation
 
             memory_context = bounded_memory_context(
                 memory_context, int(getattr(base, "MAX_MEMORY_CONTEXT_CHARS", 1200)),
@@ -11828,12 +11847,24 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
             route_name = self._current_route_for_harness() or ""
             task_intent = self._task_intent_for_prompt(user_prompt, route_name)
             task_class = task_intent.task_kind
+            broker = self._tool_permission_broker
+            compact_creation = (
+                route_name == "named_file_operation"
+                and task_intent.conversation_relation == "new_request"
+                and not task_intent.semantic.scoped_prohibitions
+                and fresh_named_creation(broker)
+                and len(broker.creation_targets) == 1
+                and all(Path(path).suffix.casefold() in CODE_SUFFIXES for path in broker.creation_targets)
+                and not re.search(r"\b(?:pyinstaller|one-file executable|package manifest|build pipeline)\b",
+                                  user_prompt, re.IGNORECASE)
+            )
             scoped_harness = _select_harness_blocks(
                 full_harness,
                 route_name,
                 task_class,
                 user_prompt,
                 task_intent,
+                compact_creation=compact_creation,
             )
             if scoped_harness != full_harness and full_harness:
                 if full_harness in rendered_prompt:
@@ -11876,10 +11907,20 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
                 "a source or host receipt. Do not promote them into facts. Distinguish configured identity, "
                 "externally verified information and unknown capabilities."
             )
-            return f"{rendered_prompt}{discovery_section}{contract_section}{compatibility_contract}{grounding}"
+            system_prompt = f"{rendered_prompt}{discovery_section}{contract_section}{compatibility_contract}{grounding}"
+            status = getattr(self, "_active_callback", None)
+            if route_name == "named_file_operation" and status is not None:
+                harness = scoped_harness.strip()
+                harness_bytes = len(harness.encode("utf-8")) if harness and harness in rendered_prompt else 0
+                status("status", f"Named-file system prompt bytes: total={len(system_prompt.encode('utf-8'))}, "
+                       f"harness={harness_bytes}, tool policy={len(contract_section.encode('utf-8'))}, "
+                       f"workspace memory={len(discovery_section.encode('utf-8'))}.")
+            return system_prompt
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:4dfd415919ac00b8> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:_select_task_guidance:0
         def _select_task_guidance(self, prompt: str) -> str:
+            from runtime.workflow import fresh_named_creation
+
             selected_route = self._selected_route_name(prompt)
             if selected_route == "named_file_operation":
                 request = _named_file_operation_request(
@@ -11889,9 +11930,15 @@ def _score_implicit_entrypoint_capabilities(prompt: str, candidate_path: Path) -
                     prompt,
                 )
                 operation = str(request.get("operation")) if request else "operation"
+                destination_note = (
+                    "- The wrapper checked that every bound destination is absent. Start with the exact write; "
+                    "do not read a snapshot to confirm absence. The write still rechecks for collisions.\n"
+                    if fresh_named_creation(self._tool_permission_broker) else ""
+                )
                 guidance = (
                     f"- This is one unambiguous named-file {operation} request.\n"
                     "- Use only the exact wrapper-resolved path or source/destination pair; do not search for alternatives.\n"
+                    f"{destination_note}"
                     "- For one-file creation, generate complete content and call write_file only when the target is absent.\n"
                     "- For multi-file creation, generate every complete file and call write_files once; do not create a subset.\n"
                     "- For editing or explicit overwrite, read the exact target snapshot and use its format-aware patch tool.\n"
@@ -13843,7 +13890,11 @@ def _semantic_clause_speech_act(clause: str) -> str:
                 self.event_queue.put((run_id, kind, message))
 
             try:
-                answer = self.agent.run_sync(prompt, emit)
+                from runtime.file_draft import capture
+
+                draft_switch = getattr(self, "_qubitz_draft_enabled", None)
+                with capture(emit, drafts_enabled=draft_switch.is_set if draft_switch is not None else None):
+                    answer = self.agent.run_sync(prompt, emit)
             except asyncio.CancelledError as exc:
                 if getattr(self.agent, "_cancel_source", "") == "user":
                     self.event_queue.put((run_id, "answer", self.agent._cancel_partial_answer or "The task was cancelled."))
@@ -14295,6 +14346,60 @@ def _canonical_http_url(value: Any) -> str:
                 else:
                     run_id = getattr(self, "_active_gui_run_id", 0)
                     kind, message = item
+                draft_view = getattr(self, "_qubitz_file_draft_view", None)
+                if run_id != getattr(self, "_qubitz_file_draft_run", None):
+                    self._qubitz_file_draft_run = run_id
+                    if draft_view is not None:
+                        draft_view.reset()
+                if kind == "file_draft":
+                    draft_switch = getattr(self, "_qubitz_draft_enabled", None)
+                    if draft_switch is None or not draft_switch.is_set():
+                        continue
+                    from runtime.file_draft import DraftView
+
+                    try:
+                        if draft_view is None:
+                            draft_view = self._qubitz_file_draft_view = DraftView(
+                                self, on_hide=self.draft_panel_button.invoke,
+                            )
+                        draft_view.update(message)
+                        if getattr(self, "_qubitz_draft_diagnostic_pending", None) != run_id:
+                            self._qubitz_draft_diagnostic_pending = run_id
+
+                            def diagnose_draft(view=draft_view, observed_run=run_id, switch=draft_switch):
+                                if getattr(self, "_qubitz_draft_diagnostic_pending", None) == observed_run:
+                                    self._qubitz_draft_diagnostic_pending = None
+                                if not switch.is_set() or observed_run != getattr(self, "_active_gui_run_id", observed_run):
+                                    return
+                                with suppress(Exception):
+                                    evidence = view.render_evidence()
+                                    receipt = (observed_run, evidence)
+                                    if receipt != getattr(self, "_qubitz_last_draft_render", None):
+                                        self._qubitz_last_draft_render = receipt
+                                        self._qubitz_gui_log_event("draft_render", run_id=observed_run, **evidence)
+
+                            self.root.after(50, diagnose_draft)
+                    except Exception as error:
+                        with suppress(Exception):
+                            self._qubitz_gui_log_event("draft_render_error", run_id=run_id, error_type=type(error).__name__)
+                    continue
+                if kind == "work_phase":
+                    from runtime.file_draft import DRAFT_WORK_PHASES
+
+                    if message in DRAFT_WORK_PHASES:
+                        draft_switch = getattr(self, "_qubitz_draft_enabled", None)
+                        if draft_switch is None or not draft_switch.is_set():
+                            continue
+                    variable = getattr(self, "_qubitz_work_phase", None)
+                    if variable is not None:
+                        variable.set(message)
+                    continue
+                if kind == "done":
+                    if draft_view is not None:
+                        draft_view.finish()
+                    variable = getattr(self, "_qubitz_work_phase", None)
+                    if variable is not None:
+                        variable.set("")
                 if kind == "assistant_delta":
                     flush_reasoning_deltas()
                     stream_deltas.append(message)
@@ -14544,16 +14649,45 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
             self._reading_hold_after_id = None
             self._reading_scroll_after_id = None
             self._reading_hold_epoch = 0
+            toggle_style = "QubitzComposer.TCheckbutton"
+            style = self.ttk.Style(self.root)
+            style.map(toggle_style, background=[("active", "!disabled", base.UI_SELECT)])
             self.ttk.Checkbutton(
                 buttons, text="Show Reasoning", variable=self.reasoning_visible_var,
-                command=self._toggle_reasoning_display,
+                command=self._toggle_reasoning_display, style=toggle_style,
             ).pack(fill="x", pady=(8, 0))
             self.token_speed_var = self.tk.StringVar(master=self.root, value="-- tok/s")
-            self.token_speed_label = self.ttk.Label(buttons, textvariable=self.token_speed_var, width=13)
+            self.token_speed_label = self.ttk.Label(buttons, textvariable=self.token_speed_var)
             self.token_speed_label.pack(fill="x", pady=(8, 0))
-            self.ttk.Button(
+            self._qubitz_draft_enabled = base.threading.Event()
+            draft_visible = self.tk.BooleanVar(master=self.root, value=False)
+            self._qubitz_work_phase = self.tk.StringVar(master=self.root)
+
+            def toggle_draft_panel() -> None:
+                if draft_visible.get():
+                    self._qubitz_draft_enabled.set()
+                    return
+                self._qubitz_draft_enabled.clear()
+                if (view := getattr(self, "_qubitz_file_draft_view", None)) is not None:
+                    view.reset()
+                from runtime.file_draft import DRAFT_WORK_PHASES
+
+                if self._qubitz_work_phase.get() in DRAFT_WORK_PHASES:
+                    self._qubitz_work_phase.set("")
+
+            self.draft_panel_button = self.ttk.Checkbutton(
+                buttons, text="DraftPanel", variable=draft_visible, command=toggle_draft_panel,
+                style=toggle_style,
+            )
+            self.draft_panel_button.pack(fill="x", pady=(8, 0))
+            self._qubitz_work_phase_label = self.ttk.Label(
+                buttons, textvariable=self._qubitz_work_phase, width=1, anchor="e",
+            )
+            self._qubitz_work_phase_label.pack(fill="x")
+            self.jump_to_latest_button = self.ttk.Button(
                 buttons, text="Jump to latest", command=self._jump_to_latest,
-            ).pack(fill="x", pady=(4, 0))
+            )
+            self.jump_to_latest_button.pack(fill="x", pady=(4, 0))
             for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>",
                              "<Prior>", "<Next>", "<Control-Home>", "<Control-End>",
                              "<Up>", "<Down>"):
@@ -14602,6 +14736,7 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
             settings_groups = []
             reasoning_controls = []
             actions = []
+            speed_label = getattr(self, "token_speed_label", None)
             for group in grouped(widgets):
                 first = group[0]
                 setting = (
@@ -14612,10 +14747,10 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
                     first.winfo_class() in {"Checkbutton", "TCheckbutton"}
                     and first.cget("text") == "Show Reasoning"
                 )
-                speed = first is getattr(self, "token_speed_label", None)
+                speed = first is speed_label
                 if setting:
                     settings_groups.append(group)
-                elif reasoning or speed:
+                elif reasoning or speed or first is getattr(self, "draft_panel_button", None):
                     reasoning_controls.extend(group)
                 else:
                     actions.extend(group)
@@ -14648,6 +14783,7 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
             input_host.rowconfigure(0, weight=1)
             actions_host = self._prompt_actions_frame = self.ttk.Frame(controls)
             actions_host.grid(row=0, column=1, sticky="ne", padx=(10, 0))
+            actions_host.columnconfigure((0, 1), weight=1, uniform="composer_actions")
             settings_host = self._prompt_settings_frame = self.ttk.Frame(controls)
             settings_host.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
             if not settings_groups:
@@ -14658,26 +14794,54 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
             scrollbar = self.ttk.Scrollbar(input_host, orient="vertical", command=prompt.yview)
             scrollbar.grid(row=0, column=1, sticky="ns")
             prompt.configure(yscrollcommand=scrollbar.set)
-            for index, widget in enumerate(actions):
+            action_style = "QubitzComposer.TButton"
+            self.ttk.Style(self.root).map(
+                action_style,
+                background=[
+                    ("disabled", base.UI_PANEL_ALT),
+                    ("pressed", base.UI_SELECT),
+                    ("active", base.UI_SELECT),
+                ],
+            )
+            primary_actions = (
+                self.send_button, self.clipboard_button,
+                self.jump_to_latest_button, self.steer_button,
+                self.cancel_button, self.clear_button,
+            )
+            ordered_actions = (*primary_actions, *(widget for widget in actions
+                               if widget not in primary_actions and widget is not self._qubitz_work_phase_label))
+            for index, widget in enumerate(ordered_actions):
+                if widget.winfo_class() == "TButton":
+                    widget.configure(style=action_style)
                 widget.grid(in_=actions_host, row=index // 2, column=index % 2,
-                            sticky="ew", padx=(0, 4), pady=2)
+                            sticky="nsew", padx=(0, 4), pady=2)
                 widget.lift()
+            self._qubitz_work_phase_label.grid(
+                in_=actions_host, row=(len(ordered_actions) + 1) // 2, column=0, columnspan=2,
+                sticky="ew", padx=(0, 4),
+            )
+
+            def spacing(widget: Any) -> int:
+                return 4 if widget is speed_label else 8
 
             def flow(host: Any, groups: list[list[Any]], available: int,
                      sizes: dict[Any, tuple[int, int]] | None = None) -> int:
                 sizes = sizes or {}
                 used = top = row_height = 0
                 for group in groups:
-                    required = sum(sizes.get(widget, (widget.winfo_reqwidth(), 0))[0] + 8
+                    required = sum(sizes.get(widget, (widget.winfo_reqwidth(), 0))[0] + spacing(widget)
                                    for widget in group)
                     if used and used + required > available:
                         top += row_height + 4
                         used = row_height = 0
                     for widget in group:
                         width, height = sizes.get(widget, (widget.winfo_reqwidth(), widget.winfo_reqheight()))
-                        widget.place(in_=host, x=used, y=top + 2, width=width, height=height)
+                        if widget is speed_label:
+                            widget.place(in_=host, x=used, y=top + 2)
+                        else:
+                            widget.place(in_=host, x=used, y=top + 2, width=width, height=height)
                         widget.lift()
-                        used += width + 8
+                        used += width + spacing(widget)
                         row_height = max(row_height, height)
                 height = top + row_height + 4
                 host.configure(height=height)
@@ -14723,6 +14887,8 @@ def _install_gui_run_controls(app: LocalOnlyApp) -> None:
                     state["pending"] = None
 
             settings_host.bind("<Configure>", configured, add="+")
+            if speed_label is not None:
+                speed_label.bind("<Configure>", configured, add="+")
             prompt.bind("<Destroy>", destroyed, add="+")
             schedule()
 
@@ -15853,6 +16019,8 @@ def _select_harness_blocks(
     task_class=None,
     prompt="",
     task_intent: TaskIntent | None = None,
+    *,
+    compact_creation=False,
 ):
     """Return the preamble, CORE, and task-relevant route blocks.
 
@@ -15871,6 +16039,10 @@ def _select_harness_blocks(
         head, blocks = _split_harness_blocks(text)
         selected = set(_HARNESS_ROUTE_BLOCKS[key])
         selected.update(_task_specific_harness_blocks(key, task_class, prompt, task_intent))
+        if (compact_creation and key == "named_file_operation"
+                and blocks.get("CREATE", "").partition("\n")[2].strip()
+                and selected <= {"EDIT", "EXECUTION"}):
+            return "".join((head, blocks["CORE"], blocks["CREATE"])).rstrip() + "\n"
         parts = [head, blocks["CORE"]]
         for name in _HARNESS_REQUIRED_BLOCKS:
             if name != "CORE" and name in selected:
@@ -15972,7 +16144,11 @@ _ORIGINAL_LOCAL_MCP_SERVER_BUILDER = _build_local_mcp_server
                 files: list[Path] = []
                 seen: set[str] = set()
                 max_files = int(getattr(base, "MAX_DIRECT_READ_FILES", 4))
-                for raw_token in getattr(base, "extract_file_tokens", lambda _text: [])(prompt):
+                tokens = list(getattr(base, "extract_file_tokens", lambda _text: [])(prompt))
+                exact_scope = getattr(self, "_qubitz_exact_retrieval_scope", False)
+                if exact_scope:
+                    tokens.extend(getattr(self, "_active_follow_up_paths", ()))
+                for raw_token in tokens:
                     token = _normalize_prompt_path_token(raw_token)
                     if not token or token.startswith(("http://", "https://")):
                         continue
@@ -15981,7 +16157,7 @@ _ORIGINAL_LOCAL_MCP_SERVER_BUILDER = _build_local_mcp_server
                             self.workspace,
                             token,
                             allow_missing=False,
-                            allow_external=True,
+                            allow_external=not exact_scope,
                         )
                     except Exception:
                         continue
@@ -18006,21 +18182,55 @@ def _tool_annotations(base: Any, name: str) -> Any:
             callback: Callable[[str, str], None] | None,
         ) -> tuple[bool | None, str] | None:
             broker = self._tool_permission_broker
+            from runtime.verification_discovery import VerificationDiscoveryUnavailable
             from runtime.workflow import current_creations
 
-            committed_hashes = {**current_creations(broker), **broker.transaction_changed_hashes}
+            creations = current_creations(broker)
+            committed_hashes = {**creations, **broker.transaction_changed_hashes}
             if not committed_hashes:
                 return None
             required, missing = broker.completion_report(prompt)
             if "tests" not in required or "tests" not in missing:
                 return None
-            test_path, _test_files = self._wrapper_existing_test_target(prompt)
+            explicit_tests = bool(_requested_test_entrypoints(prompt)) or _requests_test_execution(prompt)
+            if not explicit_tests and not broker.creation_targets and broker.follow_up_repair_prompt:
+                from runtime.creation_verifier import verify_committed_tk_edit
+
+                startup = await verify_committed_tk_edit(
+                    self, prompt, callback, select_python=lambda: _select_direct_workspace_python(base, self.workspace),
+                    convert=base.wsl_path_to_windows_path if base.in_wsl() else str,
+                )
+                if startup is not None:
+                    return None, f"Saved the requested edit. {startup}"
+            if broker.creation_targets:
+                # A new artifact does not authorize discovery or substitution of another suite.
+                test_targets = _requested_test_entrypoints(prompt)
+                if (set(creations) != set(broker.creation_targets) or len(test_targets) != 1
+                        or _entrypoint_requires_command_binding(prompt)):
+                    return None
+                try:
+                    target = base.resolve_workspace_path(
+                        self.workspace, test_targets[0], allow_missing=False, allow_external=False,
+                    ).resolve()
+                except (OSError, ValueError, RuntimeError):
+                    target = None
+                if target is None or not target.is_relative_to(self.workspace.resolve()) or not target.is_file():
+                    return None, "The requested test target is unavailable; no substitute tests were run."
+                test_path = target.relative_to(self.workspace.resolve()).as_posix()
+            else:
+                if callback is not None:
+                    callback("status", "Looking for an existing, scoped test target within a bounded search.")
+                try:
+                    test_path, _test_files = await self._wrapper_existing_test_target(prompt)
+                except VerificationDiscoveryUnavailable as exc:
+                    self._raise_if_cancelled()
+                    return None, f"Saved the requested edit; verification unavailable: {exc}."
             if not test_path:
                 from runtime.behavioral_checks import verify_numeric_edit
 
                 return await verify_numeric_edit(
                     self, prompt, callback,
-                    explicit_tests=bool(_requested_test_entrypoints(prompt)) or _requests_test_execution(prompt),
+                    explicit_tests=explicit_tests,
                     decode=_decode_text_preserving_encoding,
                 )
             if callback is not None:
@@ -18034,6 +18244,8 @@ def _tool_annotations(base: Any, name: str) -> Any:
                 "cwd": ".",
                 "timeout_seconds": 300,
             }
+            verification_turn = broker.turn_id
+            verification_generation = broker.workspace_generation
             try:
                 async with base.MCPHost(self.workspace) as host:
                     await host.list_tools()
@@ -18043,6 +18255,9 @@ def _tool_annotations(base: Any, name: str) -> Any:
                 return None, f"Existing test verification was unavailable ({type(exc).__name__}); committed edits were preserved."
             if broker.tool_result_count == evidence_count:
                 broker.record_result("run_existing_entrypoint", test_arguments, test_result)
+            if (broker.turn_id != verification_turn or broker.workspace_generation != verification_generation
+                    or _current_file_hashes(committed_hashes) != committed_hashes):
+                return None, "The saved files changed during verification; the test result does not verify the current files."
             test_data = broker._structured_result(test_result)
             return_code = test_data.get(
                 "returncode",
@@ -19534,7 +19749,7 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                     "read_file_snapshot", "apply_text_patch",
                 }]
             saved_correction = self._tool_permission_broker._saved_contract_correction_active
-            from runtime.workflow import creation_only
+            from runtime.workflow import creation_only, fresh_named_creation
 
             broker = self._tool_permission_broker
             if (creation_only(broker) and broker.creation_targets and not saved_correction
@@ -19573,7 +19788,9 @@ _UNTRUSTED_CONTENT_END = '[END UNTRUSTED WORKSPACE CONTENT]'
                         ".xlsx": "apply_spreadsheet_cell_patch",
                         ".xlsm": "apply_spreadsheet_cell_patch",
                     }.get(suffix, "apply_text_patch")
-                    if operation == "create" and not request["exists"]:
+                    if not explicit_tool_selection and fresh_named_creation(broker):
+                        allowed_names = {"write_files" if operation == "create_many" else "write_file"}
+                    elif operation == "create" and not request["exists"]:
                         allowed_names = {"write_file", "read_file_snapshot", patch_tool}
                         if (Path(str(request["target"])).suffix.casefold() in {".py", ".pyi"}
                                 and "execute" not in semantic.prohibited_actions
@@ -20358,9 +20575,9 @@ def _split_harness_blocks(harness_text):
         else:
             blocks[current].append(line)
     rendered = {name: "".join(blocks[name]) for name in order}
-    if set(rendered) != set(_HARNESS_REQUIRED_BLOCKS):
+    if set(rendered) - {"CREATE"} != set(_HARNESS_REQUIRED_BLOCKS):
         missing = sorted(set(_HARNESS_REQUIRED_BLOCKS) - set(rendered))
-        unknown = sorted(set(rendered) - set(_HARNESS_REQUIRED_BLOCKS))
+        unknown = sorted(set(rendered) - set(_HARNESS_REQUIRED_BLOCKS) - {"CREATE"})
         raise ValueError(f"Harness block mismatch; missing={missing}, unknown={unknown}")
     return "".join(head), rendered
 # </QUBITZ_SHARED_SYMBOL>
@@ -21269,7 +21486,11 @@ def _saved_text_contract_issues(broker: Any, prompt: str, evidence: Sequence[dic
                     self.event_queue.put((run_id, kind, message))
 
                 try:
-                    answer = self.agent.run_sync(prompt, emit)
+                    from runtime.file_draft import capture
+
+                    draft_switch = getattr(self, "_qubitz_draft_enabled", None)
+                    with capture(emit, drafts_enabled=draft_switch.is_set if draft_switch is not None else None):
+                        answer = self.agent.run_sync(prompt, emit)
                 except asyncio.CancelledError as exc:
                     if getattr(self.agent, "_cancel_source", "") == "user":
                         self.event_queue.put((run_id, "answer", self.agent._cancel_partial_answer or "The task was cancelled."))
@@ -22693,35 +22914,30 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
     return value
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:a8b3bee421146e60> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/FunctionDef:_wrapper_existing_test_target:0
-        def _wrapper_existing_test_target(self, prompt: str = "") -> tuple[str, list[Path]]:
+        async def _wrapper_existing_test_target(self, prompt: str = "") -> tuple[str, list[Path]]:
+            from runtime.verification_discovery import VerificationDiscoveryUnavailable, discover_test_target
+
             explicit = _requested_test_entrypoints(prompt)
-            if len(explicit) == 1:
-                with suppress(OSError, ValueError):
+            if explicit:
+                if len(explicit) != 1 or _entrypoint_requires_command_binding(prompt):
+                    return "", []
+
+                def resolve_explicit():
+                    workspace = self.workspace.resolve()
                     target = base.resolve_workspace_path(
-                        self.workspace, explicit[0], allow_missing=False, allow_external=False,
+                        workspace, explicit[0], allow_missing=False, allow_external=False,
                     ).resolve()
-                    if target.is_file():
-                        return str(base.relative_path(target, self.workspace)), [target]
-            test_files = sorted(
-                path
-                for path in {
-                    *self.workspace.rglob("test_*.py"),
-                    *self.workspace.rglob("*_test.py"),
-                }
-                if path.is_file()
-                and not any(
-                    part in {".git", ".venv", ".venv312", "__pycache__", "node_modules"}
-                    for part in path.parts
-                )
-            )
-            if not test_files:
-                return "", []
-            tests_directory = self.workspace / "tests"
-            if tests_directory.is_dir() and any(tests_directory in path.parents for path in test_files):
-                return "tests", test_files
-            if len(test_files) == 1:
-                return str(base.relative_path(test_files[0], self.workspace)), test_files
-            return ".", test_files
+                    if target.is_relative_to(workspace) and target.is_file():
+                        return target.relative_to(workspace).as_posix(), [target]
+                    return "", []
+
+                try:
+                    return await asyncio.wait_for(asyncio.to_thread(resolve_explicit), 3)
+                except TimeoutError as exc:
+                    raise VerificationDiscoveryUnavailable("the requested test target could not be resolved in time") from exc
+                except (OSError, ValueError):
+                    return "", []
+            return await discover_test_target(self.workspace, self._cancel_event)
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:a8d7d69c688f0e11> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/AsyncFunctionDef:_run_async:0
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
@@ -23106,7 +23322,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     "named_file_operation",
                     "project_independent",
                     "scoped_project_action",
-                } and not self._active_follow_up_paths:
+                } and not self._active_follow_up_paths and classification_payload.get("inspection_level") != "exact_targets":
                     self._active_discovery_context = self.discovery_memory.context_for(prompt)
             self._tool_permission_broker._qubitz_context_reload_attempted = False
             broker_context_token = _TOOL_CALL_CONTEXT.set(self._tool_permission_broker)
@@ -23115,6 +23331,10 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
             original_skip_retrieval = self._should_skip_repo_retrieval
             original_memory_context = self.memory.build_context
             original_retriever_context = self.retriever.format_context
+            original_exact_scope = getattr(self, "_qubitz_exact_retrieval_scope", False)
+            self._qubitz_exact_retrieval_scope = bool(
+                self._active_follow_up_paths or classification_payload.get("inspection_level") == "exact_targets"
+            )
             retrieval_skipped_routes = {
                 "simple_answer",
                 "dependency_install",
@@ -23136,6 +23356,23 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 self.retriever.format_context = lambda _prompt: (
                     f"Repository retrieval was intentionally skipped for the {selected_route} route."
                 )
+            elif self._qubitz_exact_retrieval_scope:
+                self._build_metadata_or_lexical_context = lambda _prompt: ""
+                self._should_skip_repo_retrieval = lambda _prompt: False
+                self.memory.build_context = lambda _prompt: ""
+
+                def exact_context(_prompt: str) -> str:
+                    self._raise_if_cancelled()
+                    context = original_focused_file_context(prompt)
+                    if callback is not None:
+                        callback("status", "Exact-target inspection: broad repository retrieval was not run.")
+                    return context or (
+                        "No exact readable workspace excerpts were collected before generation. "
+                        "Use only the authorized, named targets through the scoped tools; "
+                        "report unavailable targets or ask a focused question instead of searching the repository."
+                    )
+
+                self.retriever.format_context = exact_context
             base.set_qubitz_chat_template_kwargs(None)
             progressive_budget_enabled = selected_route not in {
                 "simple_answer",
@@ -23274,9 +23511,12 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 base.set_qubitz_reasoning_mode(native_effort)
                 base.set_qubitz_chat_template_kwargs(template_kwargs)
                 try:
-                    answer_text = await checked_operation(
-                        super(HardenedAgentRunner, self)._run_async, pass_prompt, pass_callback,
-                    )
+                    from runtime.startup_progress import startup_progress
+
+                    with startup_progress(pass_callback):
+                        answer_text = await checked_operation(
+                            super(HardenedAgentRunner, self)._run_async, pass_prompt, pass_callback,
+                        )
                     refresh_route_after_steering()
                     return answer_text
                 except (asyncio.CancelledError, base.RunCancelled):
@@ -23455,10 +23695,18 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 )
 
             def verified_completion_answer() -> str | None:
+                from runtime.workflow import saved_code_answer
+
                 check_user_cancellation()
                 terminal = _terminal_mcp_outcome_result(self._tool_permission_broker, prompt)
                 if terminal is not None:
                     return terminal
+                saved = saved_code_answer(self._tool_permission_broker, prompt)
+                if saved is not None:
+                    if self._cancel_source == "wrapper_verified_completion":
+                        self._wrapper_interrupt_event.clear()
+                        self._cancel_source = ""
+                    return saved
                 if not _artifact_completion_can_end_turn(self._tool_permission_broker):
                     return None
                 completion_signalled = (
@@ -23655,6 +23903,17 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                         rendered_answer = await run_scalar_format_pass(scalar_contract, rendered_answer)
                     if violates_scalar_answer_contract(rendered_answer, scalar_contract):
                         rendered_answer = "Unable to verify an answer in the requested format."
+                if terminal is None and not self._cancel_source and receipt_answer is None:
+                    from runtime.creation_verifier import repair_saved_creation, verify_saved_python_turn
+
+                    diagnostic = await verify_saved_python_turn(
+                        self, observed_prompt, callback,
+                        select_python=lambda: _select_direct_workspace_python(base, self.workspace),
+                        convert=base.wsl_path_to_windows_path if base.in_wsl() else str,
+                        repair=lambda path, digest, detail: repair_saved_creation(self, prompt, callback, path, digest, detail),
+                    )
+                    if diagnostic:
+                        rendered_answer = f"{rendered_answer.rstrip()}\n\n{diagnostic}"
                 history_prompt = observed_prompt + "".join(
                     f"\n/btw {note}" for note in self._qubitz_applied_side_notes
                 )
@@ -23687,28 +23946,14 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     and self._tool_permission_broker.follow_up_outcome_feedback
                 )
                 unverified_behavior: list[str] = []
+                from runtime.workflow import CODE_SUFFIXES, code_behavior_checked, scoped_creation_behavior_verified
+
                 code_mutations = {
-                    path for path in file_mutations
-                    if Path(path).suffix.casefold() in {".py", ".js", ".ts", ".jsx", ".tsx", ".c", ".cpp", ".rs", ".go"}
+                    path for path in file_mutations if Path(path).suffix.casefold() in CODE_SUFFIXES
                 }
-                current_behavior_receipts = [
-                    item for item in self._tool_permission_broker._current_turn_evidence()
-                    if item.get("execution_verified") and item.get("success")
-                    and item.get("workspace_generation") == self._tool_permission_broker.workspace_generation
-                    and not re.search(r"\b(?:ruff|mypy|py_compile|compileall|lint)\b", str(item.get("command") or ""))
-                    and ("tests" in item.get("categories", []) or any(
-                        str(item.get("evidence_path") or "") in {path, str(Path(path).relative_to(self.workspace))}
-                        for path in code_mutations if Path(path).is_relative_to(self.workspace)
-                    ))
-                ]
-                if code_mutations and not current_behavior_receipts:
-                    answer_text = answer_text.replace("Completed the requested task.", "Saved the requested code changes.", 1)
-                    answer_text += (
-                        "\n\n[Behavior status: unverified] Saved file changes are verified; "
-                        "the requested code behavior and caller compatibility have not been independently tested."
-                    )
-                elif code_mutations:
-                    answer_text += "\n\nBehavioral evidence covers only the checks actually executed after the latest changes."
+                code_unchecked = bool(code_mutations) and not code_behavior_checked(
+                    self._tool_permission_broker, code_mutations,
+                )
                 interaction_errors: list[str] = []
                 browser_checked = False
                 if html_mutations:
@@ -23798,6 +24043,25 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                                 if not item.get("success")]
                     if any(failures):
                         answer_text += "\nLast recorded blocker: " + next(value for value in reversed(failures) if value)[:600]
+                if code_unchecked:
+                    unverified_behavior.append("requested code behavior")
+                    answer_text = answer_text.replace("Completed the requested task.", "Saved the requested code changes.", 1)
+                    answer_text = re.sub(
+                        r"(?im)^\[Completion status:\s*(?:verified|full)\][^\n]*$",
+                        "[Completion status: partial]", answer_text,
+                    )
+                    if "[completion status: partial]" not in answer_text.casefold():
+                        answer_text += "\n\n[Completion status: partial]"
+                    if scoped_creation_behavior_verified(self._tool_permission_broker, code_mutations):
+                        answer_text += ("\n\n[Behavior status: unverified] Only the request-supplied assertions were "
+                                        "verified; behavior outside their scope remains unverified.")
+                    else:
+                        answer_text += (
+                            "\n\n[Behavior status: unverified] No passing behavioral check was verified for the "
+                            "current saved code. A save, syntax check, or successful startup alone does not verify behavior."
+                        )
+                elif code_mutations:
+                    answer_text += "\n\nBehavioral evidence covers only the tests actually executed against the current saved code."
                 receipts = [
                     evidence for evidence in self._tool_permission_broker._current_turn_evidence()
                     if evidence.get("execution_verified") and type(evidence.get("return_code")) is int
@@ -24200,6 +24464,16 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                                     self._cancel_source = ""
                                     self._wrapper_interrupt_event.clear()
                                 tool_name = str(forced_tool_choice["function"]["name"])
+                                rejection = next(
+                                    (item for item in reversed(self._tool_permission_broker.failed_file_content.values())
+                                     if item["tool"] == tool_name), None,
+                                )
+                                validation_context = (
+                                    "The earlier proposal was not written. Correct the content; do not resend it unchanged. "
+                                    "Previous validation details:\n"
+                                    + _fence_untrusted_workspace_content(json.dumps(rejection, ensure_ascii=True)) + "\n"
+                                    if rejection is not None else ""
+                                )
                                 if callback is not None:
                                     callback(
                                         "status",
@@ -24210,6 +24484,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                                     answer = await run_progressive_model_pass(
                                         f"{effective_prompt.rstrip()}\n\n"
                                         f"Wrapper recovery: the previous model pass did not verify all required postconditions. "
+                                        f"{validation_context}"
                                         f"Call {tool_name} once with valid task-specific arguments, then continue from its structured result. "
                                         "End any reasoning block before emitting a native tool call; "
                                         "if the template uses <think> blocks, emit </think> first. "
@@ -24549,6 +24824,11 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 mcp_result = _current_mcp_completion_result(self._tool_permission_broker, prompt)
                 if mcp_result is not None and mcp_result[1]:
                     return await finalize_turn_answer(mcp_result[0])
+                from runtime.workflow import saved_code_answer
+
+                saved = saved_code_answer(self._tool_permission_broker, prompt)
+                if saved is not None:
+                    return await finalize_turn_answer(saved)
                 rendered_answer = str(answer).rstrip()
                 # Later verified work supersedes an earlier wrapper-only stop.
                 if required and rendered_answer.startswith(
@@ -24652,6 +24932,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 self._should_skip_repo_retrieval = original_skip_retrieval
                 self.memory.build_context = original_memory_context
                 self.retriever.format_context = original_retriever_context
+                self._qubitz_exact_retrieval_scope = original_exact_scope
                 with suppress(Exception):
                     base.set_qubitz_forced_tool_choice(None)
                 base.set_qubitz_chat_template_kwargs(None)
@@ -25017,6 +25298,7 @@ THINKING_EFFORT_STEP_CAPS: dict[str, int] = {
         self.permission_denials.clear()
         self.permission_stop_requested = False
         self.failed_result_counts.clear()
+        self.failed_file_content.clear()
         self.failed_route_counts.clear()
         self.failed_result_block_counts.clear()
         self.repeated_snapshot_reads.clear()
@@ -25656,6 +25938,7 @@ _SEMANTIC_SIDE_EFFECT_ACTIONS = frozenset(
         self.permission_denials.clear()
         self.permission_stop_requested = False
         self.failed_result_counts.clear()
+        self.failed_file_content.clear()
         self.failed_route_counts.clear()
         self.failed_result_block_counts.clear()
         self.failed_test_generations.clear()
@@ -27340,33 +27623,15 @@ def _direct_text_creation_choice(
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:bd7797dc4962f09b> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedGUI:0/FunctionDef:_install_variant_selector:0
         def _install_variant_selector(self) -> None:
+            from runtime.catalog import VARIANT_TIERS, variant_tier
+            from runtime.variant_picker import VariantPicker
+
             variant_root = Path(__file__).resolve().parent
             runtime_root = _APP.runtime_workspace
             current_filename = Path(__file__).name
             selector_allowed = getattr(base, "_qubitz_variant_selector_allowed", user_variant_allowed)
             selector_group = getattr(base, "_qubitz_variant_selector_group", None)
-            # Derived from the variants actually present so a newly added one appears
-            # here instead of being silently unreachable. Tier follows the _12G suffix
-            # the 12 GB builds already use; override only where that naming does not.
-            variant_tier_overrides = {
-                "AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py": "72 GB VRAM+",
-                "AI_Agent_Qubitz_DeepSeek-V4-Flash-0731-IQ4.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_GPT-OSS-120B_F16.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Hypernova-60B-2605-Q5.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Kimi-Linear-48B-A3B-Instruct.i1-Q6.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Ling-3.0-Flash-124B-A5.1B-Q5.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Llama-3_3-Nemotron-Super-49B-v1_5_Q6.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Nemotron-3.5-Super-VL-120B-A12B-UD-Q6_K_XL.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Ornith-1.5-122B-UD-Q5_K_XL.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Qwen3-Coder-Next-80B-A3B-Q4.py": "48 GB VRAM+",
-                "AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-IQ4.py": "48 GB VRAM+",
-            }
-            grouped: dict[str, list[str]] = {
-                "12 GB VRAM": [],
-                "24 GB VRAM": [],
-                "48 GB VRAM+": [],
-                "72 GB VRAM+": [],
-            }
+            grouped: dict[str, list[str]] = {tier: [] for tier in VARIANT_TIERS}
             for variant_path in sorted(
                 variant_root.glob("AI_Agent_Qubitz_*.py"),
                 key=lambda item: item.name.casefold(),
@@ -27374,13 +27639,7 @@ def _direct_text_creation_choice(
                 if (not selector_allowed(variant_path.name) or not variant_path.is_file()
                         or variant_path.resolve() != variant_path):
                     continue
-                tier = selector_group or variant_tier_overrides.get(variant_path.name)
-                if tier is None:
-                    tier = (
-                        "12 GB VRAM"
-                        if variant_path.stem.casefold().endswith("_12g")
-                        else "24 GB VRAM"
-                    )
+                tier = selector_group or variant_tier(variant_path.name)
                 grouped.setdefault(tier, []).append(variant_path.name)
             variant_groups = tuple(
                 (tier, tuple(names)) for tier, names in grouped.items() if names
@@ -27434,46 +27693,14 @@ def _direct_text_creation_choice(
                 variant_bar,
                 textvariable=self.variant_selector_var,
                 style=selector_style,
+                takefocus=True,
             )
             self.variant_selector.pack(side="left", fill="x", expand=True, padx=(6, 0))
-            variant_menu = self.tk.Menu(
-                self.variant_selector,
-                tearoff=False,
-                background=panel_color,
-                foreground=text_color,
-                activebackground=select_color,
-                activeforeground=text_color,
-                disabledforeground=muted_text_color,
-                selectcolor=text_color,
-                borderwidth=0,
-            )
-            self.variant_selector.configure(menu=variant_menu)
-            # X11 wheel releases share Tk's menu-invocation binding.
-            def browse_variant_menu(step: int) -> str:
-                last = variant_menu.index("end")
-                if last is None:
-                    return "break"
-                active = variant_menu.index("active")
-                index = int(active) if active is not None else (-1 if step > 0 else int(last) + 1)
-                for _ in range(int(last) + 1):
-                    index = (index + step) % (int(last) + 1)
-                    if (variant_menu.type(index) == "radiobutton"
-                            and str(variant_menu.entrycget(index, "state")) != "disabled"):
-                        variant_menu.activate(index)
-                        variant_menu.event_generate("<<MenuSelect>>")
-                        break
-                return "break"
-
-            def wheel_variant_menu(event: Any) -> str:
-                delta = getattr(event, "delta", 0)
-                return browse_variant_menu(-1 if delta > 0 else 1) if delta else "break"
-
-            variant_menu.bind("<Button-4>", lambda _event: browse_variant_menu(-1))
-            variant_menu.bind("<Button-5>", lambda _event: browse_variant_menu(1))
-            variant_menu.bind("<ButtonRelease-4>", lambda _event: "break")
-            variant_menu.bind("<ButtonRelease-5>", lambda _event: "break")
-            variant_menu.bind("<MouseWheel>", wheel_variant_menu)
             menu_post_pending = False
+
+            def toggle_variant_picker(_event: Any) -> str:
+                picker.toggle(self.variant_selector_var.get())
+                return "break"
 
             def post_variant_menu() -> None:
                 nonlocal menu_post_pending
@@ -27502,6 +27729,8 @@ def _direct_text_creation_choice(
             # interpret that same click as selection of a model.
             self.variant_selector.bind("<Button-1>", press_variant_selector)
             self.variant_selector.bind("<ButtonRelease-1>", release_variant_selector)
+            for event in ("<<Invoke>>", "<Return>", "<space>", "<Down>"):
+                self.variant_selector.bind(event, toggle_variant_picker)
             self._qubitz_variant_switch_pending: Path | None = None
             self._qubitz_variant_switch_in_progress = False
 
@@ -27598,7 +27827,6 @@ def _direct_text_creation_choice(
             import queue
             import threading
 
-            cache_entries: dict[str, int] = {}
             self._qubitz_variant_cache_state: dict[str, bool | None] = {}
             self._qubitz_variant_cache_refresh_pending = False
             cache_results = queue.SimpleQueue()
@@ -27639,9 +27867,7 @@ def _direct_text_creation_choice(
                     self._qubitz_variant_cache_refresh_pending = False
                     self._qubitz_variant_cache_state = states
                     self._qubitz_variant_cache_error = error
-                    for filename, index in cache_entries.items():
-                        color = "#ffffff" if states.get(filename) is True else "#9aa0a6"
-                        variant_menu.entryconfigure(index, foreground=color, activeforeground=color)
+                    picker.set_cached(states)
                     update_selected_color()
                     if rescan_requested:
                         rescan_requested = False
@@ -27695,7 +27921,7 @@ def _direct_text_creation_choice(
                 if self._qubitz_variant_cache_refresh_pending:
                     rescan_requested = True
                     return
-                filenames = tuple(cache_entries)
+                filenames = picker.names
                 self._qubitz_variant_cache_refresh_pending = True
 
                 def scan() -> None:
@@ -27717,25 +27943,12 @@ def _direct_text_creation_choice(
                     self.root.after(50, apply_cache_result)
 
             self._qubitz_refresh_variant_cache = refresh_cache_indicators
-            self._qubitz_variant_menu = variant_menu
-            variant_menu.configure(postcommand=refresh_cache_indicators)
-            for group_index, (group_label, filenames) in enumerate(variant_groups):
-                if group_index:
-                    variant_menu.add_separator()
-                variant_menu.add_command(label=group_label, state="disabled")
-                for filename in filenames:
-                    target_exists = (variant_root / filename).is_file()
-                    state = "normal" if target_exists else "disabled"
-                    variant_menu.add_radiobutton(
-                        label=filename,
-                        variable=self.variant_selector_var,
-                        value=filename,
-                        state=state,
-                        foreground="#9aa0a6",
-                        activeforeground="#9aa0a6",
-                        command=lambda selected=filename: select_variant(selected),
-                    )
-                    cache_entries[filename] = int(variant_menu.index("end"))
+            picker = VariantPicker(
+                self.root, self.variant_selector, variant_groups,
+                lambda filename: self._qubitz_select_variant(filename), refresh_cache_indicators,
+                background=panel_color, border=border_color, muted=muted_text_color, highlight=select_color,
+            )
+            self._qubitz_variant_picker = picker
             update_selected_color()
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:bdf9e59c1154a46f> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_config:0/If:If:8
@@ -31089,6 +31302,8 @@ def _historical_edit_source_evidence(workspace: Path, receipt: Any) -> dict[str,
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:d59eb373431ccdf8> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_agent_runner_class:0/ClassDef:EnhancedAgentRunner:0/FunctionDef:_build_metadata_or_lexical_context:0
             def _build_metadata_or_lexical_context(self, prompt: str) -> str:
+                from runtime.retrieval import read_text_prefix
+
                 lowered = prompt.lower()
                 metadata_names: list[str] = []
                 metadata_groups = (
@@ -31128,19 +31343,30 @@ def _historical_edit_source_evidence(workspace: Path, receipt: Any) -> dict[str,
                 rg = shutil.which("rg")
                 if rg is not None:
                     for symbol in list(dict.fromkeys(symbols))[:3]:
-                        completed = subprocess.run(
+                        self._raise_if_cancelled()
+                        try:
+                            completed = subprocess.run(
                             [
                                 rg,
                                 "-n",
                                 "--fixed-strings",
                                 "--max-count",
                                 "3",
+                                "--max-filesize",
+                                "1M",
+                                "--max-columns",
+                                "250",
                                 "--glob",
                                 "!**/.git/**",
                                 "--glob",
                                 "!**/.venv*/**",
                                 "--glob",
                                 "!**/node_modules/**",
+                                "--glob",
+                                "!**/{backup,build,conversations,dist,models}/**",
+                                "--glob",
+                                "!evaluation/results/**",
+                                "--",
                                 symbol,
                                 ".",
                             ],
@@ -31148,7 +31374,9 @@ def _historical_edit_source_evidence(workspace: Path, receipt: Any) -> dict[str,
                             capture_output=True,
                             timeout=10,
                             check=False,
-                        )
+                            )
+                        except subprocess.TimeoutExpired:
+                            continue
                         output = base.decode_subprocess_output(completed.stdout)
                         for raw_line in output.splitlines():
                             path_text, separator, remainder = raw_line.partition(":")
@@ -31182,7 +31410,10 @@ def _historical_edit_source_evidence(workspace: Path, receipt: Any) -> dict[str,
                 remaining_budget = max(1200, int(getattr(base, "MAX_DIRECT_READ_CHARS", 12000)))
                 for path, line_number in unique_candidates:
                     try:
-                        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                        if base.is_excluded_retrieval_file(path) or base.is_sensitive_path_name(path):
+                            continue
+                        text, _ = read_text_prefix(path)
+                        lines = text.splitlines()
                     except OSError:
                         continue
                     start = max(1, line_number - 25)
@@ -31358,6 +31589,8 @@ def _project_launch_manifest_candidates(base: Any, workspace: Path) -> list[dict
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:d7e31d354c08fe66> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_agent_runner_class:0/ClassDef:EnhancedAgentRunner:0/FunctionDef:_build_read_only_workspace_context:0
             def _build_read_only_workspace_context(self, prompt: str) -> str:
+                from runtime.retrieval import read_text_prefix
+
                 self._qubitz_direct_read_receipts = {}
                 files = self._resolve_read_only_prompt_files(prompt)
                 if not files:
@@ -31367,8 +31600,12 @@ def _project_launch_manifest_candidates(base: Any, workspace: Path) -> list[dict
                 excerpts: list[str] = []
                 used_chars = 0
                 for path in files:
+                    remaining = max(0, total_budget - used_chars)
+                    if remaining <= 0:
+                        break
+                    file_budget = min(per_file_budget, remaining)
                     try:
-                        text = path.read_text(encoding="utf-8")
+                        text, truncated = read_text_prefix(path, file_budget * 4, errors="strict")
                     except Exception as exc:
                         rel_error = str(path)
                         with suppress(Exception):
@@ -31380,10 +31617,6 @@ def _project_launch_manifest_candidates(base: Any, workspace: Path) -> list[dict
                     rel = str(path)
                     with suppress(Exception):
                         rel = str(base.relative_path(path, self.workspace))
-                    remaining = max(0, total_budget - used_chars)
-                    if remaining <= 0:
-                        break
-                    file_budget = min(per_file_budget, remaining)
                     numbered_lines: list[str] = []
                     char_count = 0
                     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -31396,13 +31629,15 @@ def _project_launch_manifest_candidates(base: Any, workspace: Path) -> list[dict
                     if not numbered_lines:
                         continue
                     broker = getattr(self, "_tool_permission_broker", None)
-                    if broker is not None and len(numbered_lines) == len(text.splitlines()) and len(text) <= file_budget:
+                    complete = not truncated and len(numbered_lines) == len(text.splitlines())
+                    if broker is not None and complete and len(text) <= file_budget:
                         self._qubitz_direct_read_receipts[str(path.resolve())] = {
                             "turn_id": broker.turn_id, "workspace": str(self.workspace.resolve()), "body": text,
                             "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                         }
                     used_chars += char_count
-                    excerpts.append(f"File: {rel}\nExcerpt:\n" + "\n".join(numbered_lines))
+                    label = "Excerpt" if complete else "Truncated excerpt; not a complete snapshot"
+                    excerpts.append(f"File: {rel}\n{label}:\n" + "\n".join(numbered_lines))
                 if not excerpts:
                     return ""
                 return "\n\n".join(
@@ -31465,6 +31700,7 @@ def _wsl_windows_executable_interop_probe() -> bool:
 def _loaded_llamacpp_context_window(client: Any) -> int:
     import hashlib
 
+    from runtime.generation_telemetry import backend_supports_prompt_progress
     from runtime.reasoning_controls import template_reasoning_capabilities
     from runtime.structured_response import non_thinking_template_contract
 
@@ -31481,8 +31717,10 @@ def _loaded_llamacpp_context_window(client: Any) -> int:
             caps = props.get("chat_template_caps")
             caps = caps if isinstance(caps, dict) else {}
             template = props.get("chat_template")
+            build = str(props.get("build_info") or "")[:160]
             client._qubitz_backend_identity = {
-                "build": str(props.get("build_info") or "")[:160],
+                "build": build,
+                "supports_prompt_progress": backend_supports_prompt_progress(settings, build),
                 "template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest()
                 if isinstance(template, str) else None,
                 "model_alias": str(props.get("model_alias") or "")[:240],
@@ -31953,6 +32191,7 @@ def _score_implicit_existing_entrypoint_candidate(
         self.permission_denials: dict[str, dict[str, Any]] = {}
         self.permission_stop_requested = False
         self.failed_result_counts: dict[str, int] = {}
+        self.failed_file_content: dict[str, dict[str, Any]] = {}
         self.failed_route_counts: dict[str, int] = {}
         self.failed_result_block_counts: dict[str, int] = {}
         self.repeated_snapshot_reads: dict[str, int] = {}
@@ -33964,7 +34203,7 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
     def record_result(
         self, name: str, arguments: dict[str, Any], result: Any, *, wrapper_rejected: bool = False,
     ) -> None:
-        from runtime.workflow import current_creations, verification_checks
+        from runtime.workflow import current_creations, saved_code_targets, verification_checks
 
         normalized = name.lower()
         mutation_tools = self._MUTATION_TOOLS | {
@@ -34106,6 +34345,7 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             "protected_harness_denied",
             "repeated_invalid_arguments",
             "repeated_failed_test",
+            "repeated_failed_result",
             "scope_denied",
             "source_evidence_required",
             "transaction_required",
@@ -34114,6 +34354,14 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
         if success:
             self.failed_result_counts.pop(result_fingerprint, None)
             self.failed_result_block_counts.pop(result_fingerprint, None)
+            self.failed_file_content.pop(result_fingerprint, None)
+        elif (normalized in {"write_file", "write_files"} and status == "invalid_file_content"
+                and wrapper_rejected and structured.get("dispatch_attempted") is False
+                and structured.get("mutation_dispatched") is False and structured.get("files_unchanged") is True):
+            self.failed_file_content[result_fingerprint] = {
+                "tool": normalized, **{key: structured[key] for key in ("path", "line", "offset") if key in structured},
+                "detail": str(structured.get("reason") or structured.get("issues") or "Invalid content")[:600],
+            }
         elif status not in untracked_failure_statuses:
             failure_count = self.failed_result_counts.get(result_fingerprint, 0) + 1
             self.failed_result_counts[result_fingerprint] = failure_count
@@ -34666,6 +34914,8 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
                 )
             elif status in {"invalid_arguments", "repeated_invalid_arguments"}:
                 next_action = "Correct only invalid arguments using the tool schema; do not repeat unchanged."
+            elif status == "invalid_file_content" and result_fingerprint in self.failed_file_content:
+                next_action = "Correct the reported content error for the same authorized target; do not resend it unchanged."
             else:
                 next_action = (
                     "Inspect the error and current state before a materially different safe action; "
@@ -34704,6 +34954,21 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
                 **({key: value for key, value in original_content.items()
                     if key != "qubitz_recovery"} if isinstance(original_content, dict) else {}),
             }
+        if normalized in mutation_tools:
+            from runtime.file_draft import file_drafts_enabled, tool_preview
+
+            if file_drafts_enabled():
+                with suppress(Exception):
+                    draft_state = ("Rejected" if wrapper_rejected else "Not saved (staged)"
+                                   if status == "patch_staged" else "Save unverified")
+                    verified_draft = success and (
+                        normalized in {"write_files", "apply_text_patches"}
+                        or bool(re.fullmatch(r"[a-f0-9]{64}", str(structured.get("new_sha256", ""))))
+                    )
+                    tool_preview(
+                        self, normalized, arguments, state=draft_state,
+                        verified=frozenset(verified_paths) if verified_draft else (), rejected=wrapper_rejected,
+                    )
         if (success and self.completion_interrupt_enabled
                 and self.transaction_recovery_callback is not None):
             if self._created_html_review_active and normalized == "apply_text_patch":
@@ -34796,7 +35061,12 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             and not self.verified_completion_requested
         ):
             required, missing = self.completion_report(self.current_prompt)
-            if required and not missing and _artifact_completion_can_end_turn(self):
+            if (normalized in mutation_tools and success and verified_paths
+                    and saved_code_targets(self, required, missing)):
+                self._emit("Code file saved; ending tool use without claiming verified behavior.")
+                if self.completion_callback is not None:
+                    self.completion_callback()
+            elif required and not missing and _artifact_completion_can_end_turn(self):
                 self.verified_completion_requested = True
                 self.first_verified_completion_result = self.tool_result_count
                 self._audit(

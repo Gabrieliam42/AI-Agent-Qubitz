@@ -150,6 +150,27 @@ class LiveTokenMeter:
         return result
 
 
+def backend_supports_prompt_progress(settings: Any, build: str) -> bool:
+    params = settings.get("params") if isinstance(settings, dict) else None
+    if isinstance(params, dict) and type(params.get("return_progress")) is bool:
+        return True
+    # These source-verified builds implement return_progress, but /props only
+    # serializes sampling metrics and omits that flag.
+    return any(part in {"6fcaa16f", "6fcaa16f4b360649933a54d1f91ad40ed35c0e11",
+                         "b1b770d9", "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"}
+               for part in build.lower().replace("(", " ").replace(")", " ").replace("-", " ").split())
+
+
+def prompt_progress(event: Any) -> tuple[int, int] | None:
+    report = event.get("prompt_progress") if isinstance(event, dict) else None
+    if not isinstance(report, dict):
+        return None
+    processed, total = report.get("processed"), report.get("total")
+    if type(processed) is int and type(total) is int and 0 <= processed <= total and total > 0:
+        return processed, total
+    return None
+
+
 def display_rate(message: str) -> str:
     try:
         event = json.loads(message)

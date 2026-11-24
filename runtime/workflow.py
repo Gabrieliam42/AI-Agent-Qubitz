@@ -1,16 +1,27 @@
 """Turn-local creation state and evidence-only terminal workflow records."""
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+
+CODE_SUFFIXES = frozenset({".py", ".js", ".ts", ".jsx", ".tsx", ".c", ".cpp", ".rs", ".go"})
+_CODE_HANDOFF_EXTRA_WORK = re.compile(
+    r"\?|\b(?:explain|describe|compare|summari[sz]e|report|demonstrate|benchmark|if|unless|"
+    r"only\s+when|before|after|PyInstaller|"
+    r"tell\s+me|show\s+me|prove|verify|validat(?:e|ion)|test(?:ing|s)?)\b",
+    re.IGNORECASE,
+)
+_PYTHON_CHECKS_FENCE = re.compile(r"^```qubitz-checks[ \t]*\r?\n(.*?)^```[ \t]*(?:\r?\n|$)", re.MULTILINE | re.DOTALL)
 
 
 def creation_only(broker) -> bool:
@@ -38,6 +49,162 @@ def current_creations(broker) -> dict[str, str]:
         except OSError:
             continue
     return verified
+
+
+def fresh_named_creation(broker) -> bool:
+    """Offer only creation when an exact turn-local destination is still absent."""
+    request = broker.named_operation_contract
+    if (not request or request["operation"] not in {"create", "create_many"}
+            or request.get("exists") or request.get("existing_targets") or request.get("overwrite_requested")
+            or broker.verified_creation_hashes or not creation_only(broker)
+            or broker.required_postconditions - {"changed_files", "created_outputs"}):
+        return False
+    targets = set(request["targets"])
+    if not targets or targets != set(broker.creation_targets):
+        return False
+    workspace = broker.workspace.resolve()
+    for raw in targets:
+        target = Path(raw)
+        try:
+            if not target.is_relative_to(workspace) or target.resolve() != target:
+                return False
+            target.lstat()
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, RuntimeError):
+            return False
+        return False
+    return True
+
+
+def saved_code_targets(broker, required: set[str], missing: set[str]) -> tuple[str, ...]:
+    """Allow a receipt-only exit, never behavioral acceptance, for exact code creation."""
+    if not required or missing or not required <= {"changed_files", "created_outputs"}:
+        return ()
+    request = broker.named_operation_contract
+    if (not request or request["operation"] not in {"create", "create_many"}
+            or request.get("existing_targets") or request.get("overwrite_requested")):
+        return ()
+    semantic = broker.task_intent.semantic
+    if (not semantic.requests("create") or semantic.requested_actions - {"create", "edit"}
+            or getattr(broker, "transaction_explicit_file_targets", ())
+            or _CODE_HANDOFF_EXTRA_WORK.search(_PYTHON_CHECKS_FENCE.sub(
+                "", f"{broker.approval_context_prompt}\n{broker.current_prompt}",
+            ))
+            or any(item.get("execution_verified") for item in broker._current_turn_evidence())):
+        return ()
+    targets = set(request["targets"])
+    if (not targets or not all(Path(path).suffix.casefold() in CODE_SUFFIXES for path in targets)
+            or set(broker.creation_targets) != targets):
+        return ()
+    workspace = broker.workspace.resolve()
+    if not all(Path(path).is_relative_to(workspace) for path in targets):
+        return ()
+    for raw in targets:
+        path = Path(raw)
+        try:
+            if not 0 < path.stat().st_size <= 128 * 1024:
+                return ()
+            if path.suffix.casefold() == ".py":
+                body = ast.parse(path.read_bytes()).body
+                if not any(not isinstance(node, ast.Pass) and not (
+                    isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                ) for node in body):
+                    return ()
+        except (OSError, SyntaxError, ValueError, RecursionError):
+            return ()
+    if set(current_creations(broker)) != targets:
+        return ()
+    return tuple(sorted(Path(path).relative_to(workspace).as_posix() for path in targets))
+
+
+def saved_code_answer(broker, prompt: str) -> str | None:
+    if not broker.named_operation_contract or broker.named_operation_contract["operation"] not in {"create", "create_many"}:
+        return None
+    targets = saved_code_targets(broker, *broker.completion_report(prompt))
+    if not targets:
+        return None
+    label = "file" if len(targets) == 1 else "files"
+    return f"Saved the requested {label}: " + ", ".join(targets) + ".\n\n[Completion status: partial]"
+
+
+_NON_BEHAVIORAL_COMMAND = re.compile(
+    r"\b(?:ruff|mypy|basedpyright|pyright|py_compile|compileall|eslint|lint)\b"
+    r"|(?:^|\s)--(?:help|version|collect-only|collectonly|list-tests|self-test)(?:[\s=]|$)",
+    re.IGNORECASE,
+)
+
+
+def code_behavior_checked(broker, paths: set[str]) -> bool:
+    """Credit current saved bytes only for an owned, passing, separate test target."""
+    evidence = list(broker._current_turn_evidence())
+    workspace = broker.workspace.resolve()
+    mutations = {path: digest for item in evidence
+                 if item.get("success") and "changed_files" in item.get("categories", ())
+                 for path, digest in item.get("file_hashes", {}).items()}
+    saved = {path: digest for path, digest in mutations.items() if path in paths}
+    checked = set()
+    failed = set()
+    for item in evidence:
+        if (item.get("workspace_generation") != broker.workspace_generation
+                or not item.get("execution_verified")
+                or "test_command_executed" not in item.get("categories", ())
+                or _NON_BEHAVIORAL_COMMAND.search(str(item.get("command") or ""))):
+            continue
+        test_path = item.get("evidence_path")
+        if not isinstance(test_path, str) or not test_path:
+            continue
+        try:
+            test_target = (workspace / test_path).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if not test_target.is_relative_to(workspace) or str(test_target) in mutations:
+            continue
+        receipt = item.get("execution_receipt") or {}
+        start, end = receipt.get("started") or {}, receipt.get("exit") or {}
+        code = item.get("return_code")
+        if (type(code) is not int or not start.get("token") or not start.get("identity")
+                or start["token"] != end.get("token") or start["identity"] != end.get("identity")
+                or end.get("actual_wait") is not True or end.get("tree_verified") is not True
+                or end.get("returncode") != code):
+            continue
+        source = item.get("source_hashes", {})
+        bound = {path for path, digest in saved.items() if digest and source.get(path) == digest}
+        if code == 0 and item.get("success") and "tests" in item["categories"]:
+            checked.update(bound)
+        else:
+            failed.update(bound)
+    if not paths or not paths <= checked - failed:
+        return False
+    for path in paths:
+        target = Path(path)
+        try:
+            if target.resolve() != target or not target.is_relative_to(workspace) or not target.is_file():
+                return False
+            with target.open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != saved[path]:
+                    return False
+        except (OSError, RuntimeError, ValueError):
+            return False
+    return True
+
+
+def scoped_creation_behavior_verified(broker, paths: set[str]) -> bool:
+    """Recognize request-supplied behavioral checks without claiming full coverage."""
+    saved = current_creations(broker)
+    evidence = broker._current_turn_evidence()
+    return any(
+        item.get("tool") == "wrapper_saved_python_diagnostics"
+        and item.get("turn_id") == broker.turn_id
+        and item.get("workspace_generation") == broker.workspace_generation
+        and check.get("kind") == "request_behavior"
+        and check.get("status") == "passed"
+        and check.get("behavior_verified") is True
+        and check.get("path") in paths
+        and bool(check.get("sha256"))
+        and check["sha256"] == saved.get(check["path"])
+        for item in evidence for check in item.get("verification_checks", [])
+    )
 
 
 def workflow_snapshot(broker, prompt: str) -> dict:
