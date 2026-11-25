@@ -19,9 +19,9 @@ Local-inference Qubitz variant for Qwen 3.5 9B UD-Q5_K_XL.
 - Retains a `q8_0` KV cache because Qwen3.5 uses hybrid linear and full attention.
 - Uses the stable official llama.cpp `v0.2.0` Windows CUDA 12.4 runtime, resolved to build `b10566` and cached under `.cache/llama.cpp-b10566/`; if missing, it downloads that build and reuses it. Set `QUBITZ_LLAMA_CPP_RUNTIME_CHANNEL=previous` to roll back to `b10549`, or `legacy` for `b9193`.
 - Sizes the llama.cpp server GPU-first: model weights are placed in VRAM, then the KV cache is fitted from the remaining VRAM behind a 1536 MiB safety margin. The configured context is a ceiling the runtime clamps down to whatever fits.
-- When weights nearly fill usable VRAM the KV cache drops from `q8_0` to `q4_0` and every layer is pinned to the GPU, so the runtime shrinks context rather than offloading weights to the CPU.
+- When weights nearly fill usable VRAM the KV cache can drop from `q8_0` to `q4_0`. The backend can fit the context and offload weights rather than pinning every layer to the GPU.
 - The effective loaded window can be below the configured ceiling. Historical fitting examples on one 24 GB card were 90368 tokens for a 20.61 GiB model and 16384 for a 21.11 GiB model; these are not current fit guarantees. The wrapper reads loaded context from the server's `/props` and synchronizes its effective runtime context.
-- Holds a 12288 MiB VRAM budget even on a larger card, so it behaves the same on a 24GB GPU as on the 12GB GPU it targets. Inside that budget a small amount of CPU offload is preferred over exceeding it.
+- Selects all compatible GPUs visible to its backend and shares one `12288` MiB fitting budget across them. The context ceiling and safety headroom are unchanged.
 - Supports GUI, CLI, and stdio MCP server modes.
 - Uses local llama.cpp GGUF inference only; no required API, cloud, subscription, or paid hosted inference service.
 

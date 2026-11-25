@@ -17,7 +17,11 @@ Google's [configuration](https://huggingface.co/google/gemma-4-12B-it/blob/main/
 
 ## 12 GB Runtime Policy
 
-The copy declares `QUBITZ_VRAM_BUDGET_MIB=12288`, selects only `CUDA0` with no device splitting, and retains the shared 1536 MiB safety-margin and automatic context/KV fitting policy. That policy uses a `32768` fit-context floor for budgeted variants and can offload weights when necessary rather than exceed its requested memory class. The budget applies even on a larger GPU; it is a fitting policy, not an OS-level allocation limit.
+The launcher selects all compatible GPUs visible to its backend. One aggregate
+`12288` MiB fitting budget is shared across them, retaining at least `1536` MiB
+of headroom per selected GPU. The `32768` fit-context floor is unchanged, and
+weights can be offloaded to CPU memory when necessary. This is a fitting policy,
+not an OS-level allocation limit.
 
 The 256K value is the model's requested ceiling, not a promise of a 256K loaded window in 12 GB. Runtime fitting may load less, and actual free VRAM, embeddings and temporary buffers still matter. The approximately 7.12 GB weight file alone does not establish total memory use or successful loading.
 

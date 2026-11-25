@@ -17,7 +17,11 @@ The [official configuration](https://huggingface.co/mistralai/Ministral-3-8B-Ins
 
 ## 12 GB Runtime Policy
 
-The copy declares `QUBITZ_VRAM_BUDGET_MIB=12288`, selects only `CUDA0` with no device splitting, and retains the shared 1536 MiB safety-margin and automatic context/KV fitting policy. Budgeted fitting uses a `32768` fit-context floor and permits weight offload when necessary. The budget applies on larger GPUs too; it is a fitting policy, not an OS-level allocation limit.
+The launcher selects all compatible GPUs visible to its backend. One aggregate
+`12288` MiB fitting budget is shared across them, retaining at least `1536` MiB
+of headroom per selected GPU. The `32768` fit-context floor is unchanged, and
+weights can be offloaded to CPU memory when necessary. This is a fitting policy,
+not an OS-level allocation limit.
 
 The requested 256K ceiling does not guarantee a 256K loaded window in 12 GB. Available memory, embeddings, KV state and temporary allocations determine the effective window. The approximately 6.06 GB weight file is not the total runtime footprint.
 

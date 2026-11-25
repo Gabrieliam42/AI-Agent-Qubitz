@@ -146,3 +146,22 @@ def usable_memory(devices: list[dict[str, Any]], margin: int = 1536) -> int:
     if any(int(item["free_mib"]) <= margin for item in devices):
         raise RuntimeError("A selected GPU cannot retain its per-device safety margin.")
     return sum(int(item["free_mib"]) - margin for item in devices)
+
+
+def budgeted_fit_targets(devices: list[dict[str, Any]], budget_mib: int, margin_mib: int) -> list[int]:
+    """Split one fit budget without multiplying it by the device count."""
+    usable_memory(devices, margin_mib)
+    totals = [int(item["total_mib"]) for item in devices]
+    capacities = [total - margin_mib for total in totals]
+    capacity = sum(capacities)
+    allowance = min(capacity, max(0, budget_mib - margin_mib))
+    # Base the targets on device totals, so increased free memory after the
+    # inventory probe cannot increase the aggregate fitting budget.
+    targets = []
+    cumulative = allocated = 0
+    for total, weight in zip(totals, capacities, strict=True):
+        cumulative += weight
+        allocation = allowance * cumulative // capacity
+        targets.append(total - (allocation - allocated))
+        allocated = allocation
+    return targets

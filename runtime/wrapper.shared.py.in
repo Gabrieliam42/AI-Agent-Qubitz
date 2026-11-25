@@ -26832,13 +26832,11 @@ _EMBEDDED_UNTRUSTED_CONTEXT_OLD = '    def format_context(self, query: str) -> s
 def _patch_llamacpp_launch_fit(base: Any) -> None:
     """Size the llama.cpp server GPU-first: model weights before KV cache.
 
-    Model weights are placed in VRAM first and the KV cache is fitted from what
-    remains, so no layer is offloaded to the CPU. A variant may declare
-    QUBITZ_VRAM_BUDGET_MIB to stay inside a smaller VRAM class than the card
-    provides. When weights nearly fill usable VRAM the KV cache drops from q8_0
-    to q4_0 so the model still fits entirely on the GPU. Handles both launch
+    Fit prefers weights in VRAM and adjusts KV cache or offloads weights as
+    needed. QUBITZ_VRAM_BUDGET_MIB is an aggregate fitting budget across the
+    selected devices, not a per-device allowance. Handles both launch
     shapes: raw llama-server argv, and powershell.exe -EncodedCommand wrappers.
-    Builds without --fit keep their original launch arguments unchanged.
+    Budgeted variants require fitting support before launch.
     """
     server_cls = getattr(base, "LlamaCppServerProcess", None)
     if server_cls is None or getattr(server_cls, "_qubitz_launch_fit_installed", False):
@@ -26980,8 +26978,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
 
     def _auto_devices(executable: str) -> list[dict[str, Any]] | None:
         # Large profiles supply their own fit dialect, MTP reserve and host guards.
-        # Keep the separate 12 GB class constrained as before.
-        if _variant_vram_budget_mib() or any(key.endswith("_split_plan") for key in globals()):
+        if any(key.endswith("_split_plan") for key in globals()):
             return None
         from runtime.gpu_devices import discover_devices, usable_memory
 
@@ -26989,13 +26986,29 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
         usable_memory(devices, safety_margin_mib)
         return devices
 
+    def _fit_devices(executable: str) -> list[dict[str, Any]] | None:
+        help_text = _server_help_text(executable)
+        if _variant_vram_budget_mib():
+            flags = set(re.findall(r"(?<![-\w])--[a-z][\w-]*", help_text))
+            required = {"--device", "--split-mode", "--fit", "--fit-ctx", "--fit-target"}
+            if not required.issubset(flags):
+                raise RuntimeError("The selected runtime lacks the required 12 GB GPU fitting controls.")
+        return _auto_devices(executable) if "--fit-ctx" in help_text else None
+
+    def _fit_targets(devices: list[dict[str, Any]]) -> list[int]:
+        budget = _variant_vram_budget_mib()
+        if budget:
+            from runtime.gpu_devices import budgeted_fit_targets
+
+            return budgeted_fit_targets(devices, budget, safety_margin_mib)
+        return [safety_margin_mib] * len(devices)
+
     def _available_mib(devices: list[dict[str, Any]] | None) -> int:
         if devices is None:
             total = _total_vram_mib()
             return max(0, total - _fit_margin_mib(total))
-        from runtime.gpu_devices import usable_memory
-
-        return usable_memory(devices, safety_margin_mib)
+        return sum(max(0, int(item["free_mib"]) - target)
+                   for item, target in zip(devices, _fit_targets(devices), strict=True))
 
     def _device_args(self: Any, devices: list[dict[str, Any]] | None) -> list[str]:
         if devices is None:
@@ -27004,7 +27017,8 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
 
         self._qubitz_auto_gpu_plan = {"devices": [dict(item) for item in devices],
                                      "usable_mib": _available_mib(devices),
-                                     "margin_mib_per_device": safety_margin_mib}
+                                     "margin_mib_per_device": safety_margin_mib,
+                                     "fit_targets_mib": _fit_targets(devices)}
         return ["--device", device_names(devices) if devices else "none", "--split-mode", "layer"]
 
     def _fit_extension_args(executable: str, model_path: str,
@@ -27021,7 +27035,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             "--fit-ctx",
             str(_fit_context_floor()),
             "--fit-target",
-            (",".join(str(safety_margin_mib) for _ in devices) if devices else str(margin_mib)),
+            (",".join(map(str, _fit_targets(devices))) if devices else str(margin_mib)),
         ]
         usable_mib = _available_mib(devices)
         size_mib = _model_size_mib(model_path)
@@ -27068,27 +27082,41 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             if option in fit_args
         }
 
+    def _device_replaced_options(devices: list[dict[str, Any]] | None) -> set[str]:
+        if devices is None:
+            return set()
+        options = {"--device", "--split-mode"}
+        if _variant_vram_budget_mib():
+            options.update({"--main-gpu", "--tensor-split", "--fit", "--fit-ctx", "--fit-target"})
+        return options
+
     def _launch_command_with_fit(self) -> list[str]:
         command = list(original_launch_command(self))
         if not command:
             return command
         head_name = str(command[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
-        if head_name == "powershell.exe":
+        if head_name in {"powershell.exe", "pwsh.exe", "pwsh"}:
             encoded_index = -1
             for index in range(1, len(command) - 1):
                 if str(command[index]).lower() == "-encodedcommand":
                     encoded_index = index + 1
                     break
             if encoded_index < 0:
+                if _variant_vram_budget_mib():
+                    raise RuntimeError("The 12 GB launcher requires an encoded Windows server command.")
                 return command
             import base64
 
             try:
                 script = base64.b64decode(str(command[encoded_index])).decode("utf-16-le")
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError) as exc:
+                if _variant_vram_budget_mib():
+                    raise RuntimeError("The 12 GB server command could not be decoded.") from exc
                 return command
             exe_match = re.search(r"& '([^']*llama-server(?:\.exe)?)'", script)
             if exe_match is None:
+                if _variant_vram_budget_mib():
+                    raise RuntimeError("The 12 GB launcher could not identify the Windows server command.")
                 return command
             endpoint_args = _endpoint_args(exe_match.group(1), script)
             if endpoint_args:
@@ -27100,8 +27128,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
                 command[encoded_index] = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
             model_match = re.search(r"'--model'\s+'([^']+)'", script)
             model_path = model_match.group(1) if model_match is not None else ""
-            devices = (_auto_devices(exe_match.group(1))
-                       if "--fit-ctx" in _server_help_text(exe_match.group(1)) else None)
+            devices = _fit_devices(exe_match.group(1))
             fit_args = _fit_extension_args(exe_match.group(1), model_path, devices)
             if fit_args is None:
                 return command
@@ -27110,8 +27137,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             new_script = script if keep_ctx else re.sub(
                 r"\s*'--ctx-size'\s+'[0-9]+'", "", script, count=1
             )
-            for option in (_fit_replaced_options(fit_args)
-                           | ({"--device", "--split-mode"} if devices is not None else set())):
+            for option in _fit_replaced_options(fit_args) | _device_replaced_options(devices):
                 new_script = re.sub(
                     rf"\s*'{re.escape(option)}'(?:\s+'[^']*'|=[^\s]+)",
                     "",
@@ -27126,8 +27152,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             model_index = command.index("--model")
             if model_index + 1 < len(command):
                 model_argument = str(command[model_index + 1])
-        devices = (_auto_devices(str(command[0]))
-                   if "--fit-ctx" in _server_help_text(str(command[0])) else None)
+        devices = _fit_devices(str(command[0]))
         fit_args = _fit_extension_args(str(command[0]), model_argument, devices)
         if fit_args is None:
             return command
@@ -27139,8 +27164,7 @@ def _patch_llamacpp_launch_fit(base: Any) -> None:
             except ValueError:
                 pass
         command = _strip_replaced_cli_options(
-            command, _fit_replaced_options(fit_args)
-            | ({"--device", "--split-mode"} if devices is not None else set()),
+            command, _fit_replaced_options(fit_args) | _device_replaced_options(devices),
         )
         command.extend([*_device_args(self, devices), *fit_args])
         return command

@@ -70,12 +70,13 @@ The GUI reader delivers scan results through Unix Tcl file events, so completed 
 
 `gpu_devices.py` is a normal-user runtime dependency. Standard backends report
 their own visible device IDs and free memory; the pinned GLM CUDA backend uses
-driver ordinals matched to memory records by UUID. Public 24 GB and larger
-profiles use all selected compatible GPUs with layer splitting and per-device
+driver ordinals matched to memory records by UUID. All public tiers use the
+selected compatible GPUs with layer splitting and per-device
 headroom, not a fixed card count. Device masks and explicit `LLAMA_ARG_DEVICE`
 selection are respected. Multiple non-CUDA backend families require an explicit
 selection to avoid double-counting physical GPUs. Discovery failures remain
-errors, not invented single-GPU inventories. Separate 12 GB budgets, model
-settings, MTP reserves, fit dialects and host-memory guards are retained. This
+errors, not invented single-GPU inventories. The 12 GB tier shares its aggregate
+fitting allowance across devices without increasing it. Model settings, MTP
+reserves, fit dialects, and host-memory guards are retained. This
 does not add support for GPU vendors absent from the selected backend or imply
 that a multi-GPU allocation is a unified memory pool or a guaranteed speedup.

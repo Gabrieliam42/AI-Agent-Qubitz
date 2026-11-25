@@ -46,11 +46,7 @@
 44. `AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-Q8_0.py`: `16384`
 45. `AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-UD-Q4_K_XL.py`: `16384`
 46. `AI_Agent_Qubitz_Qwen3.8-Flash-Next-125B-A6B-Q4_K_XL.py`: `262144`
-47. `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q4_K_M.py`: `131072`
-48. `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q5_K_M.py`: `131072`
-49. `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q6_K.py`: `131072`
-50. `AI_Agent_Qubitz_Ripple-65B-Preview-BF16.py`: `131072`
-51. `AI_Agent_Qubitz_Ripple-65B-Preview-Q8_0.py`: `131072`
+47. `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q6_K.py`: `131072`
 
 These are configured launcher defaults. The Qwen3.5 9B 12 GB variant caps context at `101376` on every GPU.
 
@@ -61,7 +57,7 @@ establish full-context fit or long-context stability.
 
 These are requested context ceilings, not guaranteed effective windows: llama.cpp may fit a lower loaded context when model weights, KV cache, GPU headroom or multi-GPU placement require it.
 
-Gemma 4 12B Unified and Ministral 3 8B Instruct 2512 both retain `262144`: Google's `text_config.max_position_embeddings` and Mistral's corresponding configuration declare that value, and the GGUF repository metadata agrees. Their 12 GB single-GPU fitting policy may load a smaller effective window; it does not increase either model's declared ceiling or guarantee 256K fits in 12 GB. See their model guides for source links and memory limitations.
+Gemma 4 12B Unified and Ministral 3 8B Instruct 2512 both retain `262144` as their configured ceiling. Their shared 12 GB fitting budget can produce a smaller loaded window, even when using multiple GPUs. See their model guides for source links and memory limitations.
 
 Hypernova 60B 2605 uses `131072` because its authoritative model configuration declares `max_position_embeddings: 131072`. Its YaRN configuration scales an original `4096` positions by a factor of `32`, producing `131072`; the model card also evaluates Terminal-Bench with `max-model-len 131072`. Automatic multi-GPU selection does not guarantee full-window fit or change the declared context limit. Setting it to `262144` would be unsupported context extrapolation, not restoration of a documented 256K trained context.
 
@@ -91,10 +87,10 @@ Ornith-1.5-122B uses `262144` from its official `text_config.max_position_embedd
 
 Nemotron-3.5-Super-VL-120B-A12B declares `llm_config.max_position_embeddings: 1048576` in NVIDIA's [official configuration](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16/blob/main/config.json). Qubitz keeps `262144` as the default request, rather than preallocating the full native ceiling alongside approximately 112.7 GiB of Q6 weights. `--num-ctx` can request a larger window up to that documented ceiling, subject to actual memory fitting; the fit floor remains `131072` when feasible. This is a hardware policy, not a claim that the model is limited to 256K or that 1M has been load-tested.
 
-Hermes 4 70B Q4, Hermes 4.3 36B Q8_0, and Ripple 65B Preview variants request
+Hermes 4 70B Q4, Hermes 4.3 36B Q8_0, and Ripple 65B Preview AD-Q6_K request
 `131072` by default. Qubitz caps both Hermes launchers at `131072`; this is a
-launcher limit, not the native context limit of Hermes 4.3. The Ripple launchers
-accept up to `1000000`, below the `2097152` config value.
+launcher limit, not the native context limit of Hermes 4.3. The Ripple launcher
+accepts up to `1000000`, below the `2097152` config value.
 Lower the requested context if memory admission fails.
 
 Laguna S 2.1 starts at `16384` for both UD-Q4_K_XL and Q8_0, matching Unsloth's

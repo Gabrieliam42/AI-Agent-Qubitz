@@ -1,4 +1,4 @@
-- Public catalog: 51 launchers in `variants/`, requiring project-root `runtime/`. Start the shared GUI through `AI Agent Qubitz.py` or run a variant directly by its `variants/` path. Developer-only launchers are not part of this catalog.
+- Public catalog: 47 launchers in `variants/`, requiring project-root `runtime/`. Start the shared GUI through `AI Agent Qubitz.py` or run a variant directly by its `variants/` path. Developer-only launchers are not part of this catalog.
 
 - `AI_Agent_Qubitz_Qwen3.5_9B_Q5_12G.py` - for 12GB VRAM GPU `Qwen Team's` Qwen-3.5-9B Q5 Dense
 - `AI_Agent_Qubitz_Gemma-4-12B-IT-Q4_12G.py` - 12GB VRAM GPU profile, `Google DeepMind's` dense Gemma 4 12B Unified Q4_K_M; text/tool only, loaded context fitted to available memory.
@@ -47,9 +47,9 @@
 - `AI_Agent_Qubitz_GLM-5.3-Flash-UD-IQ4_XS.py` - five-shard IQ4_XS variant in the 72 GB VRAM+ tier plus RAM overflow; missing pinned backend is prepared online; long-task stability remains unqualified.
 - Dense Hermes 4 70B: [UD-Q4_K_XL](AI_Agent_Qubitz_Hermes-4-70B-UD-Q4_K_XL.md), 72 GB VRAM+ with RAM overflow.
 - `AI_Agent_Qubitz_Hermes-4.3-36B-Q8_0.py`: [Hermes 4.3 36B Q8_0](hermes_ripple_variants.md), 72 GB VRAM+.
-- Dense Ripple 65B Preview: `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q4_K_M.py` and `AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q5_K_M.py` are [single-file choices](hermes_ripple_variants.md) alongside [AD-Q6_K](AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q6_K.md), [Q8_0](AI_Agent_Qubitz_Ripple-65B-Preview-Q8_0.md), and [BF16](AI_Agent_Qubitz_Ripple-65B-Preview-BF16.md). All are in the 72 GB VRAM+ tier.
+- Dense Ripple 65B Preview: [AD-Q6_K](AI_Agent_Qubitz_Ripple-65B-Preview-AD-Q6_K.md), 72 GB VRAM+.
 - MoE Laguna S 2.1 118B-A8B: [UD-Q4_K_XL](AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-UD-Q4_K_XL.md) and [Q8_0](AI_Agent_Qubitz_Laguna-S-2.1-118B-A8B-Q8_0.md), 72 GB VRAM+ with RAM overflow.
 
-The 24 GB, 48 GB VRAM+ and 72 GB VRAM+ tiers use all visible compatible GPUs,
-not fixed one/two/three-card counts. Capacity, headroom and runtime support still
-determine fit; the 12 GB profiles retain their separate budget.
+All tiers select the compatible GPUs visible to their backend, not a fixed card
+count. The 12 GB profiles share one fitting budget across those GPUs. Available
+memory, per-device headroom, and backend support still determine the fit.

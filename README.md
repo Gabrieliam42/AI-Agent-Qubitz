@@ -19,7 +19,10 @@ logs, and how to interpret verification and token-speed results.
   environment before launch.
 - A compatible GPU, with enough VRAM (at least 12 GB) and RAM, and free disk space for the selected
   model.
-- The 24 GB, [48 GB VRAM+](documentation/multiGPU_tier_48gb.md), and 72 GB VRAM+ tiers automatically select all compatible GPUs visible to their backend, using one when only one is visible. Each GPU retains memory headroom; larger models may still need CPU offload and sufficient system RAM. The separate 12 GB profiles retain their budget.
+- All tiers automatically select the compatible GPUs visible to their backend,
+  whether one or several. The 12 GB tier shares one fitting budget across the
+  selected GPUs; adding cards does not multiply that budget. Each GPU retains
+  memory headroom. Larger models may still need CPU offload and sufficient RAM.
 - Network access for a first run with missing model weights or llama.cpp
   runtimes. The selected variant prepares its supported missing artifacts on
   demand; offline mode requires complete local artifacts. Download success does

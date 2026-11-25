@@ -39,7 +39,10 @@ and caches are not shipped in Git. Keep the published runtime package together.
 
 - Primary runtime: WSL2 project environment `.venv/bin/python`.
 - Default Python target: Python 3.12.
-- The 24 GB, 48 GB VRAM+ and 72 GB VRAM+ profiles select all compatible GPUs visible to the backend, respecting explicit restrictions and per-device headroom. Tiers describe capacity guidance, not a fixed card count. CPU overflow still needs sufficient RAM; paging is not extra physical memory and can be much slower.
+- All tiers select the compatible GPUs visible to the backend, respecting explicit
+  restrictions and per-device headroom. The 12 GB profiles divide one 12 GiB
+  fitting budget across the selected devices, not 12 GiB per card. Tiers do not
+  prescribe a fixed card count. CPU offload still needs sufficient system RAM.
 - Smaller VRAM profiles are available for compact models. A configured context limit is not a guarantee that every model or workload fits in memory.
 - GPU inference uses the project-managed llama.cpp GGUF runtime and CUDA retrieval/embedding stack where supported.
 - GPU selection, context limits, and runtime flags vary by model. More GPUs can increase available memory but do not guarantee higher throughput.
