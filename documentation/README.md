@@ -68,17 +68,21 @@ Launch from the project root with the project interpreter:
 .venv/bin/python variants/AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py --help
 ```
 
-The root launcher's default is the existing GLM-4.7-Flash 24GB reference variant; it does not choose by GPU size. Explicit selection and the existing GUI variant menu remain available. Without `--workspace`, the root launcher uses the project root; an explicit workspace is forwarded unchanged. Variant switching stops the current owned runtime before replacing the process with the selected launcher.
+The root launcher opens a chooser with no variant selected. Selecting a row starts that variant immediately. Pass `--variant` to skip the chooser or to use the CLI or MCP server. Without `--workspace`, the root launcher uses the project root; an explicit workspace is forwarded unchanged. In-app variant switching stops the current owned runtime before replacing the process with the selected launcher.
 
 On WSL, Qubitz makes one maximize request four seconds after the window appears.
 Input or minimizing the window cancels the request. To disable it for one launch,
 run `QUBITZ_START_MAXIMIZED=0 .venv/bin/python "AI Agent Qubitz.py"` in WSL.
 
-The Variant picker supports the mouse wheel, scrollbar, and keyboard navigation.
-Choose a row with a click or Enter; browsing alone does not switch models.
-Opening the picker scans this installation's local model cache in the background.
-White entries have the expected GGUF file set; gray means missing or not yet
-confirmed. Opening the menu does not download weights. Selecting a variant can
+Qubitz adds persistent workspace memory to `.memory/MEMORY.md` across sessions.
+On startup it can import missing entries from older dated memory files.
+It does not create new dated memory files or automatically delete old ones.
+
+The startup chooser and the in-app Variant picker scan this installation's local
+model cache in the background. White rows have the expected GGUF file set; gray
+means missing, incomplete, or unverified. Gray rows remain selectable. The
+in-app picker supports scrolling and keyboard navigation. Opening either picker
+does not download weights. Starting a selected variant can
 download missing model files when online, after checking their metadata and
 available storage. During preparation, managed files with an unexpected size or
 invalid header are moved aside rather than deleted. An explicitly configured
@@ -87,9 +91,26 @@ file integrity or hardware fit.
 
 When a request identifies an exact workspace path, Qubitz can read it without a
 repository-wide index. Requests that need broader context use bounded retrieval.
+Reads past the end of a file report its last line instead of returning a
+nonexistent range.
 GPU embedding and FAISS index placement are separate decisions; a CUDA-capable
 backend does not mean every retrieval step runs on every GPU. A limit or fallback
 is not proof that the workspace was searched exhaustively.
+
+## Run a Project Workflow
+
+When you ask Qubitz to use the active project's own workflow, it looks for
+supported commands in declarations such as `package.json`, documented usage,
+or `.qubitz/workflows.json`. This check does not run scripts or index the whole
+workspace. If there is no match, name the entrypoint or provide the documented
+command. If there are several matches, choose the one you want to inspect.
+
+Review the proposed command and working directory, then use the displayed
+`Run workflow <name>` confirmation. Missing declared prerequisites, a changed
+entrypoint, or an access or network restriction can block the run. Discovery
+supports direct script commands, not arbitrary shell pipelines or package hooks.
+Qubitz does not retry an uncertain execution automatically. An exit code and
+observed output are evidence of execution, not proof of the requested result.
 
 `DraftPanel`, beside the token-rate controls, is off by default. Enable it to
 see provisional file changes. Expand a truncated preview to see the retained

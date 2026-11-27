@@ -19,8 +19,11 @@ def main(argv: Sequence[str] | None = None, *, developer_web: bool = False) -> i
         epilog="Other options are forwarded unchanged to the selected variant; use its --help directly for those options.",
         allow_abbrev=False,
     )
-    parser.add_argument("--variant", default=DEFAULT_VARIANT, metavar="BASENAME",
-                        help="Exact variant filename; default: %(default)s")
+    parser.add_argument(
+        "--variant", default=DEFAULT_VARIANT if developer_web else None, metavar="BASENAME",
+        help=("Exact variant filename; default: %(default)s" if developer_web
+              else "Exact variant filename; omit to choose in the startup window."),
+    )
     parser.add_argument("--list-variants", action="store_true", help="List available variant filenames without loading them.")
     args, forwarded = parser.parse_known_args(argv)
     try:
@@ -30,6 +33,21 @@ def main(argv: Sequence[str] | None = None, *, developer_web: bool = False) -> i
                 parser.error("No variants were found in variants/.")
             print("\n".join(path.name for path in paths))
             return 0
+        if args.variant is None:
+            if any(value in {"--cli", "--serve-mcp", "--prompt"} or value.startswith("--prompt=")
+                   for value in forwarded):
+                parser.error("--variant is required for CLI and MCP launches; use --list-variants to see choices.")
+            paths = variant_paths(PROJECT_ROOT)
+            if not paths:
+                parser.error("No variants were found in variants/.")
+            from .startup_picker import choose_startup_variant
+
+            try:
+                args.variant = choose_startup_variant(paths)
+            except (ImportError, RuntimeError) as exc:
+                parser.error(f"Cannot open the variant chooser: {exc}. Use --variant to select explicitly.")
+            if args.variant is None:
+                return 0
         if not user_variant_allowed(args.variant):
             raise ValueError("Developer-only variants cannot be opened through this launcher.")
         target = variant_path(args.variant, PROJECT_ROOT)

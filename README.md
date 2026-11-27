@@ -12,6 +12,10 @@ web research, and enabled MCP integrations can use the network.
 See the [user guide](documentation/README.md) for setup, tool use, conversation
 logs, and how to interpret verification and token-speed results.
 
+When you ask Qubitz to use a project's own workflow, it can look for a declared
+command and check its prerequisites before asking you to confirm it. Finding a
+workflow or seeing it exit successfully does not prove that it achieved your goal.
+
 ## Requirements
 
 - Windows 11 with WSL2 and a Python 3.12 project environment. Install the
@@ -42,10 +46,10 @@ From the project root in WSL, using the prepared environment:
 .venv/bin/python variants/AI_Agent_Qubitz_GLM_4.7_Flash-30B-A3B-Q4.py --help
 ```
 
-The root launcher starts the normal Tk interface with one selected variant;
-the default is not selected by GPU size. Use a variant's own `--help` for its
-CLI and MCP-server options. An explicit `--workspace` is forwarded unchanged;
-otherwise the root launcher uses the project root.
+The root launcher opens a chooser with no variant selected. Selecting a variant
+starts it immediately, or you can pass `--variant` to skip the chooser. CLI and MCP
+launches through the root launcher require `--variant`. An explicit
+`--workspace` is forwarded unchanged; otherwise the project root is used.
 
 On WSL, the window opens at normal size and requests maximization once after
 four seconds. Interacting with the window or minimizing it cancels the request.

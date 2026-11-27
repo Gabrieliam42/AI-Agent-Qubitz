@@ -114,316 +114,7 @@ THINKING_EFFORT_OPTIONS = ("low", "medium", "high", "xhigh")
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:01b37e440aac1f73> module/FunctionDef:_install_daily_memory_store:0
 def _install_daily_memory_store(app: LocalOnlyApp) -> None:
-    """Keep one exact-deduplicated archive per day while preserving MEMORY.md."""
-    base = app.base
-    original_memory_store = base.MemoryStore
-    if getattr(original_memory_store, "_QUBITZ_DAILY_ARCHIVE_INSTALLED", False):
-        return
-
-    class DailyMemoryStore(original_memory_store):
-        _ENTRY_PATTERN = re.compile(r"<!-- qubitz-memory-entry:([0-9a-f]{64}) -->")
-        _LEGACY_ARCHIVE_PATTERN = re.compile(r"^MEMORY_(\d{8})_(\d{6})\.md$")
-        _LEGACY_NOTE_PATTERN = re.compile(
-            r"^-\s+\[([^\]]+)\]\s+\(([^)]+)\)\s+(.+)$"
-        )
-        _LEGACY_TURN_PATTERN = re.compile(
-            r"(?ms)^###\s+([^\[\n]+?)\s+\[([^\]\n]+)\]\s*\n(.*?)(?=^###\s+|\Z)"
-        )
-
-        def __init__(self, workspace: Path) -> None:
-            self.workspace = workspace
-            self.memory_dir = workspace / ".memory"
-            self.memory_dir.mkdir(parents=True, exist_ok=True)
-            self.session_id = base.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.current_path = self.memory_dir / base.CURRENT_MEMORY_NAME
-            self.archive_path = self._daily_archive_path()
-            self.lock_path = self.memory_dir / ".daily-memory.lock"
-            self.notes: list[dict[str, str]] = []
-            self.turns: list[dict[str, str]] = []
-            self._acquire_daily_lock()
-            try:
-                self._migrate_legacy_archives()
-                self._flush_locked()
-            finally:
-                self._release_daily_lock()
-
-        def _daily_archive_path(self, date_stamp: str | None = None) -> Path:
-            date_stamp = date_stamp or base.datetime.now().strftime("%Y%m%d")
-            return self.memory_dir / f"{base.ARCHIVE_MEMORY_PREFIX}{date_stamp}.md"
-
-        @staticmethod
-        def _entry_digest(kind: str, content: str) -> str:
-            normalized = " ".join(content.split())
-            payload = f"{kind.strip().lower()}\0{normalized}".encode()
-            return hashlib.sha256(payload).hexdigest()
-
-        @staticmethod
-        def _write_atomic(path: Path, text: str) -> None:
-            temporary = path.with_name(
-                f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-            )
-            try:
-                temporary.write_text(text, encoding="utf-8", newline="\n")
-                temporary.replace(path)
-            finally:
-                with suppress(OSError):
-                    temporary.unlink()
-
-        def _acquire_daily_lock(self) -> None:
-            deadline = time.monotonic() + 20.0
-            while True:
-                try:
-                    descriptor = os.open(
-                        self.lock_path,
-                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    )
-                except FileExistsError:
-                    try:
-                        stale = time.time() - self.lock_path.stat().st_mtime > 120.0
-                    except OSError:
-                        stale = False
-                    if stale:
-                        with suppress(OSError):
-                            self.lock_path.unlink()
-                        continue
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            f"Timed out waiting for the daily memory lock: {self.lock_path}"
-                        )
-                    time.sleep(0.05)
-                    continue
-                try:
-                    os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
-                finally:
-                    os.close(descriptor)
-                return
-
-        def _release_daily_lock(self) -> None:
-            with suppress(FileNotFoundError):
-                self.lock_path.unlink()
-
-        def _daily_header(self, date_stamp: str) -> str:
-            date_text = f"{date_stamp[:4]}-{date_stamp[4:6]}-{date_stamp[6:8]}"
-            return "\n".join(
-                (
-                    "# Qubitz Daily Memory",
-                    "",
-                    f"Date: {date_text}",
-                    f"Updated: {base.now_stamp()}",
-                    f"Workspace: {self.workspace.as_posix()}",
-                    "",
-                    "## Entries",
-                )
-            )
-
-        def _merge_entries_into_daily(
-            self,
-            date_stamp: str,
-            notes: list[dict[str, str]],
-            turns: list[dict[str, str]],
-        ) -> None:
-            daily_path = self._daily_archive_path(date_stamp)
-            if daily_path.exists():
-                existing = daily_path.read_text(encoding="utf-8", errors="ignore").strip()
-            else:
-                existing = ""
-            if not existing:
-                existing = self._daily_header(date_stamp)
-            elif re.search(r"(?m)^Updated: .*$", existing):
-                existing = re.sub(
-                    r"(?m)^Updated: .*$",
-                    f"Updated: {base.now_stamp()}",
-                    existing,
-                    count=1,
-                )
-
-            known = set(self._ENTRY_PATTERN.findall(existing))
-            additions: list[str] = []
-            for note in notes:
-                category = note.get("category", "note").strip() or "note"
-                content = note.get("text", "").strip()
-                if not content:
-                    continue
-                digest = self._entry_digest(f"note:{category}", content)
-                if digest in known:
-                    continue
-                known.add(digest)
-                additions.append(
-                    "\n".join(
-                        (
-                            f"<!-- qubitz-memory-entry:{digest} -->",
-                            f"- [{note.get('timestamp', base.now_stamp())}] ({category}) {content}",
-                        )
-                        )
-                    )
-            for turn in turns:
-                role = turn.get("role", "unknown").strip().lower() or "unknown"
-                content = turn.get("content", "").strip()
-                if not content:
-                    continue
-                digest = self._entry_digest(f"turn:{role}", content)
-                if digest in known:
-                    continue
-                known.add(digest)
-                additions.append(
-                    "\n".join(
-                        (
-                            f"<!-- qubitz-memory-entry:{digest} -->",
-                            f"### {role.title()} [{turn.get('timestamp', base.now_stamp())}]",
-                            content,
-                        )
-                    )
-                    )
-            if additions:
-                existing = f"{existing.rstrip()}\n\n{'\n\n'.join(additions)}"
-            self._write_atomic(daily_path, f"{existing.rstrip()}\n")
-
-        def _parse_legacy_archive(
-            self,
-            legacy_path: Path,
-        ) -> tuple[list[dict[str, str]], list[dict[str, str]]] | None:
-            text = legacy_path.read_text(encoding="utf-8", errors="ignore")
-            if not text.lstrip().startswith("# Qubitz Memory"):
-                return None
-
-            notes: list[dict[str, str]] = []
-            notes_section = text.partition("## Notes")[2].partition("## Recent Turns")[0]
-            for raw_line in notes_section.splitlines():
-                line = raw_line.strip()
-                if not line or line == "- No notes recorded yet.":
-                    continue
-                match = self._LEGACY_NOTE_PATTERN.fullmatch(line)
-                if match is None:
-                    return None
-                timestamp, category, content = match.groups()
-                notes.append(
-                    {
-                        "timestamp": timestamp.strip(),
-                        "category": category.strip(),
-                        "text": content.strip(),
-                    }
-                )
-
-            turns: list[dict[str, str]] = []
-            turns_section = text.partition("## Recent Turns")[2]
-            for match in self._LEGACY_TURN_PATTERN.finditer(turns_section):
-                role, timestamp, content = match.groups()
-                turns.append(
-                    {
-                        "timestamp": timestamp.strip(),
-                        "role": role.strip().lower(),
-                        "content": content.strip(),
-                    }
-                )
-            if turns_section.strip() and not turns:
-                return None
-            return notes, turns
-
-        def _migrate_legacy_archives(self) -> None:
-            for legacy_path in sorted(self.memory_dir.glob("MEMORY_*.md")):
-                match = self._LEGACY_ARCHIVE_PATTERN.fullmatch(legacy_path.name)
-                if match is None:
-                    continue
-                parsed = self._parse_legacy_archive(legacy_path)
-                if parsed is None:
-                    continue
-                notes, turns = parsed
-                self._merge_entries_into_daily(match.group(1), notes, turns)
-                legacy_path.unlink()
-
-        def _merged_memory_context(self, query: str) -> str:
-            """Build a bounded, provenance-preserving view across all memory Markdown."""
-            # Consolidation makes the runtime read one canonical file only.
-            paths = [self.current_path]
-            entries: dict[str, dict[str, Any]] = {}
-            query_tokens = set(re.findall(r"[a-z0-9_./:-]+", query.casefold()))
-            for path in paths:
-                if not path.is_file():
-                    continue
-                text = path.read_text(encoding="utf-8", errors="ignore")
-                paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
-                for paragraph in paragraphs:
-                    declared_sources = re.findall(r"<!--\s*source:\s*([^>]+?)\s*-->", paragraph)
-                    sources = [item.strip() for item in declared_sources for item in item.split(",") if item.strip()]
-                    if not sources:
-                        sources = [path.name]
-                    lines = [line.strip() for line in paragraph.splitlines()
-                             if line.strip() and not line.lstrip().startswith("<!--")]
-                    content = "\n".join(lines).strip()
-                    if not content or content.startswith(("# Qubitz Memory", "# Qubitz Daily Memory",
-                                                          "Session ID:", "Updated:", "Workspace:",
-                                                          "## Notes", "## Entries", "## Recent Turns")):
-                        continue
-                    key = " ".join(content.casefold().split())
-                    entry = entries.setdefault(key, {"content": content, "sources": [], "score": 0})
-                    for source in sources:
-                        if source not in entry["sources"]:
-                            entry["sources"].append(source)
-                    entry["score"] = max(entry["score"],
-                                         sum(content.casefold().count(token) for token in query_tokens))
-            ranked = sorted(entries.values(), key=lambda item: (item["score"], len(item["sources"])), reverse=True)
-            rendered = ["Merged memory context (deduplicated; source files preserved):"]
-            budget = int(getattr(base, "MAX_MEMORY_CONTEXT_CHARS", 1200))
-            for entry in ranked:
-                source_note = ", ".join(entry["sources"])
-                item = f"- [source: {source_note}] {entry['content']}"
-                if len("\n".join(rendered)) + len(item) + 1 > budget:
-                    continue
-                rendered.append(item)
-            return "\n".join(rendered) if len(rendered) > 1 else ""
-
-        def _consolidate_memory_file(self) -> None:
-            """Write one deduplicated MEMORY.md while preserving archive sources."""
-            paths = [self.current_path]
-            paths.extend(sorted(self.memory_dir.glob("MEMORY_*.md"),
-                                key=lambda item: item.stat().st_mtime,
-                                reverse=True))
-            entries: dict[str, dict[str, Any]] = {}
-            for path in paths:
-                if not path.is_file():
-                    continue
-                source = path.name
-                text = path.read_text(encoding="utf-8", errors="ignore")
-                for paragraph in (part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()):
-                    lines = [line.strip() for line in paragraph.splitlines()
-                             if line.strip() and not line.lstrip().startswith("<!--")]
-                    content = "\n".join(lines).strip()
-                    if not content or content.startswith(("# Qubitz Memory", "# Qubitz Daily Memory",
-                                                          "Session ID:", "Updated:", "Workspace:",
-                                                          "## Notes", "## Entries", "## Recent Turns")):
-                        continue
-                    key = " ".join(content.casefold().split())
-                    entry = entries.setdefault(key, {"content": content, "sources": []})
-                    if source not in entry["sources"]:
-                        entry["sources"].append(source)
-            lines = ["# Qubitz Consolidated Memory", "", "Generated from current and archived memory files.", ""]
-            for entry in entries.values():
-                lines.append(f"<!-- source: {', '.join(entry['sources'])} -->")
-                lines.extend((entry["content"], ""))
-            self._write_atomic(self.current_path, "\n".join(lines).rstrip() + "\n")
-
-        def build_context(self, query: str) -> str:
-            return self._merged_memory_context(query)
-
-        def _merge_daily_archive(self) -> None:
-            date_stamp = base.datetime.now().strftime("%Y%m%d")
-            self.archive_path = self._daily_archive_path(date_stamp)
-            self._merge_entries_into_daily(date_stamp, self.notes, self.turns)
-
-        def _flush_locked(self) -> None:
-            self._write_atomic(self.current_path, self.render())
-            self._merge_daily_archive()
-            self._consolidate_memory_file()
-
-        def flush(self) -> None:
-            self._acquire_daily_lock()
-            try:
-                self._flush_locked()
-            finally:
-                self._release_daily_lock()
-
-    DailyMemoryStore._QUBITZ_DAILY_ARCHIVE_INSTALLED = True
-    base.MemoryStore = DailyMemoryStore
+    """Compatibility hook: the shared base store already uses only MEMORY.md."""
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:021ff185289f20a3> module/ClassDef:LocalOnlyApp:0/FunctionDef:_build_agent_runner_class:0/ClassDef:EnhancedAgentRunner:0/FunctionDef:__init__:0/Assign:Name(id='sandbox_tools_enabled', ctx=Store()):0
                 sandbox_tools_enabled = _sandbox_features_enabled(self.local_only_config)
@@ -3710,6 +3401,12 @@ def _run_inline_browser_open(
             if bash is None:
                 raise RuntimeError("bash was not found for the requested shell entrypoint.")
             command = [bash, str(target), *args]
+        elif suffix in {".js", ".mjs", ".cjs"}:
+            node = shutil.which("node") or (shutil.which("node.exe") if base.in_wsl() else None)
+            if node is None:
+                raise RuntimeError("Node.js was not found for the requested entrypoint.")
+            script_path = base.wsl_path_to_windows_path(target) if base.in_wsl() and node.lower().endswith(".exe") else str(target)
+            command = [node, script_path, *args]
         elif suffix == ".ps1":
             powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or shutil.which("pwsh")
             if powershell is None:
@@ -6546,6 +6243,8 @@ def _patch_streaming_chat(base: Any) -> None:
         draft = StreamDraft(progress_broker)
         generated = False
         last_prefill = (-1, 0)
+        prefill_started = last_prefill_status_at = time.monotonic()
+        prefill_callback = getattr(progress_broker, "callback", None)
         if getattr(self, "_qubitz_backend_identity", {}).get("supports_prompt_progress") is True:
             payload["return_progress"] = True
         phase("Awaiting model")
@@ -6634,6 +6333,11 @@ def _patch_streaming_chat(base: Any) -> None:
                             last_prefill = prefill
                             processed, total = prefill
                             phase(f"Prefill {processed:,}/{total:,}")
+                            now = time.monotonic()
+                            if callable(prefill_callback) and (processed == total or now - last_prefill_status_at >= 8):
+                                last_prefill_status_at = now
+                                with suppress(Exception):
+                                    prefill_callback("status", f"Model prompt processing: {processed:,}/{total:,} tokens ({now - prefill_started:.0f}s elapsed).")
                         if isinstance(event.get("timings"), dict) and prefill is None:
                             timings = event["timings"]
                             progress.update(timings)
@@ -14475,8 +14179,8 @@ def _canonical_http_url(value: Any) -> str:
                     variable = getattr(self, "token_speed_var", None)
                     if variable is not None:
                         variable.set("-- tok/s")
+                    self.status_var.set("Request failed; see chat.")
                     self._append_transcript("error", message)
-                    self.messagebox.showerror("AI Agent Qubitz", message)
                 elif kind == "done":
                     collapse_reasoning = getattr(self, "_collapse_reasoning_turn", None)
                     if callable(collapse_reasoning):
@@ -18106,7 +17810,7 @@ def _named_file_operation_request(
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:7f58d48d7df9986e> module/ClassDef:_ToolPermissionBroker:0/FunctionDef:partial_progress_answer:0
     def partial_progress_answer(self, prompt: str) -> str:
-        _required, missing = self.completion_report(prompt)
+        required, missing = self.completion_report(prompt)
         evidence_items = self._current_turn_evidence()
         if not evidence_items:
             return ""
@@ -18122,15 +17826,26 @@ def _named_file_operation_request(
             max((int(evidence.get("opened_count") or 0) for evidence in evidence_items if evidence.get("success")), default=0),
         )
         result_count = max(
-            (int(evidence.get("result_count") or 0) for evidence in evidence_items if evidence.get("success")),
+            (int(evidence.get("result_count") or 0) for evidence in evidence_items
+             if evidence.get("success") and "result_count" in evidence.get("categories", ())),
             default=0,
         )
+        inspection_counts = {
+            kind: max((int(evidence.get("inspection_count") or 0) for evidence in evidence_items
+                       if evidence.get("success") and evidence.get("inspection_kind") == kind), default=0)
+            for kind in ("local entries listed", "local text matches")
+        }
         verified_paths = {
             str(path)
             for evidence in evidence_items
-            if evidence.get("success")
+            if evidence.get("success") and evidence.get("tool") not in {"read_file", "read_file_snapshot", "list_files", "search_text"}
             for path in evidence.get("paths", [])
             if str(path).strip()
+        }
+        inspected_paths = {
+            str(path) for evidence in evidence_items if evidence.get("success")
+            and evidence.get("tool") in {"read_file", "read_file_snapshot"}
+            for path in evidence.get("paths", []) if str(path).strip()
         }
         progress: list[str] = []
         if opened_count:
@@ -18139,11 +17854,17 @@ def _named_file_operation_request(
             progress.append(f"verified results: {result_count}")
         if verified_paths:
             progress.append(f"verified paths: {len(verified_paths)}")
+        progress.extend(f"{label}: {count} (largest single call)" for label, count in inspection_counts.items() if count)
+        if inspected_paths:
+            progress.append(f"local source paths inspected: {len(inspected_paths)}")
         if not progress:
             return ""
         missing_text = ", ".join(sorted(item.replace("_", " ") for item in missing))
-        completion_detail = (f"Unverified postconditions: {missing_text}." if missing else
-                             "Recorded postconditions are verified; overall task completion and behavior remain unverified.")
+        completion_detail = (
+            f"Unverified postconditions: {missing_text}." if missing else
+            "Recorded postconditions are verified; overall task completion and behavior remain unverified." if required else
+            "Only the listed tool evidence is verified; overall task completion and behavior remain unverified."
+        )
         return (
             "The task was cancelled after preserving verified partial progress.\n\n"
             f"Verified before cancellation: {'; '.join(progress)}.\n\n"
@@ -22829,6 +22550,10 @@ parse_args = _APP.parse_args
         lines = _read_text(target).splitlines()
         start_index = max(start_line - 1, 0)
         end_index = min(end_line, len(lines))
+        if start_index >= len(lines):
+            return {"path": base.relative_path(target, workspace), "status": "end_of_file", "line_count": len(lines),
+                    "requested_start_line": start_index + 1, "start_line": 0, "end_line": 0, "content": "",
+                    "notice": f"End of file at line {len(lines)}. Do not request this range again."}
         excerpt = "\n".join(lines[start_index:end_index])
         return {
             "path": base.relative_path(target, workspace),
@@ -22976,12 +22701,25 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
 # <QUBITZ_SHARED_SYMBOL:wrapper:a8d7d69c688f0e11> module/FunctionDef:_install_agent_tool_hardening:0/ClassDef:HardenedAgentRunner:0/AsyncFunctionDef:_run_async:0
         async def _run_async(self, prompt: str, callback: Callable[[str, str], None] | None = None) -> str:
             from runtime.overwrite_confirmation import PendingOverwrite, looks_like_overwrite_reply, overwrite_reply
+            from runtime import project_workflows
+            from runtime.retrieval import PendingProjectGoal, RetrievalLimit, project_overview, requests_project_workflow
 
             _install_model_storage_preflight(base)
             self._last_verification_receipts = []
             self._last_recovery_receipts = []
             self._last_structured_proposal_receipts = []
             observed_prompt = prompt
+            confirmed_workflow = project_workflows.explicit_workflow_name(observed_prompt)
+            pending_workflow = getattr(self, "_pending_workflow_selection", None)
+            self._pending_workflow_selection = None
+            pending_goal = getattr(self, "_pending_project_goal", None)
+            self._pending_project_goal = None
+            project_goal = (
+                pending_goal if isinstance(pending_goal, PendingProjectGoal)
+                and pending_goal.matches(self.workspace.resolve(), observed_prompt)
+                and any(item.get("role") == "assistant" and item.get("content") == PROJECT_GOAL_CLARIFICATION
+                        for item in self.history[-2:]) else None
+            )
 
             def early_answer(answer: str) -> str:
                 with suppress(Exception):
@@ -23369,6 +23107,48 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     revision=implicit_revision,
                 )
             self._route_decision = self._decide_route(prompt)
+            decision_features = self._route_decision.features
+            query_scope = decision_features.get("query_classification", {})
+            use_workflow = (confirmed_workflow is not None or project_goal is not None or (
+                requests_project_workflow(observed_prompt)
+                and (self._route_decision.selected_route == "ask_user_missing_info" or (
+                    self._route_decision.selected_route == "retrieval_plus_model"
+                    and query_scope.get("project_context_required") is True
+                    and query_scope.get("inspection_level") == "focused"
+                ))
+            )) and not semantic.prohibited_actions.intersection({"tool_use", "read"})
+            if use_workflow:
+                classification = QueryClassification(
+                    query_type=query_scope.get("query_type", "task") if project_goal is None else "task",
+                    project_scope="project_related",
+                    question_complexity=query_scope.get("question_complexity", "not_applicable") if project_goal is None else "not_applicable",
+                    project_context_required=True, inspection_level="focused",
+                    reason="The user wants the active project's documented workflow.",
+                )
+                self._route_decision = base.replace(
+                    self._route_decision, selected_route="retrieval_plus_model",
+                    reason="Use bounded workflow documentation before any implementation search.",
+                    fallback_routes=["ask_user_missing_info"],
+                    features={**decision_features, "query_classification": classification.to_trace_dict(),
+                              "bounded_project_workflow": True},
+                )
+                effective_prompt += (
+                    "\n\nUse the supplied project workflow evidence first. If a command, input, or permission is unclear, ask; do not guess. "
+                    "Read only the specific user input required by the verified workflow; never enumerate or send private inputs unnecessarily."
+                )
+                if project_goal is not None:
+                    effective_prompt += (
+                        "\nThis reply clarifies a previous request, which is context rather than additional authorization:\n"
+                        + _fence_untrusted_workspace_content(project_goal.request)
+                    )
+            elif (self._route_decision.selected_route == "retrieval_plus_model"
+                  and query_scope.get("project_scope") == "project_unrelated"
+                  and query_scope.get("project_context_required") is False):
+                self._route_decision = base.replace(
+                    self._route_decision, selected_route="tool_loop",
+                    reason="The resolved request does not require workspace context; skip the repository index.",
+                    features={**decision_features, "skip_repository_index": True},
+                )
             initial_route_decision = self._route_decision
             self._qubitz_last_route_decision = self._route_decision
             selected_route = self._route_decision.selected_route
@@ -23443,6 +23223,23 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     )
 
                 self.retriever.format_context = exact_context
+            elif self._route_decision.features.get("bounded_project_workflow"):
+                self._should_skip_repo_retrieval = lambda _prompt: False
+
+                def workflow_context(_prompt: str) -> str:
+                    excerpts = project_overview(self.workspace, 4, self._raise_if_cancelled, workflow=True, query=prompt)
+                    if callback is not None:
+                        callback("status", "Using bounded workflow evidence without indexing the repository.")
+                    if not excerpts:
+                        return "No workflow documentation was located in the bounded search. Ask for a workflow or entrypoint rather than guessing."
+                    return "Project workflow excerpts (not a full scan):\n" + _fence_untrusted_workspace_content(
+                        "\n\n".join(f"{item['path']}:{item['start_line']}-{item['end_line']}\n{item['text']}"
+                                    for item in excerpts)
+                    )
+
+                self.retriever.format_context = workflow_context
+            elif self._route_decision.features.get("skip_repository_index"):
+                self._should_skip_repo_retrieval = lambda _prompt: True
             base.set_qubitz_chat_template_kwargs(None)
             progressive_budget_enabled = selected_route not in {
                 "simple_answer",
@@ -23952,8 +23749,13 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                         )
                     pass_prompt = f"{original_pass_prompt}\n\n{continuation_context}"
 
+            workflow_response = False
+
             async def finalize_turn_answer(rendered_answer: str) -> str:
                 nonlocal turn_history_finalized
+                if (rendered_answer.strip() == PROJECT_GOAL_CLARIFICATION
+                        and self._cancel_source != "user"):
+                    self._pending_project_goal = PendingProjectGoal(self.workspace.resolve(), observed_prompt)
                 captured_scalar = _verified_workspace_scalar_answer(
                     self._tool_permission_broker, observed_prompt,
                     getattr(self, "_qubitz_direct_read_receipts", None),
@@ -23963,17 +23765,17 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     rendered_answer = terminal
                 elif captured_scalar is not None:
                     rendered_answer = captured_scalar
-                elif _unexecuted_tool_call_name(str(rendered_answer), ()):
+                elif not workflow_response and _unexecuted_tool_call_name(str(rendered_answer), ()):
                     rendered_answer = await run_scalar_format_pass("answer without tool markup", rendered_answer)
                     if _unexecuted_tool_call_name(str(rendered_answer), ()):
                         rendered_answer = "Unable to deliver a verified answer: the model returned an unexecuted tool request."
-                scalar_contract = explicit_scalar_answer_contract()
+                scalar_contract = None if workflow_response else explicit_scalar_answer_contract()
                 if scalar_contract and captured_scalar is None and self._cancel_source != "user" and receipt_answer is None:
                     if violates_scalar_answer_contract(rendered_answer, scalar_contract):
                         rendered_answer = await run_scalar_format_pass(scalar_contract, rendered_answer)
                     if violates_scalar_answer_contract(rendered_answer, scalar_contract):
                         rendered_answer = "Unable to verify an answer in the requested format."
-                if terminal is None and not self._cancel_source and receipt_answer is None:
+                if not workflow_response and terminal is None and not self._cancel_source and receipt_answer is None:
                     from runtime.creation_verifier import repair_saved_creation, verify_saved_python_turn
 
                     diagnostic = await verify_saved_python_turn(
@@ -24085,7 +23887,7 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 clarification = bool(re.search(
                     r"\b(?:which\s+(?:file|target)|please\s+(?:specify|identify|clarify))\b", answer_text, re.IGNORECASE,
                 ))
-                if missing and not clarification and not scalar_contract and terminal is None:
+                if missing and not workflow_response and not clarification and not scalar_contract and terminal is None:
                     summary = self._tool_permission_broker.completion_evidence_summary(prompt)
                     targets = sorted(getattr(self._tool_permission_broker, "creation_targets", set()))
                     target_text = "\nRequested path(s): " + ", ".join(targets) if targets else ""
@@ -24154,6 +23956,8 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     return answer_text
                 from runtime.completion_state import completion_state
 
+                if workflow_response and "[Completion status: partial]" in rendered_answer:
+                    unverified_behavior.append("requested workflow outcome")
                 state = completion_state(required, missing, unverified=unverified_behavior)
                 self._qubitz_completion_state = state.receipt()
                 if callback is not None:
@@ -24269,6 +24073,79 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                     if callback is not None:
                         callback("status", "Returning the explicitly requested value from a verified captured receipt; no retrieval or model loading.")
                     return await finalize_turn_answer(receipt_answer)
+                if use_workflow and not self._qubitz_exact_retrieval_scope:
+                    workflow_response = True
+                    workspace = self.workspace.resolve()
+                    try:
+                        choices = project_workflows.discover(workspace, observed_prompt, self._raise_if_cancelled)
+                    except OSError:
+                        choices = []
+                    if callback is not None:
+                        callback("status", "Checked declared project workflows without running project code or indexing the repository.")
+                    if not choices:
+                        if (project_goal is None and confirmed_workflow is None
+                                and _project_use_prompt_lacks_concrete_goal(base, observed_prompt, None, ())):
+                            return await finalize_turn_answer(PROJECT_GOAL_CLARIFICATION)
+                        return await finalize_turn_answer(
+                            "No supported declared workflow matched in the bounded discovery scope. "
+                            "Name the project entrypoint or give the documented command. Nothing was run.\n\n"
+                            "[Completion status: partial]"
+                        )
+                    if len(choices) != 1:
+                        return await finalize_turn_answer(
+                            "More than one declared workflow matched. Nothing was run. Specify one of: "
+                            + ", ".join(f"`Run workflow {item.key}`" for item in choices) + ".\n\n[Completion status: partial]"
+                        )
+                    workflow = choices[0]
+                    target, issues = project_workflows.preflight(workspace, workflow)
+                    cwd = workspace / workflow.project
+                    target_revision = project_workflows.output_hashes(cwd, (workflow.argv[1],)) if target else {}
+                    if target is None or issues or not target_revision:
+                        return await finalize_turn_answer(
+                            f"Project workflow `{workflow.key}` was not run. "
+                            + " ".join(issues or ("The exact entrypoint revision could not be verified.",))
+                            + "\n\n[Completion status: partial]"
+                        )
+                    if (confirmed_workflow is None or pending_workflow is None
+                            or pending_workflow[1].key != workflow.key):
+                        self._pending_workflow_selection = (workspace, workflow, target_revision)
+                        return await finalize_turn_answer(
+                            f"Found project workflow `{workflow.key}` declared in `{workflow.declaration}`. "
+                            f"It runs `{shlex.join(workflow.argv)}` from `{workflow.project}`. Nothing was run. "
+                            f"To confirm this exact workflow, say `Run workflow {workflow.key}`.\n\n[Completion status: partial]"
+                        )
+                    if (pending_workflow is not None and pending_workflow[1].key == workflow.key
+                            and pending_workflow != (workspace, workflow, target_revision)):
+                        return await finalize_turn_answer(
+                            "The workflow, entrypoint, or workspace changed after the proposal. Nothing was run; "
+                            "inspect the updated declaration and confirm it again.\n\n[Completion status: partial]"
+                        )
+                    if (_normalize_access_mode(getattr(self, "access_mode", DEFAULT_ACCESS_MODE)) != ACCESS_MODE_FULL
+                            or "execute" in semantic.prohibited_actions
+                            or (workflow.network is not False and not _network_mode_is_online(
+                                getattr(self, "network_mode", DEFAULT_NETWORK_MODE)))):
+                        return await finalize_turn_answer(
+                            "The current access or network policy does not permit this workflow to run. "
+                            "Nothing was run.\n\n[Completion status: partial]"
+                        )
+                    check_user_cancellation()
+                    async with base.MCPHost(workspace) as host:
+                        await host.list_tools()
+                        rechecked_target, rechecked_issues = project_workflows.preflight(workspace, workflow)
+                        if (rechecked_target != target or rechecked_issues
+                                or project_workflows.output_hashes(cwd, (workflow.argv[1],)) != target_revision):
+                            return await finalize_turn_answer(
+                                "Project workflow no longer matches the preflight evidence. Nothing was run.\n\n[Completion status: partial]"
+                            )
+                        before = project_workflows.output_hashes(cwd, workflow.outputs)
+                        check_user_cancellation()
+                        result = await host.call_tool("run_existing_entrypoint", {
+                            "path": target.relative_to(workspace).as_posix(), "cwd": workflow.project,
+                            "arguments": list(workflow.argv[2:]), "timeout_seconds": 300,
+                        })
+                    return await finalize_turn_answer(project_workflows.render_result(
+                        workflow, result, before, project_workflows.output_hashes(cwd, workflow.outputs),
+                    ))
                 if (historical_edit_reference and semantic.requested_actions <= {"read", "respond"}
                         and re.search(r"\b(?:explain|describe|why)\b|\bhow\b(?!\s+(?:many|much|long|often|soon)\b)",
                                       observed_prompt, re.IGNORECASE)
@@ -24969,6 +24846,14 @@ def _project_launch_windows_argument(base: Any, value: str) -> str:
                 if callback is not None:
                     callback("status", "Context-capacity recovery could not fit this request; returning a partial result without replaying completed actions.")
                 return await finalize_turn_answer(answer)
+            except RetrievalLimit as exc:
+                broker = self._tool_permission_broker
+                summary = broker.completion_evidence_summary(prompt)
+                return await finalize_turn_answer(
+                    f"Repository retrieval stopped: {exc}. Specify a file, directory, or workflow to inspect. "
+                    "The request was not replayed.\n\n"
+                    f"Verified current-turn evidence: {summary}.\n\n[Completion status: partial]"
+                )
             finally:
                 self._last_turn_control["cancelled"] = self._cancel_source == "user"
                 self._last_turn_control["finished"] = True
@@ -25515,6 +25400,8 @@ DIRECT_RESULT_MISSING_URL = "(no URL)"
         self: Any,
         timeout_seconds: float,
     ) -> tuple[list[dict[str, Any]], bool, bool, dict[str, Any], dict[str, Any]]:
+        from runtime.startup_progress import report
+
         deadline = time.time() + timeout_seconds
         models: list[dict[str, Any]] = []
         props_available = False
@@ -25522,6 +25409,7 @@ DIRECT_RESULT_MISSING_URL = "(no URL)"
         last_model_probe: dict[str, Any] = {}
         last_props_probe: dict[str, Any] = {}
         while time.time() < deadline:
+            report("llama.cpp reports model loading" if saw_loading else "Checking llama.cpp model readiness")
             broker = _TOOL_CALL_CONTEXT.get()
             owner = getattr(getattr(broker, "stop_callback", None), "__self__", None)
             if getattr(owner, "_cancel_source", "") == "user":
@@ -25694,7 +25582,11 @@ import shlex
                 )
                 if not self.invalid_stop_requested and self.stop_callback is not None:
                     self.invalid_stop_requested = True
-                    self.stop_callback("repeated equivalent invalid tool calls")
+                    stop_reason = "repeated equivalent invalid tool calls"
+                    if (reason == "path_resolution:FileNotFoundError" and name.lower() in {"read_file", "read_file_snapshot"}
+                            and isinstance(arguments.get("path"), str)):
+                        stop_reason += f" (file not found: {json.dumps(arguments['path'][:160], ensure_ascii=True)})"
+                    self.stop_callback(stop_reason)
         return count
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:wrapper:b14c1c5d76aadcb5> module/Assign:Name(id='_EMBEDDED_NO_PROGRESS_OLD', ctx=Store()):0
@@ -29465,12 +29357,16 @@ import sys
         lines = text.splitlines(keepends=True)
         first = max(1, int(start_line))
         last = min(max(first, int(end_line)), len(lines))
+        if first > len(lines) and (lines or first > 1):
+            return {"path": snapshot["path"], "status": "end_of_file", "line_count": len(lines), "requested_start_line": first,
+                    "start_line": 0, "end_line": 0, "content": "",
+                    "notice": f"End of file at line {len(lines)}. Do not request this range again."}
         text_snapshot: dict[str, Any] = {
             **snapshot,
             "status": "text_snapshot",
             "binary": False,
             "encoding": encoding_label,
-            "start_line": first,
+            "start_line": first if lines else 0,
             "end_line": last,
             "content": "".join(lines[first - 1 : last]),
         }
@@ -29865,8 +29761,8 @@ def _task_harness_block_names(
                     elif kind == "answer":
                         self._append_transcript("assistant", message)
                     elif kind == "error":
+                        self.status_var.set("Request failed; see chat.")
                         self._append_transcript("error", message)
-                        self.messagebox.showerror("AI Agent Qubitz", message)
                     elif kind == "done":
                         self._set_busy(False)
                         if self.pending_prompts:
@@ -34472,7 +34368,7 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
                 "tool": normalized, **{key: structured[key] for key in ("path", "line", "offset") if key in structured},
                 "detail": str(structured.get("reason") or structured.get("issues") or "Invalid content")[:600],
             }
-        elif status not in untracked_failure_statuses:
+        elif status not in untracked_failure_statuses and not (wrapper_rejected and status == "path_resolution_error"):
             failure_count = self.failed_result_counts.get(result_fingerprint, 0) + 1
             self.failed_result_counts[result_fingerprint] = failure_count
             if failure_count == 2:
@@ -34746,10 +34642,17 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             evidence_urls = raw_evidence_urls
             if success:
                 self.provenance_urls.update(url.casefold() for url in evidence_urls)
-        result_count = _structured_evidence_count(structured)
+        local_inspection = {
+            "list_files": ("local entries listed", "entries"), "search_text": ("local text matches", "matches"),
+            "read_file": ("file read", ""), "read_file_snapshot": ("file snapshot", ""),
+        }.get(normalized)
+        inspection_kind, inspection_key = local_inspection or ("", "")
+        inspection_items = structured.get(inspection_key) if inspection_key else None
+        inspection_count = len(inspection_items) if success and isinstance(inspection_items, list) else 0
+        result_count = 0 if local_inspection else _structured_evidence_count(structured)
         if browser_action:
             result_count = len(evidence_urls)
-        if not result_count and evidence_urls:
+        if not result_count and evidence_urls and not local_inspection:
             result_count = len(evidence_urls)
         if success and result_count > 0:
             categories.add("result_count")
@@ -34915,6 +34818,8 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
             "stderr": str(structured.get("stderr") or "")[-4000:] if execution_verified else "",
             "workspace_generation": self.workspace_generation,
             "result_count": result_count,
+            "inspection_kind": inspection_kind,
+            "inspection_count": inspection_count,
             "opened_count": len(evidence_urls) if browser_action and success else 0,
             "browser": str(structured.get("browser") or "").casefold() if browser_action else "",
             "file_hashes": _current_file_hashes(verified_paths) if success and {"created_outputs", "changed_files"}.intersection(categories) else {},
@@ -35041,6 +34946,42 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
                 "authorized_targets": [],
                 "progress_budget": self.action_progress.evidence(),
             }
+            if (wrapper_rejected and structured.get("dispatch_attempted") is False
+                    and status == "path_resolution_error" and structured.get("exception_type") == "FileNotFoundError"
+                    and normalized in {"read_file", "read_file_snapshot"} and self.turn_id):
+                from runtime.read_location import MAX_LOCATION_CHECKS, check_location, eligible_basename
+
+                raw = arguments.get("path")
+                semantic = self.task_intent.semantic
+                owner = getattr(self.stop_callback, "__self__", None)
+                prior_checks = [item.get("read_location_check") for item in self._current_turn_evidence()
+                                if item.get("read_location_check")]
+                if (eligible_basename(raw) and not self.invalid_stop_requested
+                        and not semantic.prohibited_actions.intersection({"read", "tool_use"})
+                        and not any(action in {"read", "tool_use"} for action, _token in semantic.scoped_prohibitions)
+                        and not (self.named_operation_contract or self.confirmed_overwrite or self.dependency_manifest
+                                 or self.creation_targets or self.transaction_explicit_file_targets
+                                 or self._created_html_review_active or getattr(owner, "_qubitz_exact_retrieval_scope", False)
+                                 or _explicit_file_reference_tokens(self.base, self.current_prompt))
+                        and (self._search_eligible_tool_names is None or "list_files" in self._search_eligible_tool_names)
+                        and len(prior_checks) < MAX_LOCATION_CHECKS
+                        and all(item["target"].casefold() != raw.casefold() for item in prior_checks)):
+                    cancel_event = getattr(owner, "_cancel_event", None)
+                    location = check_location(
+                        workspace, raw,
+                        lambda name: self.base.is_excluded_dir_name(name, self.base.EXCLUDED_DIRS),
+                        cancel_event.is_set if cancel_event is not None else lambda: False,
+                    )
+                    evidence["read_location_check"] = location
+                    recovery["read_location_check"] = location
+                    candidates = location["candidates"]
+                    recovery["next_action"] = (
+                        "Do not repeat the missing path. These are name matches only, not authorized replacements. "
+                        "Use a candidate only after verifying it is the intended configured path. Ask if ambiguous."
+                        if candidates else
+                        "Do not repeat the missing path. No candidate was found in the bounded check. "
+                        "Verify the configured location from existing evidence or report the missing prerequisite."
+                    )
             authorized = set(self.creation_targets) | set(self.transaction_explicit_file_targets)
             named = self.named_operation_contract
             if isinstance(named, dict) and named.get("target"):
@@ -35064,6 +35005,8 @@ def _explicit_saved_file_contracts(broker: Any, prompt: str) -> dict[str, dict[s
                 **({key: value for key, value in original_content.items()
                     if key != "qubitz_recovery"} if isinstance(original_content, dict) else {}),
             }
+            if "read_location_check" in recovery:
+                result.structuredContent["instruction"] = recovery["next_action"]
         if normalized in mutation_tools:
             from runtime.file_draft import file_drafts_enabled, tool_preview
 

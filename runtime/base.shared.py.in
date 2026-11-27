@@ -756,6 +756,10 @@ def build_mcp_server(workspace: Path) -> FastMCP:
         lines = text.splitlines()
         start_index = max(start_line - 1, 0)
         end_index = min(end_line, len(lines))
+        if start_index >= len(lines):
+            return {"path": relative_path(target, workspace), "status": "end_of_file", "line_count": len(lines),
+                    "requested_start_line": start_index + 1, "start_line": 0, "end_line": 0, "content": "",
+                    "notice": f"End of file at line {len(lines)}. Do not request this range again."}
         excerpt = "\n".join(lines[start_index:end_index])
         return {
             "path": relative_path(target, workspace),
@@ -942,28 +946,15 @@ def build_mcp_server(workspace: Path) -> FastMCP:
     @server.tool(description="Read the current persistent memory file.")
     def read_memory() -> dict[str, Any]:
         text = current_memory_path.read_text(encoding="utf-8", errors="ignore") if current_memory_path.exists() else ""
-        return {"path": relative_path(current_memory_path, workspace), "content": shorten(text, 6000)}
+        content = text if len(text) <= 6000 else "...\n" + text[-5996:]
+        return {"path": relative_path(current_memory_path, workspace), "content": content}
 
-    @server.tool(description="Search across memory markdown files.")
+    @server.tool(description="Search the workspace's persistent MEMORY.md.")
     def search_memory(query: str, max_results: int = 5) -> dict[str, Any]:
-        query_tokens = token_set(query)
-        matches: list[dict[str, Any]] = []
-        for candidate in sorted(memory_dir.glob("MEMORY*.md"), key=lambda item: item.stat().st_mtime, reverse=True):
-            text = candidate.read_text(encoding="utf-8", errors="ignore")
-            lowered = text.lower()
-            score = sum(lowered.count(token) for token in query_tokens)
-            if score <= 0:
-                continue
-            matches.append(
-                {
-                    "path": relative_path(candidate, workspace),
-                    "score": score,
-                    "snippet": shorten(text, 1200),
-                }
-            )
-            if len(matches) >= max_results:
-                break
-        return {"query": query, "matches": matches}
+        from runtime.memory_store import search_memory_file
+
+        matches = search_memory_file(current_memory_path, query, max_results)
+        return {"query": query, "matches": [{**match, "score": int(match["score"])} for match in matches]}
 
     return server
 # </QUBITZ_SHARED_SYMBOL>
@@ -1722,20 +1713,71 @@ class RepoRetriever:
         scored.sort(key=lambda item: item[0], reverse=True)
         return scored
 
+    def _focused_sources(self, query: str, *, overview: bool = False):
+        from runtime.retrieval import FOCUSED_SCAN_SECONDS, FOCUSED_SKIP_DIRECTORIES, SKIP_DIRECTORIES, ScanBudget, focused_paths, focused_sources
+
+        budget = ScanBudget(self.checkpoint, self._report, timeout=FOCUSED_SCAN_SECONDS)
+        omit = EXCLUDED_DIRS | SKIP_DIRECTORIES | FOCUSED_SKIP_DIRECTORIES
+        discovered = focused_paths(self.workspace, lambda name: is_excluded_dir_name(name, omit), budget.check)
+        paths = (path for path in discovered
+                 if not is_sensitive_path_name(path) and not is_excluded_retrieval_file(path))
+        return focused_sources(self.workspace, query, paths, budget, overview=overview)
+
     def query(self, query: str, limit: int | None = None) -> dict[str, Any]:
+        from runtime.retrieval import FOCUSED_EMBED_CHUNKS, RetrievalLimit, file_stamp, is_project_overview, project_overview
+
+        top_k = limit or self.recommended_result_limit()
+
+        if is_project_overview(query):
+            results = project_overview(self.workspace, top_k, self.checkpoint)
+            if not results:
+                fallback = self._focused_sources(query, overview=True)
+                results = [{key: value for key, value in item.items() if key != "matched"}
+                           for item in fallback.snippets[:min(top_k, 4)]]
+                for item in results:
+                    item["text"] = shorten(item["text"], 1400)
+            sources = ", ".join(item["path"] for item in results)
+            self._report(f"Project overview: {sources or 'no readable overview sources'}; no repository index built.")
+            return {
+                "backend": "project-overview",
+                "results": results,
+                "error": (
+                    "Only bounded excerpts from project docs, manifests, or candidate entrypoints were sought. Answer from these first. "
+                    "Read only the missing ranges needed for the answer, batching independent reads when available. "
+                    "Do not infer details not supported by the evidence."
+                ),
+            }
+
         import numpy as np
 
-        from runtime.retrieval import RetrievalLimit, file_stamp
-
-        try:
-            self.ensure_index()
-        except RetrievalLimit as exc:
-            self._report(f"Repository retrieval incomplete: {exc}.")
-            raise
-        top_k = limit or self.recommended_result_limit()
+        focused = self._focused_sources(query)
+        self._reset_faiss_index()
+        self._inventory = focused.stamps
+        self._vectors = None
+        self._backend = "focused-lexical"
+        self._last_error = (
+            "Bounded candidate search; additional sources or ranges were not inspected. Do not infer repository-wide coverage."
+            if focused.truncated else "Repository context is limited to ranked source excerpts."
+        )
+        self._chunks = [RepoChunk(chunk_id=f"{item['path']}:{item['start_line']}-{item['end_line']}",
+                                 path=item["path"], start_line=item["start_line"], end_line=item["end_line"],
+                                 text=item["text"]) for item in focused.snippets]
+        self._report(f"Focused retrieval: {len(self._inventory)} source file(s), {len(self._chunks)} candidate range(s); no full index built.")
         results: list[dict[str, Any]] = []
         if not self._chunks:
+            if focused.truncated:
+                raise RetrievalLimit("repository candidate scan exceeded its scope before finding readable evidence")
             return {"backend": "empty", "results": [], "error": self._last_error}
+        if not focused.strong_match:
+            try:
+                self._report("Embedding only the shortlisted repository ranges for semantic ranking.")
+                embedding_chunks = self._chunks[:FOCUSED_EMBED_CHUNKS]
+                self._vectors = self.embedder.encode_documents([chunk.text for chunk in embedding_chunks])
+                self._chunks = embedding_chunks
+            except RunCancelled:
+                raise
+            except Exception as exc:  # pragma: no cover - runtime fallback path
+                self._last_error += f" Semantic ranking unavailable: {type(exc).__name__}."
         if self._vectors is not None:
             query_vector = None
             try:
@@ -1777,7 +1819,7 @@ class RepoRetriever:
             except RunCancelled:
                 raise
             except Exception as exc:  # pragma: no cover - runtime fallback path
-                self._last_error = f"{type(exc).__name__}: {exc}"
+                self._last_error += f" Semantic ranking unavailable: {type(exc).__name__}."
                 self._reset_faiss_index()
                 self._backend = "lexical" if query_vector is None else "embedding-numpy"
                 if query_vector is not None and query_vector.shape == (self._vectors.shape[1],):
@@ -1796,27 +1838,28 @@ class RepoRetriever:
                             }
                         )
         if not results:
-            self._backend = "lexical"
-            for score, chunk in self._lexical_scores(query)[:top_k]:
-                results.append(
-                    {
-                        "path": chunk.path,
-                        "start_line": chunk.start_line,
-                        "end_line": chunk.end_line,
-                        "score": score,
-                        "text": shorten(chunk.text, 1400),
-                    }
-                )
+            self._backend = "focused-lexical"
+            for item in (item for item in focused.snippets if item["matched"]):
+                results.append({**{key: value for key, value in item.items() if key != "matched"},
+                                "text": shorten(item["text"], 1400)})
+                if len(results) >= top_k:
+                    break
         if results:
+            stale = set()
             for rel in dict.fromkeys(item["path"] for item in results):
                 self.checkpoint()
                 try:
-                    current = file_stamp(self.workspace / rel)
+                    path = self.workspace / rel
+                    current = file_stamp(path) if path.resolve(strict=True) == path else None
                 except OSError:
                     current = None
                 if current is None or current != self._inventory.get(rel):
-                    self._report("Repository retrieval incomplete: a selected source changed during retrieval.")
+                    stale.add(rel)
+            if stale:
+                results = [item for item in results if item["path"] not in stale]
+                if not results:
                     raise RetrievalLimit("a selected source changed during retrieval; read the current target directly")
+                self._last_error += " Changed source excerpts were omitted."
             preview = ", ".join(f"{item['path']}:{item['start_line']}-{item['end_line']}" for item in results[:3])
             self._report(f"Repository context ready from {self._backend}: {preview}")
         return {"backend": self._backend, "results": results, "error": self._last_error}
@@ -2060,9 +2103,6 @@ def is_probably_text_file(path: Path) -> bool:
     except OSError:
         return False
     return b"\x00" not in sample
-# </QUBITZ_SHARED_SYMBOL>
-# <QUBITZ_SHARED_SYMBOL:base:4075a662dded4226> module/Assign:Name(id='ARCHIVE_MEMORY_PREFIX', ctx=Store()):0
-ARCHIVE_MEMORY_PREFIX = "MEMORY_"
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:462cc14165cf992d> module/FunctionDef:decode_subprocess_output:0
 def decode_subprocess_output(data: bytes | str | None) -> str:
@@ -2368,7 +2408,11 @@ class AgentRunner:
                 "Preparing repository context before loading the generation model to keep more VRAM free for embeddings.",
             )
             skip_repo_retrieval = self._should_skip_repo_retrieval(prompt)
-            if skip_repo_retrieval:
+            route_features = getattr(getattr(self, "_route_decision", None), "features", {})
+            if skip_repo_retrieval and route_features.get("skip_repository_index"):
+                self._emit(callback, "status", "Skipping repository retrieval: this request does not require project files.")
+                repo_context = "No repository context was needed for this request."
+            elif skip_repo_retrieval:
                 self._emit(
                     callback,
                     "status",
@@ -2398,7 +2442,8 @@ class AgentRunner:
             ).strip()
             configured_server_url = (os.environ.get(LLAMACPP_SERVER_URL_ENV_NAME) or "").strip()
             if (
-                not configured_server_path
+                not globals().get("_qubitz_runtime_prepared_by_detect", False)
+                and not configured_server_path
                 and not configured_server_url
                 and normalize_base_url(self.config.server_url) == DEFAULT_LLAMACPP_BASE_URL
             ):
@@ -2454,11 +2499,13 @@ class AgentRunner:
                         )
 
             from runtime.file_draft import phase
+            from runtime.startup_progress import capture as capture_startup_progress
 
             phase("Loading / checking model")
             self._emit(callback, "status", "Detecting the local llama.cpp GGUF backend and validating the target model.")
-            llm = self._get_llm()
-            resolved_model_name = llm.ensure_model(self.config.model_name)
+            with capture_startup_progress(lambda message: self._emit(callback, "status", message)):
+                llm = self._get_llm()
+                resolved_model_name = llm.ensure_model(self.config.model_name)
             model_key = (llm.label, resolved_model_name)
             self._validated_model_keys.add(model_key)
             self._emit(callback, "status", f"llama.cpp transport: {llm.label} @ {llm.base_url}")
@@ -2731,109 +2778,8 @@ from __future__ import annotations
 EXCLUDED_RETRIEVAL_SUFFIXES = ("HARNESS_KEY.local.txt",)
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:54e3ef0349e4e142> module/ClassDef:MemoryStore:0
-class MemoryStore:
-    def __init__(self, workspace: Path) -> None:
-        self.workspace = workspace
-        self.memory_dir = workspace / ".memory"
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.current_path = self.memory_dir / CURRENT_MEMORY_NAME
-        self.archive_path = self.memory_dir / f"{ARCHIVE_MEMORY_PREFIX}{self.session_id}.md"
-        self.notes: list[dict[str, str]] = []
-        self.turns: list[dict[str, str]] = []
-        self.flush()
-
-    def add_turn(self, role: str, content: str) -> None:
-        self.turns.append(
-            {
-                "timestamp": now_stamp(),
-                "role": role,
-                "content": shorten(content.strip(), 4000),
-            }
-        )
-        self.turns = self.turns[-20:]
-        self.flush()
-
-    def add_note(self, note: str, category: str = "note") -> None:
-        cleaned = note.strip()
-        if not cleaned:
-            return
-        self.notes.append({"timestamp": now_stamp(), "category": category, "text": shorten(cleaned, 1000)})
-        self.notes = self.notes[-40:]
-        self.flush()
-
-    def render(self) -> str:
-        lines = [
-            "# Qubitz Memory",
-            "",
-            f"Session ID: {self.session_id}",
-            f"Updated: {now_stamp()}",
-            f"Workspace: {self.workspace.as_posix()}",
-            "",
-            "## Notes",
-        ]
-        if self.notes:
-            for note in self.notes[-20:]:
-                lines.append(f"- [{note['timestamp']}] ({note['category']}) {note['text']}")
-        else:
-            lines.append("- No notes recorded yet.")
-        lines.extend(["", "## Recent Turns"])
-        if self.turns:
-            for turn in self.turns[-12:]:
-                lines.append(f"### {turn['role'].title()} [{turn['timestamp']}]")
-                lines.append(turn["content"])
-                lines.append("")
-        else:
-            lines.append("No conversation turns recorded yet.")
-        return "\n".join(lines).rstrip() + "\n"
-
-    def flush(self) -> None:
-        rendered = self.render()
-        self.current_path.write_text(rendered, encoding="utf-8")
-        self.archive_path.write_text(rendered, encoding="utf-8")
-
-    def search(self, query: str, limit: int = 5, include_current: bool = True) -> list[dict[str, str]]:
-        query_tokens = token_set(query)
-        results: list[dict[str, str]] = []
-        memory_files = sorted(
-            self.memory_dir.glob(f"{ARCHIVE_MEMORY_PREFIX}*.md"),
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        )
-        if include_current and self.current_path.exists():
-            memory_files.insert(0, self.current_path)
-        seen: set[Path] = set()
-        for path in memory_files:
-            if path in seen or not path.exists():
-                continue
-            seen.add(path)
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            lowered = text.lower()
-            if query_tokens:
-                score = sum(lowered.count(token) for token in query_tokens)
-            else:
-                score = 1
-            if score <= 0:
-                continue
-            results.append(
-                {
-                    "path": relative_path(path, self.workspace),
-                    "score": str(score),
-                    "snippet": summarize_memory_markdown(text, MAX_MEMORY_RESULT_SNIPPET_CHARS),
-                }
-            )
-        return results[:limit]
-
-    def build_context(self, query: str) -> str:
-        current = self.current_path.read_text(encoding="utf-8", errors="ignore") if self.current_path.exists() else ""
-        archived = self.search(query, limit=MAX_MEMORY_CONTEXT_RESULTS, include_current=False)
-        current_summary = summarize_memory_markdown(current, MAX_MEMORY_CONTEXT_CHARS)
-        sections = ["Current session memory:", current_summary or "None"]
-        if archived:
-            sections.append("Relevant archived memory:")
-            for item in archived:
-                sections.append(f"- {item['path']} (score {item['score']}): {item['snippet']}")
-        return "\n\n".join(section for section in sections if section.strip())
+class MemoryStore(_CanonicalMemoryStore):
+    """Keep per-variant class patches isolated over the shared storage implementation."""
 # </QUBITZ_SHARED_SYMBOL>
 # <QUBITZ_SHARED_SYMBOL:base:55ed3fa5a7005962> module/Assign:Name(id='WINDOWS_DRIVE_PATH_PATTERN', ctx=Store()):0
 WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
@@ -3313,6 +3259,9 @@ class LlamaCppServerProcess:
     def ensure_started(self) -> None:
         if self.process is not None and self.process.poll() is None:
             return
+        from runtime.startup_progress import report
+
+        report("Starting the local llama.cpp backend")
         creationflags = 0
         startupinfo: subprocess.STARTUPINFO | None = None
         if os.name == "nt":
@@ -3915,8 +3864,8 @@ class QubitzGUI:
             elif kind == "answer":
                 self._append_transcript("assistant", message)
             elif kind == "error":
+                self.status_var.set("Request failed; see chat.")
                 self._append_transcript("error", message)
-                self.messagebox.showerror("AI Agent Qubitz", message)
             elif kind == "done":
                 self._set_busy(False)
                 if self.pending_prompts:
@@ -4111,6 +4060,9 @@ class LlamaCppClient:
 
     @classmethod
     def detect(cls, config: AgentConfig) -> "LlamaCppClient":
+        from runtime.startup_progress import report
+
+        report("Checking for a reachable llama.cpp backend")
         base_url = normalize_base_url(config.server_url or os.environ.get(LLAMACPP_SERVER_URL_ENV_NAME))
         transports = cls._reachable_transports(base_url)
         server_process: LlamaCppServerProcess | None = None
@@ -4119,6 +4071,7 @@ class LlamaCppClient:
             server_process.ensure_started()
             deadline = time.time() + 120.0
             while time.time() < deadline:
+                report("Waiting for the llama.cpp backend to respond")
                 transports = cls._reachable_transports(base_url)
                 if transports:
                     break
@@ -4245,6 +4198,8 @@ class LlamaCppClient:
         model_name: str,
         timeout_seconds: float = DEFAULT_LLAMACPP_MODEL_READY_TIMEOUT_SECONDS,
     ) -> str:
+        from runtime.startup_progress import report
+
         deadline = time.time() + timeout_seconds
         models: list[dict[str, Any]] = []
         props_available = False
@@ -4252,6 +4207,7 @@ class LlamaCppClient:
         last_model_probe: dict[str, Any] = {}
         last_props_probe: dict[str, Any] = {}
         while time.time() < deadline:
+            report("llama.cpp reports model loading" if saw_loading else "Checking llama.cpp model readiness")
             last_model_probe = self._probe_with_fallback("/v1/models")
             if int(last_model_probe.get("status_code") or 0) == 200:
                 payload = last_model_probe.get("json") or {}
@@ -4704,6 +4660,10 @@ def summarize_tool_result(name: str, payload: dict[str, Any]) -> str:
     if payload.get("is_error"):
         return f"{name} failed: {shorten(payload.get('content_text', 'tool error'), 240)}"
     structured = payload.get("structured_content") or {}
+    if name in {"read_file", "read_file_snapshot"} and structured.get("status") == "end_of_file":
+        return f"{structured.get('path', '?')}: end of file at line {structured.get('line_count', '?')}."
+    if name == "read_file" and structured.get("binary") is True:
+        return f"{structured.get('path', '?')}: binary file; no text lines were read."
     if name == "read_file":
         return (
             f"Loaded {structured.get('path', '?')} "

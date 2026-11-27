@@ -1,4 +1,5 @@
-"""Report artifact validation without changing which bytes are hashed."""
+"""Turn-local backend startup status; never changes probes or timeout policy."""
+from __future__ import annotations
 
 import hashlib
 import os
@@ -7,21 +8,52 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 
-_callback = ContextVar("qubitz_startup_progress", default=None)
+
+class Progress:
+    def __init__(self, emit, clock=time.monotonic):
+        self.emit = emit
+        self.clock = clock
+        self.started_at = clock()
+        self.last_at = self.started_at
+        self.last_stage = ""
+        self.display_error = ""
+
+    def update(self, stage: str) -> None:
+        now = self.clock()
+        if stage != self.last_stage or now - self.last_at >= 8:
+            self.last_at, self.last_stage = now, stage
+            try:
+                self.emit(f"{stage} ({now - self.started_at:.0f}s elapsed).")
+            except Exception as error:  # noqa: BLE001 - display failures must not affect startup
+                self.display_error = type(error).__name__
+
+
+_CURRENT: ContextVar[Progress | None] = ContextVar("qubitz_model_startup_progress", default=None)
+
+
+@contextmanager
+def capture(emit):
+    token = _CURRENT.set(Progress(emit))
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
 
 
 @contextmanager
 def startup_progress(callback):
-    token = _callback.set(callback)
-    try:
+    with capture(lambda message: callback("status", message)):
         yield
-    finally:
-        _callback.reset(token)
+
+
+def report(stage: str) -> None:
+    if (progress := _CURRENT.get()) is not None:
+        progress.update(stage)
 
 
 def checked_sha256(stream):
-    callback = _callback.get()
-    if callback is None:
+    progress = _CURRENT.get()
+    if progress is None:
         return hashlib.file_digest(stream, "sha256").hexdigest()
     size = os.fstat(stream.fileno()).st_size
     if size < 64 * 1024 * 1024:
@@ -35,7 +67,7 @@ def checked_sha256(stream):
 
     def emit(message):
         with suppress(Exception):
-            callback("status", message)
+            progress.emit(message)
 
     emit(f"Validating cached runtime files: hashing {label} ({size / 1048576:.0f} MiB). Model loading has not started.")
     while used := stream.readinto(block):
